@@ -6,7 +6,7 @@ Projeto para converter extratos bancarios em arquivos de lancamento e planilhas 
 
 - Python 3.14 ou superior
 - `uv`
-- Windows com Excel instalado, pois o preenchimento do arquivo `.xls` usa `pywin32`
+- `openpyxl` para preencher a planilha de lancamento sem depender do Excel instalado
 - Credenciais do Google Drive dentro da pasta `credentials/`
 
 ## Instalar Dependencias
@@ -68,7 +68,7 @@ O fluxo:
 4. Processa apenas arquivos com `EXT` no nome.
 5. Extrai o texto do PDF.
 6. Identifica o layout bancario.
-7. Gera o arquivo de lancamento `.xls`.
+7. Gera o arquivo de lancamento `.xls` usando `openpyxl`.
 8. Gera a planilha totalizada `.xlsx`.
 9. Envia os arquivos convertidos para o Google Drive.
 10. Move o PDF original para a pasta final ou para invalidos.
@@ -98,4 +98,4 @@ uv run python -m src.services.conversao
 uv run python -m unittest discover -s tests
 ```
 
-Os testes do endpoint usam mock da funcao de conversao para nao acessar Google Drive nem Excel durante a suite.
+Os testes do endpoint usam mock da funcao de conversao para nao acessar Google Drive durante a suite.

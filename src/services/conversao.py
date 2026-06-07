@@ -10,6 +10,7 @@ from src.app.gdrive.settings import (
     PDF_MIME_TYPE,
     XLS_MIME_TYPE,
     XLSX_MIME_TYPE,
+    XLSM_MIME_TYPE,
 )
 from src.schemas import LayoutNotRecognized, dispatch
 from src.schemas.parsers.pdf_extractor import PDFExtractor
@@ -31,7 +32,7 @@ def executar_conversao():
     )
 
     extratos_id = GOOGLE_DRIVE_FOLDER_ID
-    lancamento = Path.cwd() / "data" / "Lancamentos_Contabeis.xls"
+    lancamento = Path.cwd() / "data" / "Lancamentos_Contabeis.xlsm"
     temp_dir = Path.cwd() / "temp"
     temp_dir.mkdir(parents=True, exist_ok=True)
     logger.info("Diretorio temporario preparado: %s", temp_dir)
@@ -131,7 +132,7 @@ def executar_conversao():
             pasta_arquivo_id = pasta_arquivo["id"]
 
             nome_lancamento = arquivo_stem.replace("EXT", "LANC")
-            dest_lancamento = temp_dir / f"{nome_lancamento}.xls"
+            dest_lancamento = temp_dir / f"{nome_lancamento}.xlsm"
             dest_excel = temp_dir / f"{arquivo_stem}.xlsx"
 
             logger.info("Copiando modelo de lancamento para: %s", dest_lancamento)
@@ -144,11 +145,11 @@ def executar_conversao():
             df_totalizado = totalizador(df)
             df_totalizado.to_excel(dest_excel, index=False)
 
-            logger.info("Enviando XLS para o Google Drive: %s", dest_lancamento.name)
+            logger.info("Enviando XLSM para o Google Drive: %s", dest_lancamento.name)
             google_drive.upload(
                 caminho_local=dest_lancamento,
                 folder_id_destino=pasta_arquivo_id,
-                type_file=XLS_MIME_TYPE,
+                type_file=XLSM_MIME_TYPE,
                 name_drive=dest_lancamento.name,
             )
 

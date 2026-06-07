@@ -1,46 +1,39 @@
 import pandas as pd
 from pathlib import Path
-import win32com.client as win32
+from openpyxl import load_workbook
 from pypdf import PdfReader, PdfWriter
 
 def planilha_lancamento(df, destino):
-    excel = win32.Dispatch("Excel.Application")
-    excel.Visible = False
-    excel.DisplayAlerts = False
+    destino = Path(destino)
 
-    try:
-        wb = excel.Workbooks.Open(str(destino))
-        ws = wb.Worksheets("Plan1")
+    wb = load_workbook(destino, keep_vba=True)
+    ws = wb["Plan1"]
 
-        linha_inicial = 2
+    linha_inicial = 2
 
-        for posicao, (_, row) in enumerate(df.iterrows()):
-            linha_excel = linha_inicial + posicao
+    for posicao, (_, row) in enumerate(df.iterrows()):
+        linha_excel = linha_inicial + posicao
 
-            # DATA -> coluna A
-            celula_data = ws.Range(f"A{linha_excel}")
-            celula_data.NumberFormat = "@"
-            celula_data.Value = row["DATA"]
+        # DATA -> coluna A
+        celula_data = ws[f"A{linha_excel}"]
+        celula_data.number_format = "@"
+        celula_data.value = str(row["DATA"])
 
-            # VALOR -> coluna D
-            valor = abs(row["VALOR"])
+        # VALOR -> coluna D
+        valor = abs(row["VALOR"])
 
-            celula_valor = ws.Range(f"D{linha_excel}")
-            celula_valor.Value = valor
+        celula_valor = ws[f"D{linha_excel}"]
+        celula_valor.value = valor
 
-            if row["TIPO"] == "D":
-                celula_valor.Font.Color = 255  # vermelho
-            else:
-                celula_valor.Font.Color = 0    # preto
+        if row["TIPO"] == "D":
+            celula_valor.font = celula_valor.font.copy(color="FF0000")  # vermelho
+        else:
+            celula_valor.font = celula_valor.font.copy(color="000000")  # preto
 
-            # DESCRIÇÃO -> coluna F
-            ws.Range(f"F{linha_excel}").Value = row["DESCRIÇÃO"]
+        # DESCRIÇÃO -> coluna F
+        ws[f"F{linha_excel}"] = row["DESCRIÇÃO"]
 
-        wb.Save()
-        wb.Close(SaveChanges=True)
-
-    finally:
-        excel.Quit()
+    wb.save(destino)
 
     print(f"Arquivo preenchido com sucesso: {destino}")
 
