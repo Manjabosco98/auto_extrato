@@ -11,6 +11,7 @@ from src.app.gdrive.settings import (
     XLS_MIME_TYPE,
     XLSX_MIME_TYPE,
     XLSM_MIME_TYPE,
+    GOOGLE_OAUTH_TOKEN_SECRET
 )
 from src.schemas import LayoutNotRecognized, dispatch
 from src.schemas.parsers.pdf_extractor import PDFExtractor
@@ -29,6 +30,7 @@ def executar_conversao():
     google_drive = GoogleDriveAuth(
         credentials_path=GOOGLE_OAUTH_CREDENTIALS,
         token_path=GOOGLE_OAUTH_TOKEN,
+        token_secret_path=GOOGLE_OAUTH_TOKEN_SECRET,
     )
 
     extratos_id = GOOGLE_DRIVE_FOLDER_ID
