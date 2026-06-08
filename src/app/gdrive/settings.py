@@ -17,6 +17,13 @@ GOOGLE_OAUTH_TOKEN = Path(
     )
 )
 
+GOOGLE_OAUTH_TOKEN_SECRET = Path(
+    os.getenv(
+        "GOOGLE_OAUTH_TOKEN_SECRET",
+        BASE_DIR / "credentials" / "token_drive.json"
+    )
+)
+
 GOOGLE_DRIVE_FOLDER_ID = os.getenv(
     "GOOGLE_DRIVE_FOLDER_ID",
     "1w3AY5xp-hHyQh263jfvhGoUdzH-0Ls0F"
