@@ -40,6 +40,20 @@ URL local completa:
 http://127.0.0.1:8000/api/conversao/executar
 ```
 
+## Exemplo de botao para chamada
+<button onclick="executarConversao()">Executar conversão</button>
+
+<script>
+async function executarConversao() {
+  const resposta = await fetch("http://127.0.0.1:8000/api/conversao/executar", {
+    method: "POST"
+  });
+
+  const dados = await resposta.json();
+  alert(dados.message);
+}
+</script>
+
 Quando a conversao e iniciada, a API responde imediatamente:
 
 ```json
