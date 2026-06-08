@@ -41,6 +41,8 @@ class Bradesco(BankHandler):
             "TRANSF PGTO PIX",
             "PAGTO ELETRON TRIBUTO",
             "PIX QR CODE DINAMICO",
+            "PIX RECEBIDO",
+            "PIX ENVIADO",
         )
 
         def eh_historico(linha):
