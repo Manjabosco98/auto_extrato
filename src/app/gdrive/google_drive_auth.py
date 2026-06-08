@@ -1,3 +1,4 @@
+import shutil
 from pathlib import Path
 from typing import Optional
 
@@ -15,10 +16,39 @@ class GoogleDriveAuth:
     FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
     PDF_MIME_TYPE = "application/pdf"
 
-    def __init__(self, credentials_path: str, token_path: str):
+    def __init__(
+        self,
+        credentials_path: str,
+        token_path: str,
+        token_secret_path: Optional[str] = None
+    ):
         self.credentials_path = Path(credentials_path)
         self.token_path = Path(token_path)
+        self.token_secret_path = Path(token_secret_path) if token_secret_path else None
+
+        self._preparar_token_gravavel()
+
         self.service = self._service()
+
+    def _preparar_token_gravavel(self):
+        """
+        No Render, /etc/secrets é somente leitura.
+        Por isso, copiamos o token original para /tmp antes de autenticar.
+        """
+
+        if self.token_path.exists():
+            return
+
+        if self.token_secret_path and self.token_secret_path.exists():
+            self.token_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(self.token_secret_path, self.token_path)
+            return
+
+        raise FileNotFoundError(
+            f"Token do Google Drive não encontrado. "
+            f"token_path={self.token_path} | "
+            f"token_secret_path={self.token_secret_path}"
+        )
 
     def _service(self):
         creds = None
