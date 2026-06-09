@@ -34,95 +34,127 @@ class Itau(BankHandler):
             " 24 horas por dia "
         ])]
 
-        rx_data = re.compile(r'\b\d{2}/\d{2}(?:/\d{2,4})?\b')
-        rx_valor = re.compile(r'(?:R\$\s*)?-?\d{1,3}(?:\.\d{3})*,\d{2}[CD]?|(?:R\$\s*)?-?\d+[CD]?\b')
-        rx_ignorar = re.compile(
+        rx_data = re.compile(r'\b\d{2}/\d{2}/\d{4}\b')
+        rx_valor = re.compile(
+            r'(?<![\d./-])-?\d{1,3}(?:\.\d{3})*,\d{2}(?![\d/])'
+        )
+        rx_cnpj_cpf = re.compile(
+            r'\b(?:\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}|\d{3}\.\d{3}\.\d{3}-\d{2})\b'
+        )
+        rx_ignorar_linha = re.compile(
             r'^(DATA\b|LANÇAMENTOS\b|RAZÃO SOCIAL\b|CNPJ/CPF\b|VALOR\b|SALDO\b|'
-            r'SALDO ANTERIOR\b|SALDO TOTAL DISPON[IÍ]VEL DIA\b|SALDO FINAL\b|'
             r'AG[ÊE]NCIA\b|CONTA\b|CPF\b|CNPJ\b|EXTRATO\b|P[ÁA]GINA\b|'
             r'BANCO\b|OUVIDORIA\b|SAC\b|CENTRAL\b|PER[IÍ]ODO\b|AVISO:)',
             re.I
         )
-
-        # Linhas sem data que podem iniciar uma nova movimentação
-        rx_inicio_sem_data = re.compile(
-            r'^(TRANSFER[ÊE]NCIA AUTOM\.?|RENDIMENTOS\b|RECEBIMENTOS\b)$',
+        rx_ignorar_movimentacao = re.compile(
+            r'\b(SALDO ANTERIOR|SALDO TOTAL DISPON[IÍ]VEL DIA|SALDO FINAL)\b',
             re.I
         )
 
-        # Linhas sem data que normalmente complementam a movimentação anterior
-        rx_complemento = re.compile(
-            r'^(RECEBIDA\b.*|AUT MAIS|LTDA\.?|PAGAMENTO LTDA|AUTO|JUNIOR|'
-            r'DUARTE|NASCIMENTO|RODRIGUES|E COMPONENTES LTDA|BATERIAS LTDA|'
-            r'CONSULTORIA FINANCEIRA)$',
-            re.I
-        )
+        def limpar(txt):
+            return re.sub(r'\s+', ' ', str(txt)).strip()
 
-        def limpar(txt: str) -> str:
-            return re.sub(r'\s+', ' ', txt).strip()
 
-        def tem_valor(bloco: list[str]) -> bool:
-            return bool(rx_valor.search(' '.join(bloco)))
+        def tem_valor(bloco):
+            texto = limpar(" ".join(bloco))
+            return bool(rx_valor.search(texto))
 
-        def montar(bloco: list[str]) -> str:
-            texto = limpar(' '.join(bloco))
-            data = rx_data.search(texto).group(0)
+
+        def montar(bloco):
+            texto = limpar(" ".join(bloco))
+
+            m_data = rx_data.search(texto)
+            if not m_data:
+                return None
+
+            data = m_data.group(0)
+
             valores = list(rx_valor.finditer(texto))
-            valor = valores[-1].group(0)
+            if not valores:
+                return None
 
-            texto = texto[:valores[-1].start()] + ' ' + texto[valores[-1].end():]
-            texto = rx_data.sub(' ', texto, count=1)
+            # Pega sempre o último valor como valor da movimentação
+            m_valor = valores[-1]
+            valor = m_valor.group(0)
 
-            descricao = limpar(texto).strip(' -')
-            return limpar(f'{data} {descricao} {valor}')
+            antes_data = texto[:m_data.start()].strip()
+            depois_data = texto[m_data.end():].strip()
+
+            # Remove o valor final do texto
+            if m_valor.start() >= m_data.end():
+                depois_data = (
+                    texto[m_data.end():m_valor.start()] + " " + texto[m_valor.end():]
+                ).strip()
+                descricao = limpar(f"{depois_data} {antes_data}")
+            else:
+                descricao = limpar(f"{depois_data} {antes_data}")
+
+            descricao = descricao.strip(" -")
+
+            if rx_ignorar_movimentacao.search(descricao):
+                return None
+
+            return limpar(f"{data} {descricao} {valor}")
+
 
         resultado = []
         atual = []
         prefixo = []
 
         for linha in pdf:
-            linha = limpar(str(linha))
+            linha = limpar(linha)
+
             if not linha:
                 continue
 
-            if rx_ignorar.search(linha):
+            if rx_ignorar_linha.search(linha):
                 if atual and tem_valor(atual):
-                    resultado.append(montar(atual))
-                atual, prefixo = [], []
+                    mov = montar(atual)
+                    if mov:
+                        resultado.append(mov)
+
+                atual = []
+                prefixo = []
                 continue
 
             tem_data = bool(rx_data.search(linha))
 
+            # Caso 1: linha com data inicia nova movimentação
             if tem_data:
                 if atual and tem_valor(atual):
-                    resultado.append(montar(atual))
-                    atual = []
+                    mov = montar(atual)
+                    if mov:
+                        resultado.append(mov)
 
                 atual = prefixo + [linha]
                 prefixo = []
                 continue
 
-            # Linha sem data
+            # Caso 2: linha sem data
             if atual and tem_valor(atual):
-                if rx_inicio_sem_data.search(linha):
-                    # Não gruda na anterior; é início da próxima movimentação
-                    resultado.append(montar(atual))
-                    atual = []
-                    prefixo = [linha]
-                elif rx_complemento.search(linha):
-                    atual.append(linha)
-                else:
-                    # Por segurança: se não for início claro, mantém como complemento
-                    atual.append(linha)
+                # PONTO PRINCIPAL:
+                # Se a movimentação atual já tem valor, ela está fechada.
+                # Esta linha sem data provavelmente é continuação visual da próxima movimentação.
+                mov = montar(atual)
+                if mov:
+                    resultado.append(mov)
 
-            elif atual:
+                atual = []
+                prefixo = [linha]
+                continue
+
+            if atual:
+                # Ainda não encontrou valor, então é complemento da movimentação atual
                 atual.append(linha)
-
             else:
+                # Linha solta antes da próxima data
                 prefixo.append(linha)
 
         if atual and tem_valor(atual):
-            resultado.append(montar(atual))
+            mov = montar(atual)
+            if mov:
+                resultado.append(mov)
 
         padrao = r"^(?P<data>\d{2}/\d{2}/\d{4})\s+(?P<descricao>.*)\s+(?P<valor>-?\d{1,3}(?:\.\d{3})*,\d{2}|-?\d+)$"
 
