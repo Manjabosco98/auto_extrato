@@ -27,146 +27,129 @@ class Itau(BankHandler):
     def layout2(self, pdf):
         pdf = pdf[5:]
         pdf = [item for item in pdf if not any(texto in item for texto in [
-                    "aviso: ",
-                    "novos lançamentos",
-                    "atualizado em ",
-                    "Em caso de dúvidas, ",
-                    " 24 horas por dia "
-                ])]
+            "aviso: ",
+            "novos lançamentos",
+            "atualizado em ",
+            "Em caso de dúvidas, ",
+            " 24 horas por dia "
+        ])]
 
         rx_data = re.compile(r'\b\d{2}/\d{2}(?:/\d{2,4})?\b')
         rx_valor = re.compile(r'(?:R\$\s*)?-?\d{1,3}(?:\.\d{3})*,\d{2}[CD]?|(?:R\$\s*)?-?\d+[CD]?\b')
         rx_ignorar = re.compile(
             r'^(DATA\b|LANÇAMENTOS\b|RAZÃO SOCIAL\b|CNPJ/CPF\b|VALOR\b|SALDO\b|'
             r'SALDO ANTERIOR\b|SALDO TOTAL DISPON[IÍ]VEL DIA\b|SALDO FINAL\b|'
-            r'SALDO DO DIA\b|AG[ÊE]NCIA\b|CONTA\b|CPF\b|CNPJ\b|EXTRATO\b|'
-            r'P[ÁA]GINA\b|BANCO\b|OUVIDORIA\b|SAC\b|CENTRAL\b|PER[IÍ]ODO\b|AVISO:)',
+            r'AG[ÊE]NCIA\b|CONTA\b|CPF\b|CNPJ\b|EXTRATO\b|P[ÁA]GINA\b|'
+            r'BANCO\b|OUVIDORIA\b|SAC\b|CENTRAL\b|PER[IÍ]ODO\b|AVISO:)',
             re.I
         )
-        rx_inicio_lanc = re.compile(
-            r'\b(PIX|PAGAMENTOS|BOLETO|BOLETOS|TAR/|TAR\b|JUROS|IOF|DEP\b|'
-            r'DESC\b|EST\b|TIT\b|FIN\b|JR\b|DA\b|DEB\b|BUSINESS\b|'
-            r'RENDIMENTOS|RECEBIMENTOS|TRANSFER[ÊE]NCIA|RENEGOCIACAO)\b',
+
+        # Linhas sem data que podem iniciar uma nova movimentação
+        rx_inicio_sem_data = re.compile(
+            r'^(TRANSFER[ÊE]NCIA AUTOM\.?|RENDIMENTOS\b|RECEBIMENTOS\b)$',
             re.I
         )
-        rx_pede_prefixo = re.compile(
-            r'\b(PIX RECEBIDO|PIX ENVIADO|PAGAMENTOS PIX QR-CODE|'
-            r'PAGAMENTOS TRANSF CC ITAU|BOLETO PAGO)\b',
+
+        # Linhas sem data que normalmente complementam a movimentação anterior
+        rx_complemento = re.compile(
+            r'^(RECEBIDA\b.*|AUT MAIS|LTDA\.?|PAGAMENTO LTDA|AUTO|JUNIOR|'
+            r'DUARTE|NASCIMENTO|RODRIGUES|E COMPONENTES LTDA|BATERIAS LTDA|'
+            r'CONSULTORIA FINANCEIRA)$',
             re.I
         )
 
         def limpar(txt: str) -> str:
             return re.sub(r'\s+', ' ', txt).strip()
 
-        def fechar(bloco: list[str]) -> str:
+        def tem_valor(bloco: list[str]) -> bool:
+            return bool(rx_valor.search(' '.join(bloco)))
+
+        def montar(bloco: list[str]) -> str:
             texto = limpar(' '.join(bloco))
             data = rx_data.search(texto).group(0)
             valores = list(rx_valor.finditer(texto))
             valor = valores[-1].group(0)
 
-            ini, fim = valores[-1].span()
-            texto_sem_data = rx_data.sub(' ', texto, count=1)
-            # remove só a última ocorrência exata do valor
-            pos = texto_sem_data.rfind(valor)
-            if pos >= 0:
-                texto_sem_data = texto_sem_data[:pos] + ' ' + texto_sem_data[pos + len(valor):]
+            texto = texto[:valores[-1].start()] + ' ' + texto[valores[-1].end():]
+            texto = rx_data.sub(' ', texto, count=1)
 
-            desc = limpar(texto_sem_data).strip(' -')
-            return limpar(f'{data} {desc} {valor}')
+            descricao = limpar(texto).strip(' -')
+            return limpar(f'{data} {descricao} {valor}')
 
-        def vai_para_proxima(buffer: list[str], proxima_linha: str, bloco_atual: list[str]) -> bool:
-            texto_buffer = limpar(' '.join(buffer))
-            texto_atual = limpar(' '.join(bloco_atual))
-            prox = limpar(proxima_linha)
-
-            # Se a próxima linha é lançamento que costuma ter razão social quebrada,
-            # o buffer provavelmente é prefixo da próxima movimentação.
-            if rx_pede_prefixo.search(prox):
-                if not re.search(r'\b(RECEBIDA|RECEBIDO|LTDA\.?|AUT MAIS|PAGAMENTO LTDA|JUNIOR|AUTO)\b$', texto_buffer, re.I):
-                    return True
-
-            # Se o bloco atual ainda parece incompleto, o buffer fica nele.
-            if rx_pede_prefixo.search(texto_atual) and re.search(r'\b(LTDA\.?|SANTOS|SILVA|OLIVEIRA|JUNIOR|AUTO|AUT MAIS|RECEBIDA)\b', texto_buffer, re.I):
-                return False
-
-            # Linhas curtas depois de um lançamento normalmente são complemento dele.
-            if len(texto_buffer.split()) <= 4:
-                return False
-
-            return False
-
-        saida = []
+        resultado = []
         atual = []
-        buffer = []
+        prefixo = []
 
-        for original in pdf:
-            linha = limpar(str(original))
+        for linha in pdf:
+            linha = limpar(str(linha))
             if not linha:
                 continue
 
             if rx_ignorar.search(linha):
-                if atual:
-                    if buffer:
-                        atual.extend(buffer)
-                        buffer = []
-                    if rx_data.search(' '.join(atual)) and rx_valor.search(' '.join(atual)):
-                        saida.append(fechar(atual))
-                    atual = []
-                buffer = []
+                if atual and tem_valor(atual):
+                    resultado.append(montar(atual))
+                atual, prefixo = [], []
                 continue
 
             tem_data = bool(rx_data.search(linha))
 
             if tem_data:
-                if atual:
-                    if buffer:
-                        if vai_para_proxima(buffer, linha, atual):
-                            if rx_data.search(' '.join(atual)) and rx_valor.search(' '.join(atual)):
-                                saida.append(fechar(atual))
-                            atual = buffer + [linha]
-                        else:
-                            atual.extend(buffer)
-                            if rx_data.search(' '.join(atual)) and rx_valor.search(' '.join(atual)):
-                                saida.append(fechar(atual))
-                            atual = [linha]
-                        buffer = []
-                    else:
-                        if rx_data.search(' '.join(atual)) and rx_valor.search(' '.join(atual)):
-                            saida.append(fechar(atual))
-                        atual = [linha]
+                if atual and tem_valor(atual):
+                    resultado.append(montar(atual))
+                    atual = []
+
+                atual = prefixo + [linha]
+                prefixo = []
+                continue
+
+            # Linha sem data
+            if atual and tem_valor(atual):
+                if rx_inicio_sem_data.search(linha):
+                    # Não gruda na anterior; é início da próxima movimentação
+                    resultado.append(montar(atual))
+                    atual = []
+                    prefixo = [linha]
+                elif rx_complemento.search(linha):
+                    atual.append(linha)
                 else:
-                    atual = buffer + [linha]
-                    buffer = []
+                    # Por segurança: se não for início claro, mantém como complemento
+                    atual.append(linha)
+
+            elif atual:
+                atual.append(linha)
+
             else:
-                if atual:
-                    buffer.append(linha)
-                else:
-                    buffer.append(linha)
+                prefixo.append(linha)
 
-        if atual:
-            if buffer:
-                atual.extend(buffer)
-            if rx_data.search(' '.join(atual)) and rx_valor.search(' '.join(atual)):
-                saida.append(fechar(atual))
+        if atual and tem_valor(atual):
+            resultado.append(montar(atual))
 
-        padrao = r"^(\d{2}/\d{2}/\d{4})\s+(.+?)\s+(-?\d{1,3}(?:\.\d{3})*,\d{2})$"
+        padrao = r"^(?P<data>\d{2}/\d{2}/\d{4})\s+(?P<descricao>.*)\s+(?P<valor>-?\d{1,3}(?:\.\d{3})*,\d{2}|-?\d+)$"
 
         dados = []
 
-        for linha in saida:
-            match = re.match(padrao, linha)
+        for item in resultado:
+            item = item.strip()
+
+            match = re.match(padrao, item)
 
             if match:
-                data = match.group(1)
-                descricao = match.group(2)
-                valor = match.group(3)
+                data = match.group("data").strip()
+                descricao = match.group("descricao").strip()
+                valor = match.group("valor").strip()
+
+                tipo = "D" if valor.startswith("-") else "C"
 
                 dados.append({
                     "DATA": data,
                     "DESCRIÇÃO": descricao,
-                    "VALOR": valor
+                    "VALOR": valor,
+                    "TIPO": tipo
                 })
-        df = pd.json_normalize(dados)
+            else:
+                print("NÃO CAPTUROU:", item)
+
+        df = pd.DataFrame(dados)
         df["VALOR"] = (
             df["VALOR"]
             .str.strip()
