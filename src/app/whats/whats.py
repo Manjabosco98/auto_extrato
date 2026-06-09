@@ -115,6 +115,46 @@ class WhatsAppChat:
 
         return None
 
+    def mensagens(self, remote_jid: str, limit: int = 50) -> dict[str, Any]:
+        payload = {
+            "where": {
+                "key": {
+                    "remoteJid": remote_jid,
+                }
+            },
+            "limit": limit,
+        }
+
+        return self._post(
+            f"/chat/findMessages/{self.instance_name}",
+            payload,
+            timeout=60,
+        )
+
+    def pdf_messages(self, remote_jid: str, limit: int = 50) -> list[dict[str, Any]]:
+        response = self.mensagens(remote_jid=remote_jid, limit=limit)
+        records = response.get("messages", {}).get("records", [])
+        pdfs = []
+
+        for message in records:
+            if self.is_pdf_message(message):
+                pdfs.append(message)
+
+        return pdfs
+
+    def is_pdf_message(self, message: dict[str, Any]) -> bool:
+        if message.get("messageType") != "documentMessage":
+            return False
+
+        document = message.get("message", {}).get("documentMessage", {})
+        return document.get("mimetype") == self.PDF_MIME_TYPE
+
+    def pdf_file_name(self, message: dict[str, Any]) -> str:
+        key = message.get("key", {})
+        document = message.get("message", {}).get("documentMessage", {})
+        message_id = key.get("id") or "arquivo"
+        return document.get("fileName") or f"{message_id}.pdf"
+
     def download_pdf(self, message: dict[str, Any], file_name: str) -> Path:
         media_response = self._post(
             f"/chat/getBase64FromMediaMessage/{self.instance_name}",

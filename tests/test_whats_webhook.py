@@ -49,15 +49,31 @@ class FakeWhatsApp:
     instance_name = "ExtractPDFs"
     group_name = "ROBO EXTRATO"
 
-    def __init__(self, processed=False, group_jid=GROUP_JID):
+    def __init__(self, processed=False, group_jid=GROUP_JID, pending_messages=None):
         self.processed = processed
         self.group_jid = group_jid
+        self.pending_messages = pending_messages or []
+        self.processed_ids = set()
 
     def is_processed(self, message_id):
-        return self.processed
+        return self.processed or message_id in self.processed_ids
 
     def find_group_name(self):
         return self.group_jid
+
+    def is_pdf_message(self, message):
+        document = message.get("message", {}).get("documentMessage", {})
+        return (
+            message.get("messageType") == "documentMessage"
+            and document.get("mimetype") == "application/pdf"
+        )
+
+    def pdf_file_name(self, message):
+        document = message.get("message", {}).get("documentMessage", {})
+        return document.get("fileName") or f"{message['key']['id']}.pdf"
+
+    def pdf_messages(self, remote_jid, limit=50):
+        return self.pending_messages
 
 
 class WhatsWebhookFilterTest(unittest.TestCase):
@@ -153,12 +169,53 @@ class WhatsWebhookServiceTest(unittest.TestCase):
             result = whats_service.processar_webhook_whats(payload)
 
         self.assertEqual(result["status"], "processed")
-        self.assertEqual(result["google_drive_file_id"], "drive-file-id")
+        self.assertEqual(result["total_baixados"], 1)
+        self.assertEqual(result["arquivos"][0]["google_drive_file_id"], "drive-file-id")
         self.assertEqual(calls["processed"][0], "MSG123")
         self.assertEqual(calls["processed"][1]["status"], "enviado_drive")
         drive.upload.assert_called_once()
         executar_conversao.assert_called_once()
         self.assertFalse(downloaded_path.exists())
+
+    def test_baixa_pdfs_pendentes_e_chama_conversao_uma_vez(self):
+        payload = make_payload(message_id="MSG123")
+        pending_payload = make_payload(message_id="MSG456")
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        processed = []
+
+        fake_whatsapp = FakeWhatsApp(pending_messages=[pending_payload["data"]])
+
+        def download_pdf(message, file_name):
+            path = Path(temp_dir.name) / file_name
+            path.write_bytes(b"%PDF-1.4")
+            return path
+
+        def mark_processed(message_id, data):
+            fake_whatsapp.processed_ids.add(message_id)
+            processed.append((message_id, data))
+
+        fake_whatsapp.download_pdf = download_pdf
+        fake_whatsapp.mark_processed = mark_processed
+
+        drive = Mock()
+        drive.upload.side_effect = [
+            {"id": "drive-file-id-1"},
+            {"id": "drive-file-id-2"},
+        ]
+
+        with (
+            patch.object(whats_service, "WhatsAppChat", return_value=fake_whatsapp),
+            patch.object(whats_service, "GoogleDriveAuth", return_value=drive),
+            patch.object(whats_service, "executar_conversao") as executar_conversao,
+        ):
+            result = whats_service.processar_webhook_whats(payload)
+
+        self.assertEqual(result["status"], "processed")
+        self.assertEqual(result["total_baixados"], 2)
+        self.assertEqual([item[0] for item in processed], ["MSG123", "MSG456"])
+        self.assertEqual(drive.upload.call_count, 2)
+        executar_conversao.assert_called_once()
 
     def test_mark_processed_salva_controle_json(self):
         with tempfile.TemporaryDirectory() as temp_dir:

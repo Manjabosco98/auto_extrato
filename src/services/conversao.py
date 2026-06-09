@@ -2,6 +2,8 @@ import logging
 import shutil
 from pathlib import Path
 
+from pypdf import PdfReader
+
 from src.app.gdrive.google_drive_auth import GoogleDriveAuth
 from src.app.gdrive.settings import (
     GOOGLE_DRIVE_FOLDER_ID,
@@ -20,6 +22,15 @@ from src.utils.logging_config import setup_logging
 
 
 logger = logging.getLogger(__name__)
+
+
+def pdf_possui_senha(pdf_path: Path) -> bool:
+    try:
+        reader = PdfReader(str(pdf_path))
+        return bool(reader.is_encrypted)
+    except Exception:
+        logger.exception("Erro ao verificar se PDF possui senha: %s", pdf_path)
+        return False
 
 
 def executar_conversao():
@@ -51,8 +62,15 @@ def executar_conversao():
         name_folder="00_CONVERTIDOS",
     )
 
+    logger.info("Criando ou recuperando pasta de PDFs com senha no Google Drive")
+    pasta_pdfs_com_senhas = google_drive.get_or_create_folder(
+        folder_id_pai=extratos_id,
+        name_folder="PDFS_COM_SENHAS",
+    )
+
     invalidos_id = pasta_invalidos["id"]
     convertidos_id = pasta_convertidos["id"]
+    pdfs_com_senhas_id = pasta_pdfs_com_senhas["id"]
 
     logger.info("Listando PDFs da pasta do Google Drive")
     arquivos = google_drive.pdfs(
@@ -68,6 +86,7 @@ def executar_conversao():
     convertidos = 0
     invalidos = 0
     ignorados = 0
+    com_senha = 0
 
     for arquivo_drive in arquivos:
         arquivo_id = arquivo_drive["id"]
@@ -92,6 +111,18 @@ def executar_conversao():
                 file_id=arquivo_id,
                 destino_local=pdf_local,
             )
+
+            if pdf_possui_senha(pdf_local):
+                logger.warning(
+                    "PDF protegido por senha. Movendo para PDFS_COM_SENHAS: %s",
+                    arquivo_nome,
+                )
+                google_drive.move_file(
+                    file_id=arquivo_id,
+                    folder_id_destino=pdfs_com_senhas_id,
+                )
+                com_senha += 1
+                continue
 
             logger.info("Extraindo conteudo do PDF: %s", arquivo_nome)
             pdf = PDFExtractor(pdf_local).extract()
@@ -184,11 +215,15 @@ def executar_conversao():
             logger.info("Arquivos temporarios limpos para: %s", arquivo_nome)
 
     logger.info(
-        "Fluxo de conversao concluido. Processados=%s Convertidos=%s Invalidos=%s Ignorados=%s",
+        (
+            "Fluxo de conversao concluido. "
+            "Processados=%s Convertidos=%s Invalidos=%s Ignorados=%s ComSenha=%s"
+        ),
         processados,
         convertidos,
         invalidos,
         ignorados,
+        com_senha,
     )
 
 
