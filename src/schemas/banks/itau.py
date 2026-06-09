@@ -34,154 +34,113 @@ class Itau(BankHandler):
             " 24 horas por dia "
         ])]
 
-        rx_data = re.compile(r'\b\d{2}/\d{2}/\d{4}\b')
-        rx_valor = re.compile(
-            r'(?<![\d./-])-?\d{1,3}(?:\.\d{3})*,\d{2}(?![\d/])'
-        )
-        rx_cnpj_cpf = re.compile(
-            r'\b(?:\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}|\d{3}\.\d{3}\.\d{3}-\d{2})\b'
-        )
-        rx_ignorar_linha = re.compile(
-            r'^(DATA\b|LANÇAMENTOS\b|RAZÃO SOCIAL\b|CNPJ/CPF\b|VALOR\b|SALDO\b|'
-            r'AG[ÊE]NCIA\b|CONTA\b|CPF\b|CNPJ\b|EXTRATO\b|P[ÁA]GINA\b|'
-            r'BANCO\b|OUVIDORIA\b|SAC\b|CENTRAL\b|PER[IÍ]ODO\b|AVISO:)',
-            re.I
-        )
-        rx_ignorar_movimentacao = re.compile(
-            r'\b(SALDO ANTERIOR|SALDO TOTAL DISPON[IÍ]VEL DIA|SALDO FINAL)\b',
-            re.I
+        padrao_linha_principal = re.compile(
+            r"^\s*"
+            r"(?P<data>\d{2}/\d{2}/\d{4})"
+            r"\s+"
+            r"(?P<descricao>.*?)"
+            r"\s*"
+            r"(?P<valor>-?\d{1,3}(?:\.\d{3})*,\d{2})"
+            r"\s*$"
         )
 
-        def limpar(txt):
-            return re.sub(r'\s+', ' ', str(txt)).strip()
+        padrao_documento = re.compile(
+            r"(?P<documento>(?:\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2})|(?:\d{3}\.\d{3}\.\d{3}-\d{2}))"
+        )
 
+        movimentacoes = []
 
-        def tem_valor(bloco):
-            texto = limpar(" ".join(bloco))
-            return bool(rx_valor.search(texto))
-
-
-        def montar(bloco):
-            texto = limpar(" ".join(bloco))
-
-            m_data = rx_data.search(texto)
-            if not m_data:
-                return None
-
-            data = m_data.group(0)
-
-            valores = list(rx_valor.finditer(texto))
-            if not valores:
-                return None
-
-            # Pega sempre o último valor como valor da movimentação
-            m_valor = valores[-1]
-            valor = m_valor.group(0)
-
-            antes_data = texto[:m_data.start()].strip()
-            depois_data = texto[m_data.end():].strip()
-
-            # Remove o valor final do texto
-            if m_valor.start() >= m_data.end():
-                depois_data = (
-                    texto[m_data.end():m_valor.start()] + " " + texto[m_valor.end():]
-                ).strip()
-                descricao = limpar(f"{depois_data} {antes_data}")
-            else:
-                descricao = limpar(f"{depois_data} {antes_data}")
-
-            descricao = descricao.strip(" -")
-
-            if rx_ignorar_movimentacao.search(descricao):
-                return None
-
-            return limpar(f"{data} {descricao} {valor}")
-
-
-        resultado = []
-        atual = []
-        prefixo = []
+        linhas_antes = []
+        mov_atual = None
 
         for linha in pdf:
-            linha = limpar(linha)
+            linha = str(linha).strip()
 
             if not linha:
                 continue
 
-            if rx_ignorar_linha.search(linha):
-                if atual and tem_valor(atual):
-                    mov = montar(atual)
-                    if mov:
-                        resultado.append(mov)
-
-                atual = []
-                prefixo = []
-                continue
-
-            tem_data = bool(rx_data.search(linha))
-
-            # Caso 1: linha com data inicia nova movimentação
-            if tem_data:
-                if atual and tem_valor(atual):
-                    mov = montar(atual)
-                    if mov:
-                        resultado.append(mov)
-
-                atual = prefixo + [linha]
-                prefixo = []
-                continue
-
-            # Caso 2: linha sem data
-            if atual and tem_valor(atual):
-                # PONTO PRINCIPAL:
-                # Se a movimentação atual já tem valor, ela está fechada.
-                # Esta linha sem data provavelmente é continuação visual da próxima movimentação.
-                mov = montar(atual)
-                if mov:
-                    resultado.append(mov)
-
-                atual = []
-                prefixo = [linha]
-                continue
-
-            if atual:
-                # Ainda não encontrou valor, então é complemento da movimentação atual
-                atual.append(linha)
-            else:
-                # Linha solta antes da próxima data
-                prefixo.append(linha)
-
-        if atual and tem_valor(atual):
-            mov = montar(atual)
-            if mov:
-                resultado.append(mov)
-
-        padrao = r"^(?P<data>\d{2}/\d{2}/\d{4})\s+(?P<descricao>.*)\s+(?P<valor>-?\d{1,3}(?:\.\d{3})*,\d{2}|-?\d+)$"
-
-        dados = []
-
-        for item in resultado:
-            item = item.strip()
-
-            match = re.match(padrao, item)
+            match = padrao_linha_principal.match(linha)
 
             if match:
-                data = match.group("data").strip()
-                descricao = match.group("descricao").strip()
+                # Finaliza movimentação anterior
+                if mov_atual:
+                    movimentacoes.append(mov_atual)
+
+                data = match.group("data")
+                descricao_base = match.group("descricao").strip()
                 valor = match.group("valor").strip()
 
-                tipo = "D" if valor.startswith("-") else "C"
-
-                dados.append({
+                mov_atual = {
                     "DATA": data,
-                    "DESCRIÇÃO": descricao,
-                    "VALOR": valor,
-                    "TIPO": tipo
-                })
-            else:
-                print("NÃO CAPTUROU:", item)
+                    "DESCRICAO_BASE": descricao_base,
+                    "LINHAS_ANTES": linhas_antes.copy(),
+                    "LINHAS_DEPOIS": [],
+                    "VALOR": valor
+                }
 
-        df = pd.DataFrame(dados)
+                linhas_antes = []
+
+            else:
+                if mov_atual is None:
+                    # Linha sem data antes da primeira movimentação
+                    linhas_antes.append(linha)
+                else:
+                    # Linha sem data depois da linha principal
+                    mov_atual["LINHAS_DEPOIS"].append(linha)
+
+        # Finaliza última movimentação
+        if mov_atual:
+            movimentacoes.append(mov_atual)
+
+        dados_normalizados = []
+
+        for mov in movimentacoes:
+            data = mov["DATA"]
+            descricao_base = mov["DESCRICAO_BASE"]
+            linhas_antes = mov["LINHAS_ANTES"]
+            linhas_depois = mov["LINHAS_DEPOIS"]
+            valor = mov["VALOR"]
+
+            partes_quebradas = " ".join(linhas_antes + linhas_depois).strip()
+
+            match_doc = padrao_documento.search(descricao_base)
+
+            if match_doc:
+                inicio_doc = match_doc.start()
+
+                descricao_antes_doc = descricao_base[:inicio_doc].strip()
+                descricao_doc_em_diante = descricao_base[inicio_doc:].strip()
+
+                descricao_final = " ".join(
+                    parte for parte in [
+                        descricao_antes_doc,
+                        partes_quebradas,
+                        descricao_doc_em_diante
+                    ]
+                    if parte
+                )
+
+            else:
+                descricao_final = " ".join(
+                    parte for parte in [
+                        descricao_base,
+                        partes_quebradas
+                    ]
+                    if parte
+                )
+
+            descricao_final = re.sub(r"\s+", " ", descricao_final).strip()
+
+            tipo = "D" if valor.startswith("-") else "C"
+
+            dados_normalizados.append({
+                "DATA": data,
+                "DESCRIÇÃO": descricao_final,
+                "VALOR": valor,
+                "TIPO": tipo
+            })
+
+        df = pd.DataFrame(dados_normalizados)
         df["VALOR"] = (
             df["VALOR"]
             .str.strip()
@@ -192,6 +151,7 @@ class Itau(BankHandler):
         df["TIPO"] = df.apply(lambda row: "C" if row["VALOR"] > 0 else "D", axis=1)
         df["DESCRIÇÃO"] = df["DESCRIÇÃO"].str.upper()
         df = df[~df["DESCRIÇÃO"].astype(str).str.upper().str.contains("SALDO", na=False)]
+        df["VALOR"] = df["VALOR"].abs()
         return df
     
     @layout("extrato mensal ")
