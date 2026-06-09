@@ -212,7 +212,8 @@ class GoogleDriveAuth:
         caminho_local,
         folder_id_destino: str,
         type_file: str,
-        name_drive: Optional[str] = None
+        name_drive: Optional[str] = None,
+        app_properties: Optional[dict[str, str]] = None
     ):
         caminho = Path(caminho_local)
 
@@ -226,6 +227,9 @@ class GoogleDriveAuth:
             "parents": [folder_id_destino]
         }
 
+        if app_properties:
+            metadata["appProperties"] = app_properties
+
         media = MediaFileUpload(
             filename=str(caminho),
             mimetype=type_file,
@@ -235,9 +239,36 @@ class GoogleDriveAuth:
         return self.service.files().create(
             body=metadata,
             media_body=media,
-            fields="id, name, mimeType, size, modifiedTime, parents",
+            fields="id, name, mimeType, size, modifiedTime, parents, appProperties",
             supportsAllDrives=True
         ).execute()
+
+    def find_by_app_property(
+        self,
+        key: str,
+        value: str,
+        folder_id: Optional[str] = None
+    ):
+        key = key.replace("'", "\\'")
+        value = value.replace("'", "\\'")
+        query_parts = [
+            f"appProperties has {{ key='{key}' and value='{value}' }}",
+            "trashed = false",
+        ]
+
+        if folder_id:
+            query_parts.insert(0, f"'{folder_id}' in parents")
+
+        response = self.service.files().list(
+            q=" and ".join(query_parts),
+            spaces="drive",
+            fields="files(id, name, mimeType, parents, appProperties)",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True
+        ).execute()
+
+        arquivos = response.get("files", [])
+        return arquivos[0] if arquivos else None
 
     def move_file(self, file_id: str, folder_id_destino: str):
         arquivo = self.service.files().get(

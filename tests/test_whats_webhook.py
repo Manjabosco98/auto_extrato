@@ -54,6 +54,7 @@ class FakeWhatsApp:
         self.group_jid = group_jid
         self.pending_messages = pending_messages or []
         self.processed_ids = set()
+        self.pdf_messages_called = False
 
     def is_processed(self, message_id):
         return self.processed or message_id in self.processed_ids
@@ -73,6 +74,7 @@ class FakeWhatsApp:
         return document.get("fileName") or f"{message['key']['id']}.pdf"
 
     def pdf_messages(self, remote_jid, limit=50):
+        self.pdf_messages_called = True
         return self.pending_messages
 
 
@@ -135,7 +137,7 @@ class WhatsWebhookFilterTest(unittest.TestCase):
 
         self.assertFalse(should_process)
         self.assertEqual(reason, "PDF ja processado")
-        self.assertEqual(message["key"]["id"], "MSG123")
+        self.assertIsNone(message)
 
 
 class WhatsWebhookServiceTest(unittest.TestCase):
@@ -159,6 +161,7 @@ class WhatsWebhookServiceTest(unittest.TestCase):
         fake_whatsapp.mark_processed = mark_processed
 
         drive = Mock()
+        drive.find_by_app_property.return_value = None
         drive.upload.return_value = {"id": "drive-file-id"}
 
         with (
@@ -176,15 +179,21 @@ class WhatsWebhookServiceTest(unittest.TestCase):
         drive.upload.assert_called_once()
         executar_conversao.assert_called_once()
         self.assertFalse(downloaded_path.exists())
+        self.assertFalse(fake_whatsapp.pdf_messages_called)
 
-    def test_baixa_pdfs_pendentes_e_chama_conversao_uma_vez(self):
+    def test_baixa_pdfs_do_payload_e_chama_conversao_uma_vez(self):
         payload = make_payload(message_id="MSG123")
-        pending_payload = make_payload(message_id="MSG456")
+        payload["data"] = {
+            "messages": [
+                make_payload(message_id="MSG123")["data"],
+                make_payload(message_id="MSG456")["data"],
+            ]
+        }
         temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(temp_dir.cleanup)
         processed = []
 
-        fake_whatsapp = FakeWhatsApp(pending_messages=[pending_payload["data"]])
+        fake_whatsapp = FakeWhatsApp()
 
         def download_pdf(message, file_name):
             path = Path(temp_dir.name) / file_name
@@ -199,6 +208,7 @@ class WhatsWebhookServiceTest(unittest.TestCase):
         fake_whatsapp.mark_processed = mark_processed
 
         drive = Mock()
+        drive.find_by_app_property.return_value = None
         drive.upload.side_effect = [
             {"id": "drive-file-id-1"},
             {"id": "drive-file-id-2"},
@@ -216,6 +226,34 @@ class WhatsWebhookServiceTest(unittest.TestCase):
         self.assertEqual([item[0] for item in processed], ["MSG123", "MSG456"])
         self.assertEqual(drive.upload.call_count, 2)
         executar_conversao.assert_called_once()
+        self.assertFalse(fake_whatsapp.pdf_messages_called)
+
+    def test_pdf_ja_existente_no_drive_nao_chama_conversao(self):
+        payload = make_payload(message_id="MSG123")
+        fake_whatsapp = FakeWhatsApp()
+        fake_whatsapp.download_pdf = Mock()
+        fake_whatsapp.mark_processed = Mock()
+
+        drive = Mock()
+        drive.find_by_app_property.return_value = {
+            "id": "drive-file-id",
+            "name": "0126_EXTBAN ASAAS_HABITAR.pdf",
+        }
+
+        with (
+            patch.object(whats_service, "WhatsAppChat", return_value=fake_whatsapp),
+            patch.object(whats_service, "GoogleDriveAuth", return_value=drive),
+            patch.object(whats_service, "executar_conversao") as executar_conversao,
+        ):
+            result = whats_service.processar_webhook_whats(payload)
+
+        self.assertEqual(result["status"], "ignored")
+        self.assertEqual(result["total_baixados"], 0)
+        drive.upload.assert_not_called()
+        fake_whatsapp.download_pdf.assert_not_called()
+        fake_whatsapp.mark_processed.assert_called_once()
+        executar_conversao.assert_not_called()
+        self.assertFalse(fake_whatsapp.pdf_messages_called)
 
     def test_mark_processed_salva_controle_json(self):
         with tempfile.TemporaryDirectory() as temp_dir:

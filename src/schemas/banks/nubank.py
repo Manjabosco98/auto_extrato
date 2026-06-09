@@ -72,10 +72,10 @@ class Nubank(BankHandler):
             return texto.strip()
 
         def tipo_pela_descricao(descricao: str, tipo_bloco: str) -> str:
-            if re.search(r"^(?:Transferência Recebida|Crédito em conta)\b", descricao, re.I):
+            if re.search(r"^(?:Transferência Recebida|Transferência recebida pelo pix|Crédito em conta)\b", descricao, re.I):
                 return "entrada"
 
-            if re.search(r"^(?:Transferência enviada pelo Pix|Pagamento de boleto efetuado)\b", descricao, re.I):
+            if re.search(r"^(?:Transferência enviada pelo Pix|Transferência recebida pelo pix|Pagamento de boleto efetuado)\b", descricao, re.I):
                 return "saida"
 
             return tipo_bloco

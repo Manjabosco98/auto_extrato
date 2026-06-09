@@ -23,23 +23,27 @@ from src.utils.logging_config import setup_logging
 
 logger = logging.getLogger(__name__)
 _whats_batch_lock = Lock()
-_BATCH_MESSAGES_LIMIT = 50
 
 
 def _normalize_event(event: str | None) -> str:
     return (event or "").replace("_", ".").lower()
 
 
-def _payload_message(payload: dict[str, Any]) -> dict[str, Any]:
+def _payload_messages(payload: dict[str, Any]) -> list[dict[str, Any]]:
     data = payload.get("data", {})
 
-    if isinstance(data, dict):
-        messages = data.get("messages")
-        if isinstance(messages, list) and messages:
-            return messages[0]
-        return data
+    if not isinstance(data, dict):
+        return []
 
-    return {}
+    messages = data.get("messages")
+    if isinstance(messages, list):
+        return [
+            message
+            for message in messages
+            if isinstance(message, dict)
+        ]
+
+    return [data]
 
 
 def should_process_webhook(
@@ -56,28 +60,50 @@ def should_process_webhook(
     if instance and instance != whatsapp.instance_name:
         return False, "Instancia ignorada", None
 
-    message = _payload_message(payload)
-    key = message.get("key", {})
-    remote_jid = key.get("remoteJid")
-    message_id = key.get("id")
-
-    if not message_id:
+    messages = _payload_messages(payload)
+    if not messages:
         return False, "Mensagem sem id", None
 
-    if whatsapp.is_processed(message_id):
-        return False, "PDF ja processado", message
+    candidate_messages = []
+    last_reason = "Documento nao e PDF"
 
-    if not whatsapp.is_pdf_message(message):
-        return False, "Documento nao e PDF", None
+    for message in messages:
+        message_id = _message_id(message)
+
+        if not message_id:
+            last_reason = "Mensagem sem id"
+            continue
+
+        if whatsapp.is_processed(message_id):
+            last_reason = "PDF ja processado"
+            continue
+
+        if not whatsapp.is_pdf_message(message):
+            last_reason = "Documento nao e PDF"
+            continue
+
+        candidate_messages.append(message)
+
+    if not candidate_messages:
+        return False, last_reason, None
 
     group_jid = whatsapp.find_group_name()
     if not group_jid:
         return False, f"Grupo nao encontrado: {whatsapp.group_name}", None
 
-    if remote_jid != group_jid:
-        return False, "Grupo ignorado", None
+    for message in candidate_messages:
+        is_valid, reason = _validate_payload_pdf_message(
+            whatsapp=whatsapp,
+            message=message,
+            group_jid=group_jid,
+        )
 
-    return True, "PDF aceito", message
+        if is_valid:
+            return True, "PDF aceito", message
+
+        last_reason = reason
+
+    return False, last_reason, None
 
 
 def processar_webhook_whats(payload: dict[str, Any]) -> dict[str, Any]:
@@ -100,19 +126,17 @@ def _processar_lote_whats(payload: dict[str, Any]) -> dict[str, Any]:
         logger.info("Webhook WhatsApp ignorado: %s", reason)
         return {"status": "ignored", "message": reason}
 
-    group_jid = message.get("key", {}).get("remoteJid")
     google_drive = GoogleDriveAuth(
         credentials_path=GOOGLE_OAUTH_CREDENTIALS,
         token_path=GOOGLE_OAUTH_TOKEN,
         token_secret_path=GOOGLE_OAUTH_TOKEN_SECRET,
     )
 
-    pending_messages = _pending_pdf_messages(
+    pending_messages = _payload_pdf_messages(
         whatsapp=whatsapp,
-        group_jid=group_jid,
-        seed_message=message,
+        payload=payload,
     )
-    logger.info("PDFs pendentes identificados no lote WhatsApp: %s", len(pending_messages))
+    logger.info("PDFs novos identificados no payload WhatsApp: %s", len(pending_messages))
 
     downloaded = []
     for pending_message in pending_messages:
@@ -155,38 +179,56 @@ def _message_id(message: dict[str, Any]) -> str | None:
     return message.get("key", {}).get("id")
 
 
-def _pending_pdf_messages(
+def _validate_payload_pdf_message(
     whatsapp: WhatsAppChat,
+    message: dict[str, Any],
     group_jid: str,
-    seed_message: dict[str, Any],
+) -> tuple[bool, str]:
+    key = message.get("key", {})
+    message_id = key.get("id")
+    remote_jid = key.get("remoteJid")
+
+    if not message_id:
+        return False, "Mensagem sem id"
+
+    if whatsapp.is_processed(message_id):
+        return False, "PDF ja processado"
+
+    if not whatsapp.is_pdf_message(message):
+        return False, "Documento nao e PDF"
+
+    if remote_jid != group_jid:
+        return False, "Grupo ignorado"
+
+    return True, "PDF aceito"
+
+
+def _payload_pdf_messages(
+    whatsapp: WhatsAppChat,
+    payload: dict[str, Any],
 ) -> list[dict[str, Any]]:
+    group_jid = whatsapp.find_group_name()
+
+    if not group_jid:
+        logger.info("Grupo nao encontrado ao coletar PDFs do payload: %s", whatsapp.group_name)
+        return []
+
     messages_by_id = {}
 
-    if whatsapp.is_pdf_message(seed_message):
-        seed_id = _message_id(seed_message)
-        if seed_id:
-            messages_by_id[seed_id] = seed_message
+    for message in _payload_messages(payload):
+        is_valid, reason = _validate_payload_pdf_message(
+            whatsapp=whatsapp,
+            message=message,
+            group_jid=group_jid,
+        )
 
-    try:
-        for message in whatsapp.pdf_messages(group_jid, limit=_BATCH_MESSAGES_LIMIT):
-            message_id = _message_id(message)
-
-            if not message_id:
-                continue
-
-            messages_by_id[message_id] = message
-    except Exception:
-        logger.exception("Erro ao consultar PDFs pendentes do grupo WhatsApp")
-
-    pending = []
-    for message_id, message in messages_by_id.items():
-        if whatsapp.is_processed(message_id):
-            logger.info("PDF ja registrado no controle, ignorando: %s", message_id)
+        if not is_valid:
+            logger.info("Mensagem do payload ignorada: %s", reason)
             continue
 
-        pending.append(message)
+        messages_by_id[_message_id(message)] = message
 
-    return pending
+    return list(messages_by_id.values())
 
 
 def _download_upload_pdf_message(
@@ -209,6 +251,29 @@ def _download_upload_pdf_message(
     file_name = whatsapp.pdf_file_name(message)
     local_path: Path | None = None
 
+    uploaded_before = google_drive.find_by_app_property(
+        key="whatsapp_message_id",
+        value=message_id,
+    )
+
+    if uploaded_before:
+        logger.info(
+            "PDF do WhatsApp ja existe no Google Drive, ignorando: %s | %s",
+            message_id,
+            uploaded_before.get("name"),
+        )
+        whatsapp.mark_processed(
+            message_id,
+            _control_data(
+                message=message,
+                file_name=file_name,
+                local_path=None,
+                status="ja_enviado_drive",
+                google_drive_file_id=uploaded_before.get("id"),
+            ),
+        )
+        return None
+
     logger.info("Baixando PDF do WhatsApp: %s", file_name)
 
     try:
@@ -218,6 +283,11 @@ def _download_upload_pdf_message(
             folder_id_destino=GOOGLE_DRIVE_FOLDER_ID,
             type_file=PDF_MIME_TYPE,
             name_drive=file_name,
+            app_properties={
+                "whatsapp_message_id": message_id,
+                "whatsapp_remote_jid": key.get("remoteJid") or "",
+                "whatsapp_instance": whatsapp.instance_name,
+            },
         )
 
         whatsapp.mark_processed(

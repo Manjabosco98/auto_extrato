@@ -115,6 +115,23 @@ class WhatsAppChat:
 
         return None
 
+    @staticmethod
+    def payload_messages(payload: dict[str, Any]) -> list[dict[str, Any]]:
+        data = payload.get("data", {})
+
+        if not isinstance(data, dict):
+            return []
+
+        messages = data.get("messages")
+        if isinstance(messages, list):
+            return [
+                message
+                for message in messages
+                if isinstance(message, dict)
+            ]
+
+        return [data]
+
     def mensagens(self, remote_jid: str, limit: int = 50) -> dict[str, Any]:
         payload = {
             "where": {
