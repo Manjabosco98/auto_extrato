@@ -27,130 +27,133 @@ class Itau(BankHandler):
     def layout2(self, pdf):
         pdf = pdf[5:]
         pdf = [item for item in pdf if not any(texto in item for texto in [
-            "aviso: ",
-            "novos lançamentos",
-            "atualizado em ",
-            "Em caso de dúvidas, ",
-            " 24 horas por dia "
-        ])]
+                    "aviso: ",
+                    "novos lançamentos",
+                    "atualizado em ",
+                    "Em caso de dúvidas, ",
+                    " 24 horas por dia "
+                ])]
 
-        re_data = re.compile(r'\b\d{2}/\d{2}(?:/\d{2,4})?\b')
-        re_valor = re.compile(
-            r'(?:R\$\s*)?-?\d{1,3}(?:\.\d{3})*,\d{2}[CD]?|'
-            r'R\$\s*-?\d+(?:,\d{2})?[CD]?'
+        rx_data = re.compile(r'\b\d{2}/\d{2}(?:/\d{2,4})?\b')
+        rx_valor = re.compile(r'(?:R\$\s*)?-?\d{1,3}(?:\.\d{3})*,\d{2}[CD]?|(?:R\$\s*)?-?\d+[CD]?\b')
+        rx_ignorar = re.compile(
+            r'^(DATA\b|LANÇAMENTOS\b|RAZÃO SOCIAL\b|CNPJ/CPF\b|VALOR\b|SALDO\b|'
+            r'SALDO ANTERIOR\b|SALDO TOTAL DISPON[IÍ]VEL DIA\b|SALDO FINAL\b|'
+            r'SALDO DO DIA\b|AG[ÊE]NCIA\b|CONTA\b|CPF\b|CNPJ\b|EXTRATO\b|'
+            r'P[ÁA]GINA\b|BANCO\b|OUVIDORIA\b|SAC\b|CENTRAL\b|PER[IÍ]ODO\b|AVISO:)',
+            re.I
         )
-
-        re_cnpj_cpf = re.compile(
-            r'\b\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}\b|'
-            r'\b\d{3}\.\d{3}\.\d{3}-\d{2}\b'
+        rx_inicio_lanc = re.compile(
+            r'\b(PIX|PAGAMENTOS|BOLETO|BOLETOS|TAR/|TAR\b|JUROS|IOF|DEP\b|'
+            r'DESC\b|EST\b|TIT\b|FIN\b|JR\b|DA\b|DEB\b|BUSINESS\b|'
+            r'RENDIMENTOS|RECEBIMENTOS|TRANSFER[ÊE]NCIA|RENEGOCIACAO)\b',
+            re.I
         )
-
-        re_lixeira = re.compile(
-            r'aviso:|novos lançamentos|atualizado em|em caso de dúvidas|'
-            r'central|ouvidoria|sac|data\s+lançamentos|razão social|cnpj/cpf',
+        rx_pede_prefixo = re.compile(
+            r'\b(PIX RECEBIDO|PIX ENVIADO|PAGAMENTOS PIX QR-CODE|'
+            r'PAGAMENTOS TRANSF CC ITAU|BOLETO PAGO)\b',
             re.I
         )
 
-        re_aceita_quebra = re.compile(
-            r'\b(PIX|TED|DOC|TRANSFER[ÊE]NCIA|PAGAMENTOS?|RENDIMENTOS?)\b',
-            re.I
-        )
+        def limpar(txt: str) -> str:
+            return re.sub(r'\s+', ' ', txt).strip()
 
-        # NOVO: identifica linha que tem apenas DATA + VALOR
-        # Exemplo: "21/05/2026 0,03"
-        re_linha_so_data_valor = re.compile(
-            r'^\s*\d{2}/\d{2}(?:/\d{2,4})?\s+'
-            r'(?:R\$\s*)?-?\d{1,3}(?:\.\d{3})*,\d{2}[CD]?\s*$'
-        )
+        def fechar(bloco: list[str]) -> str:
+            texto = limpar(' '.join(bloco))
+            data = rx_data.search(texto).group(0)
+            valores = list(rx_valor.finditer(texto))
+            valor = valores[-1].group(0)
 
-        limpas = []
+            ini, fim = valores[-1].span()
+            texto_sem_data = rx_data.sub(' ', texto, count=1)
+            # remove só a última ocorrência exata do valor
+            pos = texto_sem_data.rfind(valor)
+            if pos >= 0:
+                texto_sem_data = texto_sem_data[:pos] + ' ' + texto_sem_data[pos + len(valor):]
 
-        for linha in pdf:
-            linha = re.sub(r'\s+', ' ', linha or '').strip()
+            desc = limpar(texto_sem_data).strip(' -')
+            return limpar(f'{data} {desc} {valor}')
 
-            if linha and not re_lixeira.search(linha):
-                limpas.append(linha)
+        def vai_para_proxima(buffer: list[str], proxima_linha: str, bloco_atual: list[str]) -> bool:
+            texto_buffer = limpar(' '.join(buffer))
+            texto_atual = limpar(' '.join(bloco_atual))
+            prox = limpar(proxima_linha)
 
+            # Se a próxima linha é lançamento que costuma ter razão social quebrada,
+            # o buffer provavelmente é prefixo da próxima movimentação.
+            if rx_pede_prefixo.search(prox):
+                if not re.search(r'\b(RECEBIDA|RECEBIDO|LTDA\.?|AUT MAIS|PAGAMENTO LTDA|JUNIOR|AUTO)\b$', texto_buffer, re.I):
+                    return True
 
-        resultado = []
-        pendentes = []
+            # Se o bloco atual ainda parece incompleto, o buffer fica nele.
+            if rx_pede_prefixo.search(texto_atual) and re.search(r'\b(LTDA\.?|SANTOS|SILVA|OLIVEIRA|JUNIOR|AUTO|AUT MAIS|RECEBIDA)\b', texto_buffer, re.I):
+                return False
 
-        i = 0
+            # Linhas curtas depois de um lançamento normalmente são complemento dele.
+            if len(texto_buffer.split()) <= 4:
+                return False
 
-        while i < len(limpas):
-            linha = limpas[i]
+            return False
 
-            # Se a linha não tem data, ela pode ser complemento/descrição quebrada
-            if not re_data.search(linha):
-                pendentes.append(linha)
-                i += 1
+        saida = []
+        atual = []
+        buffer = []
+
+        for original in pdf:
+            linha = limpar(str(original))
+            if not linha:
                 continue
 
-            data = re_data.search(linha).group(0)
+            if rx_ignorar.search(linha):
+                if atual:
+                    if buffer:
+                        atual.extend(buffer)
+                        buffer = []
+                    if rx_data.search(' '.join(atual)) and rx_valor.search(' '.join(atual)):
+                        saida.append(fechar(atual))
+                    atual = []
+                buffer = []
+                continue
 
-            # NOVO: verifica se a linha atual é apenas "data + valor"
-            linha_so_data_valor = bool(re_linha_so_data_valor.search(linha))
+            tem_data = bool(rx_data.search(linha))
 
-            # Ajustado: agora também usa pendentes quando a linha atual for só data + valor
-            usar_pendentes = bool(
-                pendentes and (
-                    re_aceita_quebra.search(linha) or
-                    re_cnpj_cpf.search(linha) or
-                    linha_so_data_valor
-                )
-            )
-
-            partes = []
-
-            if usar_pendentes:
-                partes.extend(pendentes)
-
-            partes.append(linha)
-            pendentes = []
-
-            j = i + 1
-
-            while j < len(limpas) and not re_data.search(limpas[j]):
-
-                # Ajustado: também aceita complemento depois quando a linha for só data + valor
-                if (
-                    re_aceita_quebra.search(linha) or
-                    re_cnpj_cpf.search(linha) or
-                    linha_so_data_valor
-                ):
-                    partes.append(limpas[j])
+            if tem_data:
+                if atual:
+                    if buffer:
+                        if vai_para_proxima(buffer, linha, atual):
+                            if rx_data.search(' '.join(atual)) and rx_valor.search(' '.join(atual)):
+                                saida.append(fechar(atual))
+                            atual = buffer + [linha]
+                        else:
+                            atual.extend(buffer)
+                            if rx_data.search(' '.join(atual)) and rx_valor.search(' '.join(atual)):
+                                saida.append(fechar(atual))
+                            atual = [linha]
+                        buffer = []
+                    else:
+                        if rx_data.search(' '.join(atual)) and rx_valor.search(' '.join(atual)):
+                            saida.append(fechar(atual))
+                        atual = [linha]
                 else:
-                    pendentes.append(limpas[j])
+                    atual = buffer + [linha]
+                    buffer = []
+            else:
+                if atual:
+                    buffer.append(linha)
+                else:
+                    buffer.append(linha)
 
-                j += 1
-
-            texto = re.sub(r'\s+', ' ', ' '.join(partes)).strip()
-            valores = list(re_valor.finditer(texto))
-
-            if valores:
-                valor = valores[-1].group(0)
-
-                ini, fim = valores[-1].span()
-
-                descricao = texto[:ini] + ' ' + texto[fim:]
-
-                # Remove a data principal da descrição
-                descricao = descricao.replace(data, ' ', 1)
-
-                # Remove valores duplicados que ficaram no meio da descrição
-                descricao = re_valor.sub(' ', descricao)
-
-                descricao = re.sub(r'\s+', ' ', descricao).strip()
-
-                resultado.append(f'{data} {descricao} {valor}'.strip())
-
-            i = j if j > i + 1 else i + 1
+        if atual:
+            if buffer:
+                atual.extend(buffer)
+            if rx_data.search(' '.join(atual)) and rx_valor.search(' '.join(atual)):
+                saida.append(fechar(atual))
 
         padrao = r"^(\d{2}/\d{2}/\d{4})\s+(.+?)\s+(-?\d{1,3}(?:\.\d{3})*,\d{2})$"
 
         dados = []
 
-        for linha in resultado:
+        for linha in saida:
             match = re.match(padrao, linha)
 
             if match:
