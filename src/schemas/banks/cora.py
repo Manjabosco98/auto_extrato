@@ -53,7 +53,7 @@ class Cora(BankHandler):
         # Inícios confiáveis de movimentação neste extrato
         rx_inicio_mov = re.compile(
             r"^(?:"
-            r"Transf Pix enviada|Transf Pix recebida|"
+            r"Transf Pix enviada|Transf Pix recebida|Transferência recebida|"
             r"Pagamento recebido|Pgto QR Code Pix|"
             r"Boleto pago|Empr[eé]stimo Cora"
             r")\b",
