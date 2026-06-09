@@ -162,6 +162,33 @@ class GoogleDriveAuth:
 
         return arquivos
 
+    def list_children(self, folder_id: str):
+        query = (
+            f"'{folder_id}' in parents "
+            f"and trashed = false"
+        )
+
+        arquivos = []
+        page_token = None
+
+        while True:
+            response = self.service.files().list(
+                q=query,
+                spaces="drive",
+                fields="nextPageToken, files(id, name, mimeType, size, modifiedTime)",
+                pageToken=page_token,
+                supportsAllDrives=True,
+                includeItemsFromAllDrives=True
+            ).execute()
+
+            arquivos.extend(response.get("files", []))
+            page_token = response.get("nextPageToken")
+
+            if not page_token:
+                break
+
+        return arquivos
+
     def download(self, file_id: str, destino_local):
         destino = Path(destino_local)
         destino.parent.mkdir(parents=True, exist_ok=True)
@@ -226,5 +253,13 @@ class GoogleDriveAuth:
             addParents=folder_id_destino,
             removeParents=parents_atuais,
             fields="id, name, parents",
+            supportsAllDrives=True
+        ).execute()
+
+    def trash_file(self, file_id: str):
+        return self.service.files().update(
+            fileId=file_id,
+            body={"trashed": True},
+            fields="id, name, trashed",
             supportsAllDrives=True
         ).execute()

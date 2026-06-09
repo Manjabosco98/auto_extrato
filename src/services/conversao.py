@@ -1,4 +1,5 @@
 import logging
+import re
 import shutil
 from pathlib import Path
 
@@ -17,7 +18,7 @@ from src.app.gdrive.settings import (
 )
 from src.schemas import LayoutNotRecognized, dispatch
 from src.schemas.parsers.pdf_extractor import PDFExtractor
-from src.utils.helpers import planilha_lancamento, totalizador
+from src.utils.helpers import planilha_lancamento, remover_senha_pdf, totalizador
 from src.utils.logging_config import setup_logging
 
 
@@ -31,6 +32,109 @@ def pdf_possui_senha(pdf_path: Path) -> bool:
     except Exception:
         logger.exception("Erro ao verificar se PDF possui senha: %s", pdf_path)
         return False
+
+
+def extrair_senha_nome_pdf(nome_arquivo: str) -> tuple[str, str] | None:
+    caminho = Path(nome_arquivo)
+    match = re.match(
+        r"^(?P<prefixo>.+?)\s+SENHA\s+(?P<senha>[^_]+)(?P<sufixo>_.*)$",
+        caminho.stem,
+        flags=re.IGNORECASE,
+    )
+
+    if not match:
+        return None
+
+    senha = match.group("senha").strip()
+    nome_limpo = f"{match.group('prefixo').rstrip()}{match.group('sufixo')}{caminho.suffix}"
+    return senha, nome_limpo
+
+
+def processar_pdfs_com_senha(
+    google_drive: GoogleDriveAuth,
+    pasta_pdfs_com_senhas_id: str,
+    pasta_raiz_id: str,
+    temp_dir: Path,
+) -> dict[str, int]:
+    logger.info("Verificando pasta PDFS_COM_SENHAS para desbloqueio")
+
+    arquivos = google_drive.pdfs(
+        folder_id=pasta_pdfs_com_senhas_id,
+        pdf_type=PDF_MIME_TYPE,
+    )
+
+    if not arquivos:
+        logger.info("Pasta PDFS_COM_SENHAS sem PDFs para desbloquear")
+
+    desbloqueados = 0
+    ignorados = 0
+    erros = 0
+
+    for arquivo_drive in arquivos:
+        arquivo_id = arquivo_drive["id"]
+        arquivo_nome = arquivo_drive["name"]
+        dados_senha = extrair_senha_nome_pdf(arquivo_nome)
+
+        if not dados_senha:
+            ignorados += 1
+            logger.info(
+                "PDF em PDFS_COM_SENHAS ignorado por nao conter padrao SENHA: %s",
+                arquivo_nome,
+            )
+            continue
+
+        senha, nome_limpo = dados_senha
+        pdf_com_senha = temp_dir / arquivo_nome
+        pdf_sem_senha = temp_dir / nome_limpo
+
+        try:
+            logger.info("Baixando PDF com senha para desbloqueio: %s", arquivo_nome)
+            google_drive.download(
+                file_id=arquivo_id,
+                destino_local=pdf_com_senha,
+            )
+
+            logger.info("Removendo senha do PDF: %s", arquivo_nome)
+            remover_senha_pdf(
+                caminho_pdf=str(pdf_com_senha),
+                senha=senha,
+                caminho_saida=str(pdf_sem_senha),
+            )
+
+            logger.info("Enviando PDF desbloqueado para pasta raiz: %s", nome_limpo)
+            google_drive.upload(
+                caminho_local=pdf_sem_senha,
+                folder_id_destino=pasta_raiz_id,
+                type_file=PDF_MIME_TYPE,
+                name_drive=nome_limpo,
+            )
+
+            logger.info("Movendo PDF original com senha para lixeira: %s", arquivo_nome)
+            google_drive.trash_file(arquivo_id)
+            desbloqueados += 1
+        except Exception:
+            erros += 1
+            logger.exception("Erro ao desbloquear PDF com senha: %s", arquivo_nome)
+        finally:
+            pdf_com_senha.unlink(missing_ok=True)
+            pdf_sem_senha.unlink(missing_ok=True)
+
+    restantes = google_drive.list_children(pasta_pdfs_com_senhas_id)
+
+    if not restantes:
+        logger.info("Pasta PDFS_COM_SENHAS vazia. Movendo pasta para lixeira")
+        google_drive.trash_file(pasta_pdfs_com_senhas_id)
+    else:
+        logger.info(
+            "Pasta PDFS_COM_SENHAS mantida com %s item(ns) restante(s)",
+            len(restantes),
+        )
+
+    return {
+        "desbloqueados": desbloqueados,
+        "ignorados": ignorados,
+        "erros": erros,
+    }
 
 
 def executar_conversao():
@@ -214,16 +318,27 @@ def executar_conversao():
                 dest_excel.unlink(missing_ok=True)
             logger.info("Arquivos temporarios limpos para: %s", arquivo_nome)
 
+    resultado_senhas = processar_pdfs_com_senha(
+        google_drive=google_drive,
+        pasta_pdfs_com_senhas_id=pdfs_com_senhas_id,
+        pasta_raiz_id=extratos_id,
+        temp_dir=temp_dir,
+    )
+
     logger.info(
         (
             "Fluxo de conversao concluido. "
-            "Processados=%s Convertidos=%s Invalidos=%s Ignorados=%s ComSenha=%s"
+            "Processados=%s Convertidos=%s Invalidos=%s Ignorados=%s ComSenha=%s "
+            "Desbloqueados=%s SenhasIgnoradas=%s SenhasErros=%s"
         ),
         processados,
         convertidos,
         invalidos,
         ignorados,
         com_senha,
+        resultado_senhas["desbloqueados"],
+        resultado_senhas["ignorados"],
+        resultado_senhas["erros"],
     )
 
 
