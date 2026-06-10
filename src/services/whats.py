@@ -117,6 +117,17 @@ def processar_webhook_whats(payload: dict[str, Any]) -> dict[str, Any]:
         _whats_batch_lock.release()
 
 
+def executar_fluxo_whatsapp() -> dict[str, Any]:
+    if not _whats_batch_lock.acquire(blocking=False):
+        logger.info("Fluxo WhatsApp ja em processamento. Aguardando para executar manualmente")
+        _whats_batch_lock.acquire()
+
+    try:
+        return _executar_fluxo_whatsapp()
+    finally:
+        _whats_batch_lock.release()
+
+
 def _processar_lote_whats(payload: dict[str, Any]) -> dict[str, Any]:
     setup_logging()
     whatsapp = WhatsAppChat()
@@ -173,6 +184,79 @@ def _processar_lote_whats(payload: dict[str, Any]) -> dict[str, Any]:
     except Exception:
         logger.exception("Erro durante conversao do lote WhatsApp")
         raise
+
+
+def _executar_fluxo_whatsapp() -> dict[str, Any]:
+    setup_logging()
+    whatsapp = WhatsAppChat()
+    group_jid = whatsapp.find_group_name()
+
+    if not group_jid:
+        logger.info("Grupo WhatsApp nao encontrado: %s", whatsapp.group_name)
+        return {
+            "status": "ignored",
+            "message": f"Grupo nao encontrado: {whatsapp.group_name}",
+            "total_baixados": 0,
+        }
+
+    google_drive = GoogleDriveAuth(
+        credentials_path=GOOGLE_OAUTH_CREDENTIALS,
+        token_path=GOOGLE_OAUTH_TOKEN,
+        token_secret_path=GOOGLE_OAUTH_TOKEN_SECRET,
+    )
+
+    messages = whatsapp.pdf_messages(group_jid)
+    messages_by_id = {}
+
+    for message in messages:
+        is_valid, reason = _validate_payload_pdf_message(
+            whatsapp=whatsapp,
+            message=message,
+            group_jid=group_jid,
+        )
+
+        if not is_valid:
+            logger.info("PDF do grupo ignorado no fluxo manual: %s", reason)
+            continue
+
+        messages_by_id[_message_id(message)] = message
+
+    logger.info(
+        "PDFs candidatos encontrados no fluxo manual WhatsApp: %s",
+        len(messages_by_id),
+    )
+
+    downloaded = []
+    for message in messages_by_id.values():
+        result = _download_upload_pdf_message(
+            whatsapp=whatsapp,
+            google_drive=google_drive,
+            message=message,
+        )
+
+        if result:
+            downloaded.append(result)
+
+    if not downloaded:
+        logger.info("Nenhum PDF novo foi baixado no fluxo manual WhatsApp")
+        return {
+            "status": "ignored",
+            "message": "Nenhum PDF novo baixado",
+            "total_baixados": 0,
+        }
+
+    logger.info(
+        "Downloads do fluxo manual WhatsApp finalizados. Iniciando conversao unica. Total=%s",
+        len(downloaded),
+    )
+    executar_conversao()
+
+    return {
+        "status": "processed",
+        "message": "PDFs do WhatsApp enviados ao Google Drive e conversao iniciada",
+        "total_baixados": len(downloaded),
+        "arquivos": downloaded,
+    }
 
 
 def _message_id(message: dict[str, Any]) -> str | None:

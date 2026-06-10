@@ -255,6 +255,50 @@ class WhatsWebhookServiceTest(unittest.TestCase):
         executar_conversao.assert_not_called()
         self.assertFalse(fake_whatsapp.pdf_messages_called)
 
+    def test_fluxo_manual_varre_grupo_baixa_novos_e_chama_conversao_uma_vez(self):
+        messages = [
+            make_payload(message_id="MSG123")["data"],
+            make_payload(message_id="MSG456")["data"],
+        ]
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        processed = []
+
+        fake_whatsapp = FakeWhatsApp(pending_messages=messages)
+
+        def download_pdf(message, file_name):
+            path = Path(temp_dir.name) / file_name
+            path.write_bytes(b"%PDF-1.4")
+            return path
+
+        def mark_processed(message_id, data):
+            fake_whatsapp.processed_ids.add(message_id)
+            processed.append((message_id, data))
+
+        fake_whatsapp.download_pdf = download_pdf
+        fake_whatsapp.mark_processed = mark_processed
+
+        drive = Mock()
+        drive.find_by_app_property.return_value = None
+        drive.upload.side_effect = [
+            {"id": "drive-file-id-1"},
+            {"id": "drive-file-id-2"},
+        ]
+
+        with (
+            patch.object(whats_service, "WhatsAppChat", return_value=fake_whatsapp),
+            patch.object(whats_service, "GoogleDriveAuth", return_value=drive),
+            patch.object(whats_service, "executar_conversao") as executar_conversao,
+        ):
+            result = whats_service.executar_fluxo_whatsapp()
+
+        self.assertEqual(result["status"], "processed")
+        self.assertEqual(result["total_baixados"], 2)
+        self.assertEqual([item[0] for item in processed], ["MSG123", "MSG456"])
+        self.assertEqual(drive.upload.call_count, 2)
+        executar_conversao.assert_called_once()
+        self.assertTrue(fake_whatsapp.pdf_messages_called)
+
     def test_mark_processed_salva_controle_json(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             controle = Path(temp_dir) / "controle_pdf.json"
@@ -310,6 +354,20 @@ class WhatsWebhookEndpointTest(unittest.TestCase):
             {"status": "accepted", "message": "Webhook WhatsApp recebido"},
         )
         self.assertEqual(len(calls), 1)
+
+    def test_executar_fluxo_whatsapp_manual_retorna_202(self):
+        calls = []
+
+        with patch(
+            "src.api.endpoints.whats.executar_fluxo_whatsapp",
+            side_effect=lambda: calls.append("executado"),
+        ):
+            client = TestClient(app)
+            response = client.post("/api/whats/executar")
+
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.json(), {"message": "Fluxo WhatsApp iniciado"})
+        self.assertEqual(calls, ["executado"])
 
 
 if __name__ == "__main__":
