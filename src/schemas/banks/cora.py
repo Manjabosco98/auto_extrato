@@ -37,125 +37,34 @@ class Cora(BankHandler):
             "Extrato gerado no dia ",
         ])]
 
-        rx_espacos = re.compile(r"\s+")
-        rx_data = re.compile(r"\b\d{2}/\d{2}(?:/\d{2,4})?\b")
-        rx_saldo_dia = re.compile(r"\bSaldo do dia\b", re.I)
-
-        rx_valor = re.compile(
-            r"([+-]\s*)?"
-            r"(?:R\$\s*)?"
-            r"-?"
-            r"\d{1,3}(?:\.\d{3})*,\d{2}"
-            r"[CD]?"
-            r"$"
-        )
-
-        # Inícios confiáveis de movimentação neste extrato
-        rx_inicio_mov = re.compile(
-            r"^(?:"
-            r"Transf Pix enviada|Transf Pix recebida|Transferência recebida|"
-            r"Pagamento recebido|Pgto QR Code Pix|"
-            r"Boleto pago|Empr[eé]stimo Cora"
-            r")\b",
-            re.I
-        )
-
-        rx_ignorar = re.compile(
-            r"^(?:"
-            r"COMERCIAL GOIANIA DE BATERIAS|CNPJ|Ag[êe]ncia|Conta|"
-            r"Cora SCFI - CNPJ|Ouvidoria|Extrato gerado|"
-            r"p[aá]g\s+\d+\s+de\s+\d+|Saldo do dia|"
-            r"SALDO ANTERIOR|SALDO FINAL|SALDO DISPON[IÍ]VEL|"
-            r"DATA HIST[ÓO]RICO VALOR|DATA DESCRI[ÇC][ÃA]O VALOR"
-            r")",
-            re.I
-        )
-
-        resultado = []
+        regex_saldo = r"^(?P<data>\d{2}/\d{2}/\d{4})\s+Saldo do dia\s+R\$\s+(?P<saldo>[\d\.]+,\d{2})$"
+        regex_mov = r"^(?P<descricao>.+?)\s+(?P<sinal>[+-])\s+R\$\s+(?P<valor>[\d\.]+,\d{2})$"
+        movimentacoes = []
         data_atual = None
-        pendente = []
+        for item in pdf:
+            item = item.strip()
 
-        for linha in pdf:
-            linha = rx_espacos.sub(" ", str(linha).strip())
+            match_saldo = re.match(regex_saldo, item)
 
-            if not linha:
+            if match_saldo:
+                data_atual = match_saldo.group("data")
                 continue
 
-            data_encontrada = rx_data.search(linha)
+            match_mov = re.match(regex_mov, item)
 
-            # A data do grupo vem da linha "Saldo do dia"
-            if data_encontrada and rx_saldo_dia.search(linha):
-                data_atual = data_encontrada.group()
-                pendente = []
-                continue
+            if match_mov and data_atual:
+                sinal = match_mov.group("sinal")
 
-            # Linha só com data, comum em quebra visual do PDF
-            if data_encontrada and not rx_valor.search(linha):
-                data_atual = data_encontrada.group()
-                pendente = []
-                continue
+                tipo = "C" if sinal == "+" else "D"
 
-            # Linha com data + movimentação na mesma string
-            if data_encontrada:
-                data_atual = data_encontrada.group()
-                linha = rx_data.sub("", linha, count=1).strip()
+                movimentacoes.append({
+                    "DATA": data_atual,
+                    "DESCRIÇÃO": match_mov.group("descricao").strip(),
+                    "VALOR": match_mov.group("valor"),
+                    "TIPO": tipo
+                })
 
-            if not data_atual:
-                continue
-
-            if rx_ignorar.search(linha):
-                continue
-
-            # Se começou nova movimentação antes de fechar a anterior, descarta pendente incompleta
-            if rx_inicio_mov.search(linha) and pendente and not rx_valor.search(" ".join(pendente)):
-                pendente = []
-
-            pendente.append(linha)
-            texto = rx_espacos.sub(" ", " ".join(pendente)).strip()
-
-            valor_encontrado = rx_valor.search(texto)
-
-            if valor_encontrado:
-                valor = valor_encontrado.group().strip()
-                descricao = texto[:valor_encontrado.start()].strip()
-
-                if descricao and rx_inicio_mov.search(descricao):
-                    movimento = f"{data_atual} {descricao} {valor}"
-                    resultado.append(rx_espacos.sub(" ", movimento).strip())
-
-                pendente = []
-
-        dados = resultado
-
-        padrao = re.compile(
-            r"^(?P<data>\d{2}/\d{2}/\d{4})\s+"
-            r"(?P<descricao>.+?)\s+"
-            r"(?P<sinal>[+-])\s*R\$\s*"
-            r"(?P<valor>\d{1,3}(?:\.\d{3})*,\d{2})$"
-        )
-
-        movimentacoes_tratadas = []
-
-        for linha in dados:
-            match = padrao.match(linha.strip())
-
-            if not match:
-                print(f"LINHA NÃO CAPTURADA: {linha}")
-                continue
-
-            dados = match.groupdict()
-
-            sinal = dados["sinal"]
-            valor = dados["valor"]
-
-            movimentacoes_tratadas.append({
-                "DATA": dados["data"],
-                "DESCRIÇÃO": dados["descricao"].strip(),
-                "VALOR": f"{sinal} R$ {valor}",
-                "TIPO": "C" if sinal == "+" else "D"
-            })
-
-        df = pd.json_normalize(movimentacoes_tratadas)
+        df = pd.json_normalize(movimentacoes)
         df["VALOR"] = (
             df["VALOR"]
             .str.strip()

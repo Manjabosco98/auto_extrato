@@ -8,8 +8,23 @@ from src.schemas.registry import register
 @register
 class Caixa(BankHandler):
     bank = "Caixa"
+    layout_head_lines = 5
+    layout_tail_lines = 10
 
-    @layout("CNPJ: ")
+    def _pick_layout(self, pdf: list[str]):
+        head_tail = "\n".join(
+            pdf[: self.layout_head_lines] + pdf[-self.layout_tail_lines:]
+        )
+        candidates = [
+            fn
+            for fn in self._layouts()
+            if all(sig in head_tail for sig in fn._layout_signatures)
+        ]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda fn: len(fn._layout_signatures))
+
+    @layout("CNPJ: ", "SAC CAIXA Ouvidoria")
     def layout1(self, pdf):
         pdf = pdf[8:]
         pdf = [item for item in pdf if not any(texto in item for texto in ["SAC ", "0800", "Pessoas com ", "Documento ", "Data Efetiva", "Data"])]
