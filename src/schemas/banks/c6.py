@@ -51,6 +51,7 @@ class C6(BankHandler):
         df["DESCRIÇÃO"] = df["DESCRIÇÃO"].str.upper()
         df["DATA_CONTABIL"] = df.apply(lambda x: f"{x["DATA_CONTABIL"]}/{periodo}", axis=1)
         df["VALOR"] = df["VALOR"].astype(str).str.replace("-", "", regex=False)
+        df["VALOR"] = df["VALOR"].astype(float)
         df = df[["DATA_CONTABIL", "DESCRIÇÃO", "VALOR", "TIPO"]]
         df = df.rename(columns={"DATA_CONTABIL": "DATA"})
         return df
