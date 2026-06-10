@@ -32,126 +32,125 @@ class Nubank(BankHandler):
         pdf = pdf[11:]
         pdf = [item for item in pdf if not any(texto in item for texto in [empresa, cpf, conta, datas, "CNPJ", "Tem alguma dúvida?", "metropolitanas) ", "Caso a solução ", "disponíveis em nubank.com.br", "Extrato gerado ", "O saldo líquido ", "Não nos responsabilizamos ", "Asseguramos a autenticidade ", "Nu Financeira S.A.", "e Investimento", "Nu Pagamentos S.A. - Instituição de Pagamento"])]
 
-        re_data = re.compile(r'\b\d{2}\s+(?:JAN|FEV|MAR|ABR|MAI|JUN|JUL|AGO|SET|OUT|NOV|DEZ)\s+\d{4}\b', re.I)
-        re_valor = re.compile(r'(?:R\$\s*)?[+-]?\s*\d{1,3}(?:\.\d{3})*,\d{2}[CD]?|\b(?:R\$\s*)?[+-]?\s*\d+,\d{2}[CD]?\b')
-        re_total = re.compile(r'\btotal\s+de\s+(entradas|sa[ií]das)\b', re.I)
+        re_data = re.compile(
+            r'\b\d{2}\s+(?:JAN|FEV|MAR|ABR|MAI|JUN|JUL|AGO|SET|OUT|NOV|DEZ)\s+\d{4}\b',
+            re.I
+        )
+
+        re_valor = re.compile(
+            r'(?:R\$\s*)?[+-]?\s*\d{1,3}(?:\.\d{3})*,\d{2}|\b(?:R\$\s*)?[+-]?\s*\d+,\d{2}\b'
+        )
+
+        re_total = re.compile(
+            r'\bTotal\s+de\s+(entradas|sa[ií]das)\b',
+            re.I
+        )
+
         re_inicio = re.compile(
             r'^(Transfer[êe]ncia|Pagamento|Reembolso|Valor adicionado|Aplica[çc][ãa]o|Resgate)',
             re.I
         )
+
         re_ignorar = re.compile(
-            r'(CPF|Ag[êe]ncia\s+0001\s+Conta|VALORES EM R\$|Saldo|Movimenta[çc][õo]es|'
-            r'Ouvidoria|Atendimento|Extrato gerado|Nu Financeira|Nu Pagamentos|CNPJ:|'
-            r'Tem alguma d[uú]vida|nubank\.com|^\d+\s+de\s+\d+$|'
-            r'01 DE ABRIL DE 2026 a 30 DE ABRIL DE 2026|João Vitor Rodrigues|'
-            r'Investimento Pagamento)',
+            r'(CPF|Ag[êe]ncia\s+0001\s+Conta|VALORES EM R\$|'
+            r'Movimenta[çc][õo]es|Ouvidoria|Atendimento|Extrato gerado|'
+            r'Nu Financeira|Nu Pagamentos|CNPJ:|Tem alguma d[uú]vida|'
+            r'nubank\.com|^\d+\s+de\s+\d+$|'
+            r'01 DE ABRIL DE 2026 a 30 DE ABRIL DE 2026|'
+            r'João Vitor Rodrigues|Não nos responsabilizamos|'
+            r'Asseguramos a autenticidade)',
             re.I
         )
 
         resultado = []
+
         data_atual = ""
+        tipo_atual = None
         bloco = []
+
+
+        def fechar_bloco():
+            nonlocal bloco, data_atual, tipo_atual, resultado
+
+            if not bloco or not data_atual:
+                bloco = []
+                return
+
+            texto = re.sub(r'\s+', ' ', ' '.join(bloco)).strip()
+
+            valores = list(re_valor.finditer(texto))
+
+            if not valores:
+                bloco = []
+                return
+
+            valor_match = valores[-1]
+            valor_bruto = valor_match.group().strip()
+
+            descricao = (
+                texto[:valor_match.start()] + texto[valor_match.end():]
+            ).strip()
+
+            descricao = re.sub(r'\s+', ' ', descricao).strip(" -")
+
+            if descricao:
+                resultado.append({
+                    "DATA": data_atual,
+                    "DESCRIÇÃO": descricao,
+                    "VALOR_BRUTO": valor_bruto,
+                    "TIPO": tipo_atual
+                })
+
+            bloco = []
+
 
         for linha in pdf:
             linha = re.sub(r'\s+', ' ', str(linha)).strip()
+
             if not linha:
+                continue
+
+            if re_ignorar.search(linha):
                 continue
 
             achou_data = re_data.search(linha)
 
-            deve_fechar = False
-
             if achou_data:
-                deve_fechar = True
-            elif re_total.search(linha):
-                deve_fechar = True
-            elif re_inicio.search(linha):
-                deve_fechar = True
+                fechar_bloco()
 
-            if deve_fechar and bloco and data_atual:
-                texto = re.sub(r'\s+', ' ', " ".join(bloco)).strip()
-                valores = list(re_valor.finditer(texto))
-
-                if valores:
-                    valor = valores[-1].group().strip()
-                    descricao = (texto[:valores[-1].start()] + texto[valores[-1].end():]).strip()
-                    descricao = re.sub(r'\s+', ' ', descricao).strip(" -")
-
-                    if descricao:
-                        resultado.append(f"{data_atual} {descricao} {valor}")
-
-                bloco = []
-
-            if achou_data:
                 data_atual = achou_data.group().upper()
                 linha = linha[achou_data.end():].strip()
 
                 if not linha:
                     continue
 
-            if re_ignorar.search(linha):
-                continue
+            total = re_total.search(linha)
 
-            if re_total.search(linha):
+            if total:
+                fechar_bloco()
+
+                categoria = total.group(1).lower()
+
+                if "entrada" in categoria:
+                    tipo_atual = "C"
+                else:
+                    tipo_atual = "D"
+
                 continue
 
             if re_inicio.search(linha):
+                fechar_bloco()
                 bloco = [linha]
                 continue
 
             if bloco:
                 bloco.append(linha)
 
-        if bloco and data_atual:
-            texto = re.sub(r'\s+', ' ', " ".join(bloco)).strip()
-            valores = list(re_valor.finditer(texto))
-
-            if valores:
-                valor = valores[-1].group().strip()
-                descricao = (texto[:valores[-1].start()] + texto[valores[-1].end():]).strip()
-                descricao = re.sub(r'\s+', ' ', descricao).strip(" -")
-
-                if descricao:
-                    resultado.append(f"{data_atual} {descricao} {valor}")
-
-        padrao = re.compile(
-            r"^(?P<data>\d{2}\s+[A-ZÇ]{3}\s+\d{4})\s+"
-            r"(?P<descricao>.*?)\s+"
-            r"(?P<valor_bruto>-?\s*(?:NU\s+)?\d{1,3}(?:\.\d{3})*,\d{2})$"
-        )
-
-        registros = []
-
-        for item in resultado:
-            item = item.strip()
-
-            match = padrao.match(item)
-
-            if not match:
-                registros.append({
-                    "DATA": None,
-                    "DESCRICAO": item,
-                    "VALOR_BRUTO": None,
-                    "VALOR": None,
-                    "TIPO": None,
-                    "STATUS": "NAO_IDENTIFICADO"
-                })
-                continue
-
-            data = match.group("data")
-            descricao = match.group("descricao").strip()
-            valor_bruto = match.group("valor_bruto").strip()
-
-            registros.append({
-                "DATA": data,
-                "DESCRIÇÃO": descricao,
-                "VALOR_BRUTO": valor_bruto,
-            })
-        df = pd.json_normalize(registros)
+        df = pd.json_normalize(resultado)
         df["VALOR_BRUTO"] = (
             df["VALOR_BRUTO"]
             .str.strip()
-            .str.replace("NU", "", regex=False)
+            .str.replace("-", "", regex=False)
             .str.replace(" ", "", regex=False)
             .str.replace(".", "", regex=False)
             .str.replace(",", ".", regex=False)
