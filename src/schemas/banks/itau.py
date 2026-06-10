@@ -149,6 +149,8 @@ class Itau(BankHandler):
             else:
                 print("Não capturado:", item)
         df = pd.DataFrame(dados)
+        if df.empty:
+            return pd.DataFrame(columns=["DATA", "DESCRIÇÃO", "VALOR", "TIPO"])
         df["VALOR"] = df["VALOR"].abs()
         df["DESCRIÇÃO"] = df["DESCRIÇÃO"].str.upper()
         return df
@@ -266,6 +268,8 @@ class Itau(BankHandler):
             else:
                 print("Não capturado:", item)
         df = pd.json_normalize(dados)
+        if df.empty:
+            return pd.DataFrame(columns=["DATA", "DESCRIÇÃO", "VALOR", "TIPO"])
         df["VALOR"] = (
             df["VALOR"]
             .str.strip()
