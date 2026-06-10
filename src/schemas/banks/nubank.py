@@ -26,7 +26,7 @@ class Nubank(BankHandler):
     def layout1(self, pdf):
         pdf = pdf.copy()
         empresa = pdf[0]
-        pdf = pdf[12:]
+        pdf = pdf[11:]
         pdf = [item for item in pdf if not any(texto in item for texto in [empresa, "CNPJ", "Tem alguma dúvida?", "metropolitanas) ", "Caso a solução ", "disponíveis em nubank.com.br", "Extrato gerado ", "O saldo líquido ", "Não nos responsabilizamos ", "Asseguramos a autenticidade ", "Nu Financeira S.A.", "e Investimento", "Nu Pagamentos S.A. - Instituição de Pagamento"])]
 
         rx_data = re.compile(
