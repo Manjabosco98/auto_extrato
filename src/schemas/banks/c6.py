@@ -11,78 +11,44 @@ class C6(BankHandler):
 
     @layout("Extrato exportado ")
     def layout1(self, pdf):
+        periodo = pdf[3].split(" • ")[-1].split(" ")[-1]
         indice = next((i for i, item in enumerate(pdf) if "Informações sujeitas a" in item), None)
         pdf = pdf[9:indice]
         pdf = [item for item in pdf if not any(texto in item for texto in ["Data Data", "Tipo Descrição Valor", "lançamento contábil", "Saldo do dia "])]
 
-        PADRAO_C6 = re.compile(
-            r"""
-            ^
-            (?P<data_lancamento>\d{2}/\d{2})\s+
-            (?P<data_contabil>\d{2}/\d{2})\s+
-            (?P<tipo_original>Entrada\s+PIX|Saída\s+PIX|Débito\s+de\s+Cartão|Outros\s+gastos|Pagamento)\s+
-            (?P<descricao>.*?)
-            \s+
-            (?P<valor_original>-?R\$\s?[\d\.]+,\d{2})
-            $
-            """,
-            re.VERBOSE
-        )
+        padrao = r"^(\d{2}/\d{2})\s+(\d{2}/\d{2})\s+(.+?)\s+(-?R\$\s?\d{1,3}(?:\.\d{3})*,\d{2})$"
+        dados = []
+        for item in pdf:
+            match = re.match(padrao, item)
 
-        registros = []
+            if match:
+                data_1 = match.group(1)
+                data_2 = match.group(2)
+                descricao = match.group(3)
+                valor = match.group(4)
 
-        for linha in pdf:
-            linha = " ".join(str(linha).split())
-
-            match = PADRAO_C6.match(linha)
-
-            if not match:
-                continue
-
-            dados = match.groupdict()
-
-            valor_original = dados["valor_original"]
-
-            tipo = "Saída" if valor_original.startswith("-") else "Entrada"
-
-            registros.append({
-                "data_lancamento": dados["data_lancamento"],
-                "data_contabil": dados["data_contabil"],
-                "tipo": tipo,
-                "tipo_original": dados["tipo_original"],
-                "descricao": dados["descricao"].strip(),
-                "valor_original": valor_original,
-            })
-
-        df = pd.DataFrame(registros)
-        df["descricao"] = df.apply(lambda row: f"{row['descricao']} | {row['tipo_original']}", axis=1)
-        df["data_contabil"] = df.apply(lambda row: f"{row["data_contabil"]}/{datetime.now().year}", axis=1)
-        df = df.rename(columns={"data_contabil": "DATA", "tipo": "TIPO", "descricao": "DESCRIÇÃO", "valor_original": "VALOR"})
+                dados.append({
+                    "DATA_LANCAMENTO": data_1,
+                    "DATA_CONTABIL": data_2,
+                    "DESCRIÇÃO": descricao,
+                    "VALOR": valor
+                })
+            else:
+                print("Não capturou:", item)
+        df = pd.json_normalize(dados)
         df["VALOR"] = (
             df["VALOR"]
-            .str.replace("-", "", regex=False)
-            .str.replace("+", "", regex=False)
+            .str.strip()
             .str.replace("R$", "", regex=False)
+            .str.replace(" ", "", regex=False)
             .str.replace(".", "", regex=False)
             .str.replace(",", ".", regex=False)
-            .str.strip()
             .astype(float)
         )
-        df["TIPO"] = df["TIPO"].replace({
-            "Entrada": "C",
-            "Saída": "D"
-        })
-        df = df[["DATA", "DESCRIÇÃO", "VALOR", "TIPO"]]
-        df["DESCRIÇÃO"] = (
-            df["DESCRIÇÃO"]
-            .fillna("")
-            .astype(str)
-            .str.upper()
-            .str.strip()
-        )
-        df["DESCRIÇÃO"] = (
-            df["DESCRIÇÃO"]
-            .str.split("|")
-            .apply(lambda x: " | ".join([parte.strip() for parte in x[::-1]]) if isinstance(x, list) else x)
-        )
+        df["TIPO"] = df.apply(lambda x: "C" if x["VALOR"] > 0 else "D", axis=1)
+        df["DESCRIÇÃO"] = df["DESCRIÇÃO"].str.upper()
+        df["DATA_CONTABIL"] = df.apply(lambda x: f"{x["DATA_CONTABIL"]}/{periodo}", axis=1)
+        df["VALOR"] = df["VALOR"].astype(str).str.replace("-", "", regex=False)
+        df = df[["DATA_CONTABIL", "DESCRIÇÃO", "VALOR", "TIPO"]]
+        df = df.rename(columns={"DATA_CONTABIL": "DATA"})
         return df
