@@ -41,8 +41,8 @@ class Nubank(BankHandler):
         )
 
         rx_inicio_mov = re.compile(
-            r"^(?:Transferência enviada pelo Pix|Transferência Recebida|Transferência recebida pelo pix"
-            r"Crédito em conta|Pagamento de boleto efetuado)\b",
+            r"^(?:Transferência enviada pelo Pix|Transferência Recebida|Transferência recebida pelo pix|Valor adicionado na conta por cartão de crédito"
+            r"Crédito em conta|Reembolso recebido pelo Pix|Aplicação RDB|Resgate de empréstimo|Pagamento de boleto efetuado)\b",
             re.I
         )
 
