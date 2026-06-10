@@ -34,109 +34,174 @@ class Itau(BankHandler):
             " 24 horas por dia "
         ])]
 
-        padrao_linha_completa = re.compile(
-            r"^(?P<data>\d{2}/\d{2}/\d{4})\s+"
-            r"(?P<descricao>.+?)\s+"
-            r"(?P<valor>-?\d{1,3}(?:\.\d{3})*,\d{2})$"
+        regex_data = re.compile(r"^\s*\d{2}/\d{2}/\d{4}\b")
+
+        regex_valor_final = re.compile(
+            r"-?\d{1,3}(?:\.\d{3})*,\d{2}\s*$"
         )
-        padrao_data_valor = re.compile(
-            r"^(?P<data>\d{2}/\d{2}/\d{4})\s+"
-            r"(?P<valor>-?\d{1,3}(?:\.\d{3})*,\d{2})$"
+
+        regex_linha_com_data_valor = re.compile(
+            r"""
+            ^\s*
+            (?P<data>\d{2}/\d{2}/\d{4})
+            \s+
+            (?P<descricao>.*?)
+            \s+
+            (?P<valor>-?\d{1,3}(?:\.\d{3})*,\d{2})
+            \s*$
+            """,
+            re.VERBOSE
         )
+
+        regex_documento = re.compile(
+            r"\b(?:\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}|\d{3}\.\d{3}\.\d{3}-\d{2})\b"
+        )
+
+        regex_data_curta_colada = re.compile(
+            r"[A-ZÀ-Ú]{3,}\d{2}/\d{2}"
+        )
+
+        linhas = []
+
+        for item in pdf:
+            item = str(item).replace("\n", " ")
+            item = re.sub(r"\s+", " ", item).strip()
+
+            if item:
+                linhas.append(item)
+
 
         movimentacoes = []
         pendentes_antes = []
 
         i = 0
 
-        while i < len(pdf):
-            linha = pdf[i].strip()
+        while i < len(linhas):
+            linha = linhas[i]
 
-            if not linha:
+            match = regex_linha_com_data_valor.match(linha)
+
+            if not match:
+                pendentes_antes.append(linha)
                 i += 1
                 continue
 
-            match_completo = padrao_linha_completa.match(linha)
-            match_data_valor = padrao_data_valor.match(linha)
+            data = match.group("data")
+            descricao_base = match.group("descricao").strip()
+            valor = match.group("valor").strip()
 
-            if match_completo:
-                dados = match_completo.groupdict()
+            partes_antes = pendentes_antes
+            pendentes_antes = []
 
-                descricao_extra_antes = " ".join(pendentes_antes).strip()
+            partes_depois = []
 
-                descricao = dados["descricao"].strip()
+            doc_match = regex_documento.search(descricao_base)
 
-                if descricao_extra_antes:
-                    descricao = f"{descricao_extra_antes} {descricao}".strip()
+            deve_buscar_depois = False
 
-                movimentacoes.append({
-                    "DATA": dados["data"],
-                    "DESCRICAO": descricao,
-                    "VALOR": dados["valor"],
-                    "TIPO": "D" if dados["valor"].startswith("-") else "C"
-                })
+            if doc_match:
+                texto_antes_doc = descricao_base[:doc_match.start()].strip()
+                palavras_antes_doc = texto_antes_doc.split()
 
-                pendentes_antes = []
-                i += 1
-                continue
+                # Regra estrutural:
+                # Só busca complemento depois quando a descrição parece incompleta.
+                #
+                # Exemplos incompletos:
+                # PAGAMENTOS PIX QR-CODE 17.895...
+                # PIX ENVIADO 015.338...
+                # PIX RECEBIDO DOMINIU04/05 26.352...
+                # PAGAMENTOS TRANSF CC ITAU 014...
+                #
+                # Exemplos completos:
+                # PIX ENVIADO WAGNER DA SILVA OLIVEIRA 055...
+                # BOLETO PAGO BATER LIFE BATER LIFE 02...
+                if len(palavras_antes_doc) <= 4:
+                    deve_buscar_depois = True
 
-            if match_data_valor:
-                dados = match_data_valor.groupdict()
+                if regex_data_curta_colada.search(texto_antes_doc):
+                    deve_buscar_depois = True
 
-                partes_descricao = []
+            else:
+                palavras_descricao = descricao_base.split()
 
-                if pendentes_antes:
-                    partes_descricao.extend(pendentes_antes)
+                # Para casos como:
+                # TRANSFERÊNCIA AUTOM.
+                # 05/05/2026 720,00
+                # RECEBIDA AEA J
+                if len(palavras_descricao) <= 2:
+                    deve_buscar_depois = True
 
+            if deve_buscar_depois:
                 j = i + 1
 
-                while j < len(pdf):
-                    proxima = pdf[j].strip()
+                while j < len(linhas):
+                    proxima = linhas[j].strip()
 
-                    if not proxima:
-                        j += 1
-                        continue
+                    proxima_tem_data = bool(regex_data.match(proxima))
+                    proxima_tem_valor_final = bool(regex_valor_final.search(proxima))
 
-                    if re.match(r"^\d{2}/\d{2}/\d{4}", proxima):
+                    if proxima_tem_data:
                         break
 
-                    partes_descricao.append(proxima)
+                    if proxima_tem_valor_final:
+                        break
+
+                    partes_depois.append(proxima)
                     j += 1
 
-                descricao = " ".join(partes_descricao).strip()
+            else:
+                j = i + 1
 
-                movimentacoes.append({
-                    "DATA": dados["data"],
-                    "DESCRICAO": descricao,
-                    "VALOR": dados["valor"],
-                    "TIPO": "D" if dados["valor"].startswith("-") else "C"
-                })
+            complemento_antes = " ".join(partes_antes).strip()
+            complemento_depois = " ".join(partes_depois).strip()
 
-                pendentes_antes = []
-                i = j
-                continue
+            complemento_antes = re.sub(r"\s+", " ", complemento_antes)
+            complemento_depois = re.sub(r"\s+", " ", complemento_depois)
 
-            pendentes_antes.append(linha)
-            i += 1
+            complemento = f"{complemento_antes} {complemento_depois}".strip()
+            complemento = re.sub(r"\s+", " ", complemento)
 
+            if doc_match and complemento:
+                documento = doc_match.group()
+
+                antes_doc = descricao_base[:doc_match.start()].strip()
+                depois_doc = descricao_base[doc_match.end():].strip()
+
+                descricao_final = f"{antes_doc} {complemento} {documento} {depois_doc}"
+
+            elif complemento:
+                descricao_final = f"{descricao_base} {complemento}"
+
+            else:
+                descricao_final = descricao_base
+
+            descricao_final = re.sub(r"\s+", " ", descricao_final).strip()
+
+            movimentacoes.append({
+                "DATA": data,
+                "DESCRICAO": descricao_final,
+                "VALOR": valor
+            })
+
+            i = j
         df = pd.json_normalize(movimentacoes)
         df["VALOR"] = (
             df["VALOR"]
             .str.strip()
             .str.replace(".", "", regex=False)
             .str.replace(",", ".", regex=False)
-            .str.replace("-", "", regex=False)
+            .str.replace(" ", "", regex=False)
             .astype(float)
         )
+        df["TIPO"] = df.apply(lambda x: "C" if x["VALOR"] > 0 else "D", axis=1)
         df["DESCRICAO"] = df["DESCRICAO"].str.upper()
-        df = df.rename(columns={"DESCRICAO": "DESCRIÇÃO"})
         df = df[
-            ~df["DESCRIÇÃO"]
+            ~df["DESCRICAO"]
             .astype(str)
-            .str.replace(r"\s+", "", regex=True)
             .str.upper()
             .str.contains("SALDO", na=False)
         ]
+        df["VALOR"] = df["VALOR"].abs()
         return df
     
     @layout("extrato mensal ")
