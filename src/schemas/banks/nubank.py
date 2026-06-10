@@ -30,7 +30,7 @@ class Nubank(BankHandler):
         cpf = pdf[1]
         datas = pdf[3]
         pdf = pdf[11:]
-        pdf = [item for item in pdf if not any(texto in item for texto in [empresa, cpf, conta, datas, "CNPJ", "Tem alguma dúvida?", "metropolitanas) ", "Caso a solução ", "disponíveis em nubank.com.br", "Extrato gerado ", "O saldo líquido ", "Não nos responsabilizamos ", "Asseguramos a autenticidade ", "Nu Financeira S.A.", "e Investimento", "Nu Pagamentos S.A. - Instituição de Pagamento"])]
+        pdf = [item for item in pdf if not any(texto in item for texto in [empresa, cpf, conta, datas, "CNPJ", "Tem alguma dúvida?", "metropolitanas) ", "Caso a solução ", "disponíveis em nubank.com.br", "Extrato gerado ", "O saldo líquido ", "Não nos responsabilizamos ", "Asseguramos a autenticidade ", "Nu Financeira S.A.", "e Investimento", "Nu Pagamentos S.A. - Instituição de Pagamento", "Investimento Pagamento"])]
 
         re_data = re.compile(
             r'\b\d{2}\s+(?:JAN|FEV|MAR|ABR|MAI|JUN|JUL|AGO|SET|OUT|NOV|DEZ)\s+\d{4}\b',
@@ -145,6 +145,9 @@ class Nubank(BankHandler):
 
             if bloco:
                 bloco.append(linha)
+
+        # MUITO IMPORTANTE
+        fechar_bloco()
 
         df = pd.json_normalize(resultado)
         df["VALOR_BRUTO"] = (
