@@ -26,7 +26,7 @@ class BTG_Pactual(BankHandler):
 
     @layout("Razão social CNPJ Banco Agência Conta")
     def layout1(self, pdf):
-        pdf = pdf[18:]
+        pdf = pdf[21:]
         pdf = [item for item in pdf if not any(texto in item for texto in [
                     "Fale com ",
                     "Ligue para: ",
