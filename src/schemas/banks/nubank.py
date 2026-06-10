@@ -196,6 +196,9 @@ class Nubank(BankHandler):
                 })
 
         df = pd.json_normalize(dados)
+        if df.empty:
+            return pd.DataFrame(columns=["DATA", "DESCRIÇÃO", "VALOR", "TIPO"])
+        
         df["VALOR"] = (
             df["VALOR"]
             .str.strip()
