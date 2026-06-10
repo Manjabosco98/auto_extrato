@@ -34,125 +34,109 @@ class Itau(BankHandler):
             " 24 horas por dia "
         ])]
 
-        data_re = re.compile(r'\b\d{2}/\d{2}(?:/\d{2,4})?\b')
-        valor_re = re.compile(
-            r'(?:R\$\s*)?-?(?:\d{1,3}(?:\.\d{3})+|\d+),\d{2}[CD]?|'
-            r'R\$\s*-?\d+(?:,\d{2})?'
+        padrao_linha_completa = re.compile(
+            r"^(?P<data>\d{2}/\d{2}/\d{4})\s+"
+            r"(?P<descricao>.+?)\s+"
+            r"(?P<valor>-?\d{1,3}(?:\.\d{3})*,\d{2})$"
         )
-        doc_re = re.compile(
-            r'\b(?:\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}|'
-            r'\d{3}\.\d{3}\.\d{3}-\d{2}|\d{11})\b'
-        )
-        ignorar_re = re.compile(
-            r'\b(SALDO ANTERIOR|SALDO TOTAL|SALDO DISPON[IÍ]VEL|'
-            r'DATA|LANÇAMENTOS|RAZ[ÃA]O SOCIAL|CNPJ/CPF|VALOR|'
-            r'AG[ÊE]NCIA|CONTA|CNPJ|CPF|BANCO|P[ÁA]GINA|PER[IÍ]ODO)\b',
-            re.I
+        padrao_data_valor = re.compile(
+            r"^(?P<data>\d{2}/\d{2}/\d{4})\s+"
+            r"(?P<valor>-?\d{1,3}(?:\.\d{3})*,\d{2})$"
         )
 
-        limpas = []
-        for linha in pdf:
-            linha = re.sub(r'\s+', ' ', str(linha)).strip()
-            if linha and not ignorar_re.search(linha):
-                limpas.append(linha)
+        movimentacoes = []
+        pendentes_antes = []
 
-        movs = []
-        pendentes = []
+        i = 0
 
-        for linha in limpas:
-            if data_re.search(linha):
-                bloco = pendentes
-                pendentes = []
+        while i < len(pdf):
+            linha = pdf[i].strip()
 
-                if movs and bloco:
-                    anterior = movs[-1]
-                    texto_ant = ' '.join(anterior["pre"] + [anterior["linha"]] + anterior["pos"])
-
-                    while bloco and not valor_re.search(texto_ant):
-                        anterior["pos"].append(bloco.pop(0))
-                        texto_ant = ' '.join(anterior["pre"] + [anterior["linha"]] + anterior["pos"])
-
-                    if bloco and anterior["pre"]:
-                        anterior["pos"].append(bloco.pop(0))
-
-                movs.append({"pre": bloco, "linha": linha, "pos": []})
-            else:
-                pendentes.append(linha)
-
-        if movs and pendentes:
-            ultimo = movs[-1]
-            texto_ult = ' '.join(ultimo["pre"] + [ultimo["linha"]] + ultimo["pos"])
-            if ultimo["pre"] or not valor_re.search(texto_ult):
-                ultimo["pos"].extend(pendentes)
-
-        resultado = []
-
-        for mov in movs:
-            linha = mov["linha"]
-            data = data_re.search(linha).group(0)
-
-            corpo = data_re.sub('', linha, count=1).strip()
-            complemento = mov["pre"] + mov["pos"]
-            texto_total = ' '.join([corpo] + complemento)
-
-            valores = list(valor_re.finditer(texto_total))
-            if not valores:
+            if not linha:
+                i += 1
                 continue
 
-            valor = valores[-1].group(0)
+            match_completo = padrao_linha_completa.match(linha)
+            match_data_valor = padrao_data_valor.match(linha)
 
-            if valor in corpo:
-                corpo_sem_valor = corpo[:corpo.rfind(valor)].strip()
-            else:
-                corpo_sem_valor = corpo.strip()
-                complemento = [v for v in complemento if v != valor]
+            if match_completo:
+                dados = match_completo.groupdict()
 
-            docs = list(doc_re.finditer(corpo_sem_valor))
+                descricao_extra_antes = " ".join(pendentes_antes).strip()
 
-            if docs:
-                doc = docs[-1].group(0)
-                antes_doc = corpo_sem_valor[:docs[-1].start()].strip()
-                depois_doc = corpo_sem_valor[docs[-1].end():].strip()
-                partes = [antes_doc] + complemento + [depois_doc, doc]
-            else:
-                partes = [corpo_sem_valor] + complemento
+                descricao = dados["descricao"].strip()
 
-            descricao = re.sub(r'\s+', ' ', ' '.join(p for p in partes if p)).strip()
-            resultado.append(f'{data} {descricao} {valor}')
+                if descricao_extra_antes:
+                    descricao = f"{descricao_extra_antes} {descricao}".strip()
 
-        padrao = r"^(?P<data>\d{2}/\d{2}/\d{4})\s+(?P<descricao>.+?)\s+(?P<valor>-?\d{1,3}(?:\.\d{3})*,\d{2})$"
-
-        dados = []
-
-        for item in resultado:
-            match = re.match(padrao, item.strip())
-
-            if match:
-                data = match.group("data")
-                descricao = match.group("descricao")
-                valor_texto = match.group("valor")
-
-                tipo = "D" if valor_texto.startswith("-") else "C"
-
-                valor = (
-                    valor_texto
-                    .replace(".", "")
-                    .replace(",", ".")
-                )
-
-                dados.append({
-                    "DATA": data,
-                    "DESCRIÇÃO": descricao,
-                    "VALOR": float(valor),
-                    "TIPO": tipo
+                movimentacoes.append({
+                    "DATA": dados["data"],
+                    "DESCRICAO": descricao,
+                    "VALOR": dados["valor"],
+                    "TIPO": "D" if dados["valor"].startswith("-") else "C"
                 })
-            else:
-                print("Não capturado:", item)
-        df = pd.DataFrame(dados)
-        if df.empty:
-            return pd.DataFrame(columns=["DATA", "DESCRIÇÃO", "VALOR", "TIPO"])
-        df["VALOR"] = df["VALOR"].abs()
-        df["DESCRIÇÃO"] = df["DESCRIÇÃO"].str.upper()
+
+                pendentes_antes = []
+                i += 1
+                continue
+
+            if match_data_valor:
+                dados = match_data_valor.groupdict()
+
+                partes_descricao = []
+
+                if pendentes_antes:
+                    partes_descricao.extend(pendentes_antes)
+
+                j = i + 1
+
+                while j < len(pdf):
+                    proxima = pdf[j].strip()
+
+                    if not proxima:
+                        j += 1
+                        continue
+
+                    if re.match(r"^\d{2}/\d{2}/\d{4}", proxima):
+                        break
+
+                    partes_descricao.append(proxima)
+                    j += 1
+
+                descricao = " ".join(partes_descricao).strip()
+
+                movimentacoes.append({
+                    "DATA": dados["data"],
+                    "DESCRICAO": descricao,
+                    "VALOR": dados["valor"],
+                    "TIPO": "D" if dados["valor"].startswith("-") else "C"
+                })
+
+                pendentes_antes = []
+                i = j
+                continue
+
+            pendentes_antes.append(linha)
+            i += 1
+
+        df = pd.json_normalize(movimentacoes)
+        df["VALOR"] = (
+            df["VALOR"]
+            .str.strip()
+            .str.replace(".", "", regex=False)
+            .str.replace(",", ".", regex=False)
+            .str.replace("-", "", regex=False)
+            .astype(float)
+        )
+        df["DESCRICAO"] = df["DESCRICAO"].str.upper()
+        df = df.rename(columns={"DESCRICAO": "DESCRIÇÃO"})
+        df = df[
+            ~df["DESCRIÇÃO"]
+            .astype(str)
+            .str.replace(r"\s+", "", regex=True)
+            .str.upper()
+            .str.contains("SALDO", na=False)
+        ]
         return df
     
     @layout("extrato mensal ")
