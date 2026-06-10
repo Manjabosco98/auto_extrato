@@ -202,6 +202,7 @@ class Itau(BankHandler):
             .str.contains("SALDO", na=False)
         ]
         df["VALOR"] = df["VALOR"].abs()
+        df = df.rename(columns={"DESCRICAO": "DESCRIÇÃO"})
         return df
     
     @layout("extrato mensal ")
