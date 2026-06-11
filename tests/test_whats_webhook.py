@@ -13,6 +13,15 @@ from src.services import whats as whats_service
 GROUP_JID = "120363404201868629@g.us"
 
 
+def make_checkpoint(timestamp=200):
+    return {
+        "key": {"id": "CHECKPOINT", "remoteJid": GROUP_JID},
+        "messageTimestamp": timestamp,
+        "messageType": "conversation",
+        "message": {"conversation": "PDFS BAIXADOS ATE AQUI"},
+    }
+
+
 def make_payload(
     *,
     event="MESSAGES_UPSERT",
@@ -21,6 +30,7 @@ def make_payload(
     message_type="documentMessage",
     mimetype="application/pdf",
     message_id="MSG123",
+    message_timestamp=1780948081,
 ):
     return {
         "event": event,
@@ -33,7 +43,7 @@ def make_payload(
                 "participant": "551199999999@lid",
             },
             "pushName": "SUPORTE SGE",
-            "messageTimestamp": 1780948081,
+            "messageTimestamp": message_timestamp,
             "messageType": message_type,
             "message": {
                 "documentMessage": {
@@ -155,6 +165,52 @@ class WhatsWebhookFilterTest(unittest.TestCase):
         self.assertEqual(reason, "PDF aceito")
         self.assertEqual(message["key"]["id"], "MSG123")
 
+    def test_aceita_pdf_do_webhook_depois_do_checkpoint(self):
+        should_process, reason, message = whats_service.should_process_webhook(
+            make_payload(message_timestamp=300),
+            whatsapp=FakeWhatsApp(pending_messages=[make_checkpoint(timestamp=200)]),
+        )
+
+        self.assertTrue(should_process)
+        self.assertEqual(reason, "PDF aceito")
+        self.assertEqual(message["key"]["id"], "MSG123")
+
+    def test_ignora_pdf_do_webhook_antes_do_checkpoint(self):
+        should_process, reason, message = whats_service.should_process_webhook(
+            make_payload(message_timestamp=100),
+            whatsapp=FakeWhatsApp(pending_messages=[make_checkpoint(timestamp=200)]),
+        )
+
+        self.assertFalse(should_process)
+        self.assertEqual(reason, "Mensagem antes do checkpoint")
+        self.assertIsNone(message)
+
+    def test_ignora_pdf_do_webhook_sem_timestamp_quando_existe_checkpoint(self):
+        payload = make_payload()
+        del payload["data"]["messageTimestamp"]
+
+        should_process, reason, message = whats_service.should_process_webhook(
+            payload,
+            whatsapp=FakeWhatsApp(pending_messages=[make_checkpoint(timestamp=200)]),
+        )
+
+        self.assertFalse(should_process)
+        self.assertEqual(reason, "Mensagem sem timestamp valido apos checkpoint")
+        self.assertIsNone(message)
+
+    def test_ignora_webhook_quando_falha_consulta_checkpoint(self):
+        fake_whatsapp = FakeWhatsApp()
+        fake_whatsapp.group_messages = Mock(side_effect=RuntimeError("Evolution offline"))
+
+        should_process, reason, message = whats_service.should_process_webhook(
+            make_payload(),
+            whatsapp=fake_whatsapp,
+        )
+
+        self.assertFalse(should_process)
+        self.assertEqual(reason, "Falha ao consultar checkpoint WhatsApp")
+        self.assertIsNone(message)
+
     def test_nao_reprocessa_pdf_ja_registrado(self):
         should_process, reason, message = whats_service.should_process_webhook(
             make_payload(),
@@ -255,6 +311,87 @@ class WhatsWebhookServiceTest(unittest.TestCase):
         executar_conversao.assert_called_once()
         self.assertFalse(fake_whatsapp.pdf_messages_called)
         self.assertEqual(fake_whatsapp.checkpoints_sent, [GROUP_JID])
+
+    def test_webhook_payload_misto_baixa_apenas_pdfs_depois_do_checkpoint(self):
+        payload = make_payload(message_id="MSG_OLD")
+        payload["data"] = {
+            "messages": [
+                make_payload(message_id="MSG_OLD", message_timestamp=100)["data"],
+                make_payload(message_id="MSG_NEW", message_timestamp=300)["data"],
+            ]
+        }
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        processed = []
+
+        fake_whatsapp = FakeWhatsApp(pending_messages=[make_checkpoint(timestamp=200)])
+
+        def download_pdf(message, file_name):
+            path = Path(temp_dir.name) / f"{message['key']['id']}.pdf"
+            path.write_bytes(b"%PDF-1.4")
+            return path
+
+        def mark_processed(message_id, data):
+            processed.append((message_id, data))
+
+        fake_whatsapp.download_pdf = download_pdf
+        fake_whatsapp.mark_processed = mark_processed
+
+        drive = Mock()
+        drive.find_by_app_property.return_value = None
+        drive.upload.return_value = {"id": "drive-file-id-new"}
+
+        with (
+            patch.object(whats_service, "WhatsAppChat", return_value=fake_whatsapp),
+            patch.object(whats_service, "GoogleDriveAuth", return_value=drive),
+            patch.object(whats_service, "executar_conversao") as executar_conversao,
+        ):
+            result = whats_service.processar_webhook_whats(payload)
+
+        self.assertEqual(result["status"], "processed")
+        self.assertEqual(result["total_baixados"], 1)
+        self.assertEqual([item[0] for item in processed], ["MSG_NEW"])
+        drive.upload.assert_called_once()
+        executar_conversao.assert_called_once()
+        self.assertEqual(fake_whatsapp.checkpoints_sent, [GROUP_JID])
+
+    def test_webhook_antes_do_checkpoint_nao_baixa_nem_converte(self):
+        payload = make_payload(message_timestamp=100)
+        fake_whatsapp = FakeWhatsApp(pending_messages=[make_checkpoint(timestamp=200)])
+        fake_whatsapp.download_pdf = Mock()
+
+        with (
+            patch.object(whats_service, "WhatsAppChat", return_value=fake_whatsapp),
+            patch.object(whats_service, "GoogleDriveAuth") as google_drive_auth,
+            patch.object(whats_service, "executar_conversao") as executar_conversao,
+        ):
+            result = whats_service.processar_webhook_whats(payload)
+
+        self.assertEqual(result["status"], "ignored")
+        self.assertEqual(result["message"], "Mensagem antes do checkpoint")
+        google_drive_auth.assert_not_called()
+        fake_whatsapp.download_pdf.assert_not_called()
+        executar_conversao.assert_not_called()
+        self.assertEqual(fake_whatsapp.checkpoints_sent, [])
+
+    def test_webhook_falha_checkpoint_nao_baixa_nem_converte(self):
+        fake_whatsapp = FakeWhatsApp()
+        fake_whatsapp.group_messages = Mock(side_effect=RuntimeError("Evolution offline"))
+        fake_whatsapp.download_pdf = Mock()
+
+        with (
+            patch.object(whats_service, "WhatsAppChat", return_value=fake_whatsapp),
+            patch.object(whats_service, "GoogleDriveAuth") as google_drive_auth,
+            patch.object(whats_service, "executar_conversao") as executar_conversao,
+        ):
+            result = whats_service.processar_webhook_whats(make_payload())
+
+        self.assertEqual(result["status"], "ignored")
+        self.assertEqual(result["message"], "Falha ao consultar checkpoint WhatsApp")
+        google_drive_auth.assert_not_called()
+        fake_whatsapp.download_pdf.assert_not_called()
+        executar_conversao.assert_not_called()
+        self.assertEqual(fake_whatsapp.checkpoints_sent, [])
 
     def test_pdf_ja_existente_no_drive_nao_chama_conversao(self):
         payload = make_payload(message_id="MSG123")

@@ -23,6 +23,7 @@ from src.utils.logging_config import setup_logging
 
 logger = logging.getLogger(__name__)
 _whats_batch_lock = Lock()
+CHECKPOINT_LOOKUP_FAILURE = "Falha ao consultar checkpoint WhatsApp"
 
 
 def _normalize_event(event: str | None) -> str:
@@ -91,6 +92,7 @@ def should_process_webhook(
     if not group_jid:
         return False, f"Grupo nao encontrado: {whatsapp.group_name}", None
 
+    valid_group_messages = []
     for message in candidate_messages:
         is_valid, reason = _validate_payload_pdf_message(
             whatsapp=whatsapp,
@@ -99,6 +101,29 @@ def should_process_webhook(
         )
 
         if is_valid:
+            valid_group_messages.append(message)
+            continue
+
+        last_reason = reason
+
+    if not valid_group_messages:
+        return False, last_reason, None
+
+    checkpoint_ok, _, checkpoint_timestamp, checkpoint_reason = _group_checkpoint_context(
+        whatsapp=whatsapp,
+        group_jid=group_jid,
+        context="webhook",
+    )
+    if not checkpoint_ok:
+        return False, checkpoint_reason or CHECKPOINT_LOOKUP_FAILURE, None
+
+    for message in valid_group_messages:
+        is_after_checkpoint, reason = _validate_message_after_checkpoint(
+            message=message,
+            checkpoint_timestamp=checkpoint_timestamp,
+        )
+
+        if is_after_checkpoint:
             return True, "PDF aceito", message
 
         last_reason = reason
@@ -206,27 +231,28 @@ def _executar_fluxo_whatsapp() -> dict[str, Any]:
         token_secret_path=GOOGLE_OAUTH_TOKEN_SECRET,
     )
 
-    messages = whatsapp.group_messages(group_jid)
-    checkpoint_timestamp = whatsapp.last_checkpoint_timestamp(messages)
-    if checkpoint_timestamp is not None:
-        logger.info(
-            "Checkpoint WhatsApp encontrado. Considerando PDFs apos timestamp: %s",
-            checkpoint_timestamp,
-        )
+    checkpoint_ok, messages, checkpoint_timestamp, checkpoint_reason = _group_checkpoint_context(
+        whatsapp=whatsapp,
+        group_jid=group_jid,
+        context="fluxo manual WhatsApp",
+    )
+    if not checkpoint_ok:
+        return {
+            "status": "ignored",
+            "message": checkpoint_reason or CHECKPOINT_LOOKUP_FAILURE,
+            "total_baixados": 0,
+        }
 
     messages_by_id = {}
 
     for message in messages:
-        if checkpoint_timestamp is not None:
-            message_timestamp = message.get("messageTimestamp")
-
-            if not isinstance(message_timestamp, int | float):
-                logger.info("Mensagem ignorada por nao possuir timestamp valido")
-                continue
-
-            if message_timestamp <= checkpoint_timestamp:
-                logger.info("Mensagem ignorada por estar antes do checkpoint")
-                continue
+        is_after_checkpoint, reason = _validate_message_after_checkpoint(
+            message=message,
+            checkpoint_timestamp=checkpoint_timestamp,
+        )
+        if not is_after_checkpoint:
+            logger.info("Mensagem ignorada pelo checkpoint: %s", reason)
+            continue
 
         is_valid, reason = _validate_payload_pdf_message(
             whatsapp=whatsapp,
@@ -293,6 +319,49 @@ def _group_jid_from_messages(messages: list[dict[str, Any]]) -> str | None:
     return None
 
 
+def _group_checkpoint_context(
+    whatsapp: WhatsAppChat,
+    group_jid: str,
+    context: str,
+) -> tuple[bool, list[dict[str, Any]], int | None, str | None]:
+    try:
+        messages = whatsapp.group_messages(group_jid)
+    except Exception:
+        logger.exception(
+            "Erro ao consultar mensagens do grupo para checkpoint no %s",
+            context,
+        )
+        return False, [], None, CHECKPOINT_LOOKUP_FAILURE
+
+    checkpoint_timestamp = whatsapp.last_checkpoint_timestamp(messages)
+    if checkpoint_timestamp is not None:
+        logger.info(
+            "Checkpoint WhatsApp encontrado no %s. Considerando PDFs apos timestamp: %s",
+            context,
+            checkpoint_timestamp,
+        )
+
+    return True, messages, checkpoint_timestamp, None
+
+
+def _validate_message_after_checkpoint(
+    message: dict[str, Any],
+    checkpoint_timestamp: int | None,
+) -> tuple[bool, str]:
+    if checkpoint_timestamp is None:
+        return True, "Sem checkpoint"
+
+    message_timestamp = message.get("messageTimestamp")
+
+    if not isinstance(message_timestamp, int | float):
+        return False, "Mensagem sem timestamp valido apos checkpoint"
+
+    if message_timestamp <= checkpoint_timestamp:
+        return False, "Mensagem antes do checkpoint"
+
+    return True, "Mensagem apos checkpoint"
+
+
 def _send_checkpoint_safe(whatsapp: WhatsAppChat, group_jid: str | None) -> None:
     if not group_jid:
         logger.info("Checkpoint WhatsApp nao enviado: grupo nao identificado")
@@ -354,7 +423,32 @@ def _payload_pdf_messages(
 
         messages_by_id[_message_id(message)] = message
 
-    return list(messages_by_id.values())
+    if not messages_by_id:
+        return []
+
+    checkpoint_ok, _, checkpoint_timestamp, checkpoint_reason = _group_checkpoint_context(
+        whatsapp=whatsapp,
+        group_jid=group_jid,
+        context="webhook",
+    )
+    if not checkpoint_ok:
+        logger.info("Webhook WhatsApp ignorado: %s", checkpoint_reason)
+        return []
+
+    filtered_messages = {}
+    for message_id, message in messages_by_id.items():
+        is_after_checkpoint, reason = _validate_message_after_checkpoint(
+            message=message,
+            checkpoint_timestamp=checkpoint_timestamp,
+        )
+
+        if not is_after_checkpoint:
+            logger.info("Mensagem do payload ignorada pelo checkpoint: %s", reason)
+            continue
+
+        filtered_messages[message_id] = message
+
+    return list(filtered_messages.values())
 
 
 def _download_upload_pdf_message(
