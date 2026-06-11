@@ -32,8 +32,8 @@ class Itau(BankHandler):
         pdf = pdf[5:]
 
         pdf = [
-            item for item in pdf 
-            if not any(texto in item for texto in [
+            item for item in pdf
+            if not any(texto in str(item) for texto in [
                 "aviso: ",
                 "novos lançamentos",
                 "atualizado em ",
@@ -47,12 +47,10 @@ class Itau(BankHandler):
         # REGEX
         # ============================================================
 
-        # Linha que começa com data completa
         regex_data = re.compile(
             r"^\s*\d{2}/\d{2}/\d{4}\b"
         )
 
-        # Linha que tem somente uma data completa, podendo ter resto depois
         regex_linha_inicia_com_data = re.compile(
             r"""
             ^\s*
@@ -63,17 +61,14 @@ class Itau(BankHandler):
             re.VERBOSE
         )
 
-        # Valor no final da linha
         regex_valor_final = re.compile(
             r"-?\d{1,3}(?:\.\d{3})*,\d{2}\s*$"
         )
 
-        # Linha somente com valor
         regex_valor_somente = re.compile(
             r"^\s*-?\d{1,3}(?:\.\d{3})*,\d{2}\s*$"
         )
 
-        # Linha completa: DATA + DESCRIÇÃO + VALOR
         regex_linha_com_data_valor = re.compile(
             r"""
             ^\s*
@@ -87,12 +82,10 @@ class Itau(BankHandler):
             re.VERBOSE
         )
 
-        # Documento CPF/CNPJ
         regex_documento = re.compile(
             r"\b(?:\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}|\d{3}\.\d{3}\.\d{3}-\d{2})\b"
         )
 
-        # Caso venha algo como DOMINIU04/05
         regex_data_curta_colada = re.compile(
             r"[A-ZÀ-Ú]{3,}\d{2}/\d{2}"
         )
@@ -124,13 +117,15 @@ class Itau(BankHandler):
         while i < len(linhas):
             linha = linhas[i].strip()
 
+            match = regex_linha_com_data_valor.match(linha)
+
             # ========================================================
             # CASO 1:
-            # Linha já vem completa:
-            # 28/05/2026 DESCRIÇÃO QUALQUER 0,01
+            # Linha completa ou aparentemente completa:
+            #
+            # 08/05/2026 DESCRIÇÃO 0,01
+            # 08/05/2026 0,01
             # ========================================================
-
-            match = regex_linha_com_data_valor.match(linha)
 
             if match:
                 data = match.group("data")
@@ -146,13 +141,23 @@ class Itau(BankHandler):
 
                 deve_buscar_depois = False
 
-                if doc_match:
+                # ----------------------------------------------------
+                # Regra nova:
+                # Se a descrição veio vazia, obrigatoriamente procura
+                # descrição depois.
+                #
+                # Exemplo:
+                # 08/05/2026 0,01
+                # RENDIMENTOS REND PAGO APLIC
+                # AUT MAIS
+                # ----------------------------------------------------
+                if not descricao_base:
+                    deve_buscar_depois = True
+
+                elif doc_match:
                     texto_antes_doc = descricao_base[:doc_match.start()].strip()
                     palavras_antes_doc = texto_antes_doc.split()
 
-                    # Regra estrutural:
-                    # Busca complemento depois quando a descrição antes do documento
-                    # parece incompleta.
                     if len(palavras_antes_doc) <= 4:
                         deve_buscar_depois = True
 
@@ -162,9 +167,6 @@ class Itau(BankHandler):
                 else:
                     palavras_descricao = descricao_base.split()
 
-                    # Para casos como:
-                    # TRANSFERÊNCIA AUTOM.
-                    # RECEBIDA ...
                     if len(palavras_descricao) <= 2:
                         deve_buscar_depois = True
 
@@ -175,12 +177,12 @@ class Itau(BankHandler):
                         proxima = linhas[j].strip()
 
                         proxima_tem_data = bool(regex_data.match(proxima))
-                        proxima_tem_valor_final = bool(regex_valor_final.search(proxima))
+                        proxima_e_valor = bool(regex_valor_somente.match(proxima))
 
                         if proxima_tem_data:
                             break
 
-                        if proxima_tem_valor_final:
+                        if proxima_e_valor:
                             break
 
                         partes_depois.append(proxima)
@@ -206,8 +208,11 @@ class Itau(BankHandler):
 
                     descricao_final = f"{antes_doc} {complemento} {documento} {depois_doc}"
 
-                elif complemento:
+                elif descricao_base and complemento:
                     descricao_final = f"{descricao_base} {complemento}"
+
+                elif complemento:
+                    descricao_final = complemento
 
                 else:
                     descricao_final = descricao_base
@@ -225,19 +230,12 @@ class Itau(BankHandler):
 
             # ========================================================
             # CASO 2:
-            # Linha começa com data, mas o valor está em outra linha.
-            #
-            # Exemplos:
+            # Linha começa com data, mas valor está depois.
             #
             # 28/05/2026
             # RENDIMENTOS REND PAGO APLIC
             # AUT MAIS
             # 0,01
-            #
-            # 26/05/2026
-            # TRANSFERÊNCIA AUTOM.
-            # RECEBIDA 4372.44599-1
-            # 413,33
             # ========================================================
 
             match_data = regex_linha_inicia_com_data.match(linha)
@@ -253,11 +251,32 @@ class Itau(BankHandler):
 
                     valor_no_resto = regex_valor_final.search(resto)
 
-                    # Caso seja:
-                    # 28/05/2026 DESCRIÇÃO 0,01
                     if valor_no_resto:
                         valor = valor_no_resto.group().strip()
                         descricao = resto[:valor_no_resto.start()].strip()
+
+                        j = i + 1
+
+                        # ------------------------------------------------
+                        # Regra nova:
+                        # Se data + valor veio sem descrição,
+                        # busca descrição nas próximas linhas.
+                        # ------------------------------------------------
+                        if not descricao:
+                            while j < len(linhas):
+                                proxima = linhas[j].strip()
+
+                                if regex_data.match(proxima):
+                                    break
+
+                                if regex_valor_somente.match(proxima):
+                                    break
+
+                                partes_descricao.append(proxima)
+                                j += 1
+
+                            descricao = " ".join(partes_descricao).strip()
+                            descricao = re.sub(r"\s+", " ", descricao)
 
                         movimentacoes.append({
                             "DATA": data,
@@ -266,11 +285,9 @@ class Itau(BankHandler):
                         })
 
                         pendentes_antes = []
-                        i += 1
+                        i = j
                         continue
 
-                    # Caso seja:
-                    # 28/05/2026 DESCRIÇÃO INICIAL
                     else:
                         partes_descricao.append(resto)
 
@@ -280,21 +297,14 @@ class Itau(BankHandler):
                 while j < len(linhas):
                     proxima = linhas[j].strip()
 
-                    # Se encontrou uma nova data antes de encontrar valor,
-                    # não mistura com outro lançamento.
                     if regex_data.match(proxima):
                         break
 
-                    # Caso a próxima linha seja apenas o valor:
-                    # 0,01
-                    # 413,33
                     if regex_valor_somente.match(proxima):
                         valor = proxima
                         j += 1
                         break
 
-                    # Caso a próxima linha tenha descrição + valor no final:
-                    # RECEBIDA 4372.44599-1 413,33
                     valor_final = regex_valor_final.search(proxima)
 
                     if valor_final:
@@ -329,16 +339,13 @@ class Itau(BankHandler):
                     i = j
                     continue
 
-                # Se começou com data, mas não achou valor,
-                # guarda como pendente para não perder informação.
                 pendentes_antes.append(linha)
                 i += 1
                 continue
 
             # ========================================================
             # CASO 3:
-            # Linha não tem data e não é lançamento completo.
-            # Pode ser complemento de descrição.
+            # Linha solta/complemento.
             # ========================================================
 
             pendentes_antes.append(linha)
@@ -351,7 +358,6 @@ class Itau(BankHandler):
 
         df = pd.json_normalize(movimentacoes)
 
-        # Segurança caso nenhuma movimentação seja encontrada
         if not df.empty:
 
             df["VALOR"] = (
@@ -376,13 +382,21 @@ class Itau(BankHandler):
                 .str.strip()
             )
 
-            # Remove somente linhas que começam com SALDO,
-            # evitando remover lançamentos legítimos que tenham a palavra SALDO no meio.
+            # Remove somente descrições que começam com SALDO
             df = df[
                 ~df["DESCRICAO"]
                 .astype(str)
                 .str.upper()
                 .str.match(r"^\s*SALDO\b", na=False)
+            ]
+
+            # Segurança: remove lançamentos sem descrição
+            # apenas se realmente ficaram vazios após toda tentativa de complemento.
+            df = df[
+                df["DESCRICAO"]
+                .astype(str)
+                .str.strip()
+                .ne("")
             ]
 
             df["VALOR"] = df["VALOR"].abs()
