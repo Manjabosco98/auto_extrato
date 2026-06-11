@@ -428,6 +428,20 @@ class Itau(BankHandler):
                 "DESCRICAO": "DESCRIÇÃO"
             })
 
+            texto_add = "RENDIMENTOS REND PAGO APLIC"
+
+            condicao = (
+                df["DESCRIÇÃO"]
+                .fillna("")
+                .str.strip()
+                .str.upper()
+                .eq("AUT MAIS")
+            )
+
+            df.loc[condicao, "DESCRIÇÃO"] = (
+                texto_add + " " + df.loc[condicao, "DESCRIÇÃO"].str.strip()
+            )
+
         else:
             df = pd.DataFrame(columns=["DATA", "DESCRIÇÃO", "VALOR", "TIPO"])
         return df
