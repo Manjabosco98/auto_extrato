@@ -74,7 +74,7 @@ class Itau(BankHandler):
             ^\s*
             (?P<data>\d{2}/\d{2}/\d{4})
             \s+
-            (?P<descricao>.*?)
+            (?P<descricao>.+?)
             \s+
             (?P<valor>-?\d{1,3}(?:\.\d{3})*,\d{2})
             \s*$
@@ -117,15 +117,14 @@ class Itau(BankHandler):
         while i < len(linhas):
             linha = linhas[i].strip()
 
-            match = regex_linha_com_data_valor.match(linha)
-
             # ========================================================
             # CASO 1:
-            # Linha completa ou aparentemente completa:
+            # Linha completa:
             #
-            # 08/05/2026 DESCRIÇÃO 0,01
-            # 08/05/2026 0,01
+            # 04/05/2026 PIX ENVIADO WAGNER DA SILVA 055.581.123-95 -375,00
             # ========================================================
+
+            match = regex_linha_com_data_valor.match(linha)
 
             if match:
                 data = match.group("data")
@@ -141,20 +140,7 @@ class Itau(BankHandler):
 
                 deve_buscar_depois = False
 
-                # ----------------------------------------------------
-                # Regra nova:
-                # Se a descrição veio vazia, obrigatoriamente procura
-                # descrição depois.
-                #
-                # Exemplo:
-                # 08/05/2026 0,01
-                # RENDIMENTOS REND PAGO APLIC
-                # AUT MAIS
-                # ----------------------------------------------------
-                if not descricao_base:
-                    deve_buscar_depois = True
-
-                elif doc_match:
+                if doc_match:
                     texto_antes_doc = descricao_base[:doc_match.start()].strip()
                     palavras_antes_doc = texto_antes_doc.split()
 
@@ -176,13 +162,10 @@ class Itau(BankHandler):
                     while j < len(linhas):
                         proxima = linhas[j].strip()
 
-                        proxima_tem_data = bool(regex_data.match(proxima))
-                        proxima_e_valor = bool(regex_valor_somente.match(proxima))
-
-                        if proxima_tem_data:
+                        if regex_data.match(proxima):
                             break
 
-                        if proxima_e_valor:
+                        if regex_valor_somente.match(proxima):
                             break
 
                         partes_depois.append(proxima)
@@ -230,7 +213,17 @@ class Itau(BankHandler):
 
             # ========================================================
             # CASO 2:
-            # Linha começa com data, mas valor está depois.
+            # Linha começa com data, mas pode estar incompleta.
+            #
+            # Exemplos:
+            #
+            # RENDIMENTOS REND PAGO APLIC
+            # 28/05/2026 0,01
+            # AUT MAIS
+            #
+            # TRANSFERÊNCIA AUTOM.
+            # 26/05/2026 413,33
+            # RECEBIDA 4372.44599-1
             #
             # 28/05/2026
             # RENDIMENTOS REND PAGO APLIC
@@ -251,45 +244,75 @@ class Itau(BankHandler):
 
                     valor_no_resto = regex_valor_final.search(resto)
 
+                    # ------------------------------------------------
+                    # CASO 2.1:
+                    # Linha no formato:
+                    #
+                    # 28/05/2026 0,01
+                    #
+                    # Nesse caso, a descrição pode estar antes e depois.
+                    # ------------------------------------------------
+
                     if valor_no_resto:
                         valor = valor_no_resto.group().strip()
-                        descricao = resto[:valor_no_resto.start()].strip()
+                        descricao_antes_valor = resto[:valor_no_resto.start()].strip()
 
+                        # Pega descrição que veio antes da linha com data.
+                        # Exemplo:
+                        # RENDIMENTOS REND PAGO APLIC
+                        complemento_antes = " ".join(pendentes_antes).strip()
+                        complemento_antes = re.sub(r"\s+", " ", complemento_antes)
+
+                        pendentes_antes = []
+
+                        # Se existir alguma descrição entre a data e o valor,
+                        # também adiciona.
+                        if descricao_antes_valor:
+                            partes_descricao.append(descricao_antes_valor)
+
+                        # Pega descrição depois da linha com data.
+                        # Exemplo:
+                        # AUT MAIS
                         j = i + 1
 
-                        # ------------------------------------------------
-                        # Regra nova:
-                        # Se data + valor veio sem descrição,
-                        # busca descrição nas próximas linhas.
-                        # ------------------------------------------------
-                        if not descricao:
-                            while j < len(linhas):
-                                proxima = linhas[j].strip()
+                        while j < len(linhas):
+                            proxima = linhas[j].strip()
 
-                                if regex_data.match(proxima):
-                                    break
+                            if regex_data.match(proxima):
+                                break
 
-                                if regex_valor_somente.match(proxima):
-                                    break
+                            if regex_valor_somente.match(proxima):
+                                break
 
-                                partes_descricao.append(proxima)
-                                j += 1
+                            if regex_valor_final.search(proxima):
+                                break
 
-                            descricao = " ".join(partes_descricao).strip()
-                            descricao = re.sub(r"\s+", " ", descricao)
+                            partes_descricao.append(proxima)
+                            j += 1
+
+                        complemento_depois = " ".join(partes_descricao).strip()
+                        complemento_depois = re.sub(r"\s+", " ", complemento_depois)
+
+                        descricao_final = f"{complemento_antes} {complemento_depois}".strip()
+                        descricao_final = re.sub(r"\s+", " ", descricao_final)
 
                         movimentacoes.append({
                             "DATA": data,
-                            "DESCRICAO": descricao,
+                            "DESCRICAO": descricao_final,
                             "VALOR": valor
                         })
 
-                        pendentes_antes = []
                         i = j
                         continue
 
                     else:
                         partes_descricao.append(resto)
+
+                # ----------------------------------------------------
+                # CASO 2.2:
+                # Linha somente com data ou data + descrição,
+                # e o valor aparece depois.
+                # ----------------------------------------------------
 
                 j = i + 1
                 valor = None
@@ -322,12 +345,13 @@ class Itau(BankHandler):
 
                 if valor:
                     complemento_antes = " ".join(pendentes_antes).strip()
-                    descricao_final = " ".join(partes_descricao).strip()
+                    complemento_antes = re.sub(r"\s+", " ", complemento_antes)
 
-                    if complemento_antes:
-                        descricao_final = f"{complemento_antes} {descricao_final}"
+                    complemento_depois = " ".join(partes_descricao).strip()
+                    complemento_depois = re.sub(r"\s+", " ", complemento_depois)
 
-                    descricao_final = re.sub(r"\s+", " ", descricao_final).strip()
+                    descricao_final = f"{complemento_antes} {complemento_depois}".strip()
+                    descricao_final = re.sub(r"\s+", " ", descricao_final)
 
                     movimentacoes.append({
                         "DATA": data,
@@ -382,7 +406,7 @@ class Itau(BankHandler):
                 .str.strip()
             )
 
-            # Remove somente descrições que começam com SALDO
+            # Remove somente descrições que começam com SALDO.
             df = df[
                 ~df["DESCRICAO"]
                 .astype(str)
@@ -390,8 +414,7 @@ class Itau(BankHandler):
                 .str.match(r"^\s*SALDO\b", na=False)
             ]
 
-            # Segurança: remove lançamentos sem descrição
-            # apenas se realmente ficaram vazios após toda tentativa de complemento.
+            # Não deixa descrição vazia passar.
             df = df[
                 df["DESCRICAO"]
                 .astype(str)
