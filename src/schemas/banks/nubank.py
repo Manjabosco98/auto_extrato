@@ -32,135 +32,307 @@ class Nubank(BankHandler):
         pdf = pdf[11:]
         pdf = [item for item in pdf if not any(texto in item for texto in [empresa, cpf, conta, datas, "CNPJ", "Tem alguma dúvida?", "metropolitanas) ", "Caso a solução ", "disponíveis em nubank.com.br", "Extrato gerado ", "O saldo líquido ", "Não nos responsabilizamos ", "Asseguramos a autenticidade ", "Nu Financeira S.A.", "e Investimento", "Nu Pagamentos S.A. - Instituição de Pagamento", "Investimento Pagamento"])]
 
-        re_data = re.compile(
-            r'\b\d{2}\s+(?:JAN|FEV|MAR|ABR|MAI|JUN|JUL|AGO|SET|OUT|NOV|DEZ)\s+\d{4}\b',
-            re.I
+        regex_valor = re.compile(
+            r'(?<![\d.-])(?P<valor>\d{1,3}(?:\.\d{3})*,\d{2}|\d+,\d{2})$'
         )
 
-        re_valor = re.compile(
-            r'(?:R\$\s*)?[+-]?\s*\d{1,3}(?:\.\d{3})*,\d{2}|\b(?:R\$\s*)?[+-]?\s*\d+,\d{2}\b'
+        regex_data = re.compile(
+            r'^(?P<data>\d{2}\s+[A-Z]{3}\s+\d{4})'
+            r'(?:\s+Total de (?P<secao>entradas|saídas)\s+(?P<sinal>[+-])\s*(?P<total>\d{1,3}(?:\.\d{3})*,\d{2}|\d+,\d{2}))?$',
+            re.IGNORECASE
         )
 
-        re_total = re.compile(
-            r'\bTotal\s+de\s+(entradas|sa[ií]das)\b',
-            re.I
+        regex_total_secao = re.compile(
+            r'^Total de (?P<secao>entradas|saídas)\s+(?P<sinal>[+-])\s*(?P<total>\d{1,3}(?:\.\d{3})*,\d{2}|\d+,\d{2})$',
+            re.IGNORECASE
         )
 
-        re_inicio = re.compile(
-            r'^(Transfer[êe]ncia|Pagamento|Reembolso|Valor adicionado|Aplica[çc][ãa]o|Resgate)',
-            re.I
+        regex_inicio_mov = re.compile(
+            r'^(?:'
+            r'Transferência recebida pelo Pix|'
+            r'Transferência Recebida|'
+            r'Reembolso recebido pelo Pix|'
+            r'Valor adicionado na conta por cartão|'
+            r'Transferência enviada pelo Pix|'
+            r'Pagamento de boleto efetuado|'
+            r'Aplicação RDB|'
+            r'Resgate de empréstimo'
+            r')\b',
+            re.IGNORECASE
         )
 
-        re_ignorar = re.compile(
-            r'(CPF|Ag[êe]ncia\s+0001\s+Conta|VALORES EM R\$|'
-            r'Movimenta[çc][õo]es|Ouvidoria|Atendimento|Extrato gerado|'
-            r'Nu Financeira|Nu Pagamentos|CNPJ:|Tem alguma d[uú]vida|'
-            r'nubank\.com|^\d+\s+de\s+\d+$|'
-            r'01 DE ABRIL DE 2026 a 30 DE ABRIL DE 2026|'
-            r'João Vitor Rodrigues|Não nos responsabilizamos|'
-            r'Asseguramos a autenticidade)',
-            re.I
-        )
 
-        resultado = []
+        # =========================
+        # 2. VARIÁVEIS DE CONTROLE
+        # =========================
 
-        data_atual = ""
-        tipo_atual = None
-        bloco = []
+        movimentacoes = []
+
+        data_atual = None
+        secao_atual = None
+        buffer = []
 
 
-        def fechar_bloco():
-            nonlocal bloco, data_atual, tipo_atual, resultado
-
-            if not bloco or not data_atual:
-                bloco = []
-                return
-
-            texto = re.sub(r'\s+', ' ', ' '.join(bloco)).strip()
-
-            valores = list(re_valor.finditer(texto))
-
-            if not valores:
-                bloco = []
-                return
-
-            valor_match = valores[-1]
-            valor_bruto = valor_match.group().strip()
-
-            descricao = (
-                texto[:valor_match.start()] + texto[valor_match.end():]
-            ).strip()
-
-            descricao = re.sub(r'\s+', ' ', descricao).strip(" -")
-
-            if descricao:
-                resultado.append({
-                    "DATA": data_atual,
-                    "DESCRIÇÃO": descricao,
-                    "VALOR_BRUTO": valor_bruto,
-                    "TIPO": tipo_atual
-                })
-
-            bloco = []
-
+        # =========================
+        # 3. LOOP PRINCIPAL
+        # =========================
 
         for linha in pdf:
-            linha = re.sub(r'\s+', ' ', str(linha)).strip()
+            linha = str(linha).strip()
+            linha = re.sub(r'\s+', ' ', linha)
 
             if not linha:
                 continue
 
-            if re_ignorar.search(linha):
+            # =========================
+            # Ignorar cabeçalhos e rodapés
+            # =========================
+
+            if linha.startswith('João Vitor Rodrigues de Cerqueira'):
                 continue
 
-            achou_data = re_data.search(linha)
+            if linha.startswith('CPF '):
+                continue
 
-            if achou_data:
-                fechar_bloco()
+            if 'VALORES EM R$' in linha:
+                continue
 
-                data_atual = achou_data.group().upper()
-                linha = linha[achou_data.end():].strip()
+            if linha.startswith('Saldo final do período'):
+                continue
 
-                if not linha:
-                    continue
+            if linha.startswith('Saldo inicial'):
+                continue
 
-            total = re_total.search(linha)
+            if linha.startswith('Rendimento líquido'):
+                continue
 
-            if total:
-                fechar_bloco()
+            if linha == 'Movimentações':
+                continue
 
-                categoria = total.group(1).lower()
+            if linha.startswith('Tem alguma dúvida?'):
+                continue
 
-                if "entrada" in categoria:
-                    tipo_atual = "C"
+            if linha.startswith('Caso a solução fornecida'):
+                continue
+
+            if linha.startswith('Extrato gerado dia'):
+                continue
+
+            if linha.endswith('de 15'):
+                continue
+
+            if linha.startswith('O saldo líquido corresponde'):
+                continue
+
+            if linha.startswith('Não nos responsabilizamos'):
+                continue
+
+            if linha.startswith('Asseguramos a autenticidade'):
+                continue
+
+            if linha.startswith('Nu Financeira'):
+                continue
+
+            if linha.startswith('Nu Pagamentos'):
+                continue
+
+            if linha.startswith('CNPJ:'):
+                continue
+
+
+            # =========================
+            # Detecta data
+            # Exemplo:
+            # 30 ABR 2026 Total de entradas + 1.015,00
+            # 10 ABR 2026
+            # =========================
+
+            match_data = regex_data.match(linha)
+
+            if match_data:
+                # Antes de trocar a data, tenta finalizar movimentação pendente
+                if buffer:
+                    texto = ' '.join(buffer)
+                    texto = re.sub(r'\s+', ' ', texto).strip()
+
+                    match_valor = regex_valor.search(texto)
+
+                    if match_valor:
+                        valor_txt = match_valor.group('valor')
+                        valor = float(valor_txt.replace('.', '').replace(',', '.'))
+
+                        descricao = texto[:match_valor.start()].strip()
+                        descricao = re.sub(r'\s+', ' ', descricao)
+
+                        if secao_atual == 'entradas':
+                            tipo = 'C'
+                        elif secao_atual == 'saídas':
+                            tipo = 'D'
+                        else:
+                            tipo = None
+
+                        if descricao and data_atual and tipo:
+                            movimentacoes.append({
+                                'DATA': data_atual,
+                                'DESCRICAO': descricao,
+                                'VALOR': valor,
+                                'TIPO': tipo,
+                                'VALOR_ORIGINAL': valor_txt,
+                                'SECAO': secao_atual
+                            })
+
+                buffer = []
+                data_atual = match_data.group('data').upper()
+
+                if match_data.group('secao'):
+                    secao_atual = match_data.group('secao').lower()
+
+                continue
+
+
+            # =========================
+            # Detecta Total de entradas / Total de saídas
+            # =========================
+
+            match_total = regex_total_secao.match(linha)
+
+            if match_total:
+                # Antes de trocar a seção, tenta finalizar movimentação pendente
+                if buffer:
+                    texto = ' '.join(buffer)
+                    texto = re.sub(r'\s+', ' ', texto).strip()
+
+                    match_valor = regex_valor.search(texto)
+
+                    if match_valor:
+                        valor_txt = match_valor.group('valor')
+                        valor = float(valor_txt.replace('.', '').replace(',', '.'))
+
+                        descricao = texto[:match_valor.start()].strip()
+                        descricao = re.sub(r'\s+', ' ', descricao)
+
+                        if secao_atual == 'entradas':
+                            tipo = 'C'
+                        elif secao_atual == 'saídas':
+                            tipo = 'D'
+                        else:
+                            tipo = None
+
+                        if descricao and data_atual and tipo:
+                            movimentacoes.append({
+                                'DATA': data_atual,
+                                'DESCRICAO': descricao,
+                                'VALOR': valor,
+                                'TIPO': tipo,
+                                'VALOR_ORIGINAL': valor_txt,
+                                'SECAO': secao_atual
+                            })
+
+                buffer = []
+                secao_atual = match_total.group('secao').lower()
+
+                continue
+
+
+            # =========================
+            # Detecta início de uma nova movimentação
+            # =========================
+
+            if regex_inicio_mov.match(linha):
+                # Antes de iniciar nova movimentação, tenta finalizar a anterior
+                if buffer:
+                    texto = ' '.join(buffer)
+                    texto = re.sub(r'\s+', ' ', texto).strip()
+
+                    match_valor = regex_valor.search(texto)
+
+                    if match_valor:
+                        valor_txt = match_valor.group('valor')
+                        valor = float(valor_txt.replace('.', '').replace(',', '.'))
+
+                        descricao = texto[:match_valor.start()].strip()
+                        descricao = re.sub(r'\s+', ' ', descricao)
+
+                        if secao_atual == 'entradas':
+                            tipo = 'C'
+                        elif secao_atual == 'saídas':
+                            tipo = 'D'
+                        else:
+                            tipo = None
+
+                        if descricao and data_atual and tipo:
+                            movimentacoes.append({
+                                'DATA': data_atual,
+                                'DESCRICAO': descricao,
+                                'VALOR': valor,
+                                'TIPO': tipo,
+                                'VALOR_ORIGINAL': valor_txt,
+                                'SECAO': secao_atual
+                            })
+
+                        buffer = [linha]
+
+                    else:
+                        # Se a anterior ainda não tinha valor, mantém cuidado:
+                        # inicia nova somente se a anterior estava incompleta.
+                        # Na prática, isso evita carregar sujeira para outra movimentação.
+                        buffer = [linha]
+
                 else:
-                    tipo_atual = "D"
+                    buffer = [linha]
 
                 continue
 
-            if re_inicio.search(linha):
-                fechar_bloco()
-                bloco = [linha]
-                continue
 
-            if bloco:
-                bloco.append(linha)
+            # =========================
+            # Continuação da movimentação anterior
+            # =========================
 
-        # MUITO IMPORTANTE
-        fechar_bloco()
+            if buffer:
+                buffer.append(linha)
 
-        df = pd.json_normalize(resultado)
-        df["VALOR_BRUTO"] = (
-            df["VALOR_BRUTO"]
-            .str.strip()
-            .str.replace("-", "", regex=False)
-            .str.replace(" ", "", regex=False)
-            .str.replace(".", "", regex=False)
-            .str.replace(",", ".", regex=False)
-            .astype(float)
-        )
-        df["TIPO"] = df.apply(lambda x: "C" if x["VALOR_BRUTO"] > 0 else "D", axis=1)
-        df["VALOR_BRUTO"] = df["VALOR_BRUTO"].astype(str).str.strip().str.replace("-", "", regex=False).astype(float)
+
+        # =========================
+        # 4. FINALIZA A ÚLTIMA MOVIMENTAÇÃO
+        # =========================
+
+        if buffer:
+            texto = ' '.join(buffer)
+            texto = re.sub(r'\s+', ' ', texto).strip()
+
+            match_valor = regex_valor.search(texto)
+
+            if match_valor:
+                valor_txt = match_valor.group('valor')
+                valor = float(valor_txt.replace('.', '').replace(',', '.'))
+
+                descricao = texto[:match_valor.start()].strip()
+                descricao = re.sub(r'\s+', ' ', descricao)
+
+                if secao_atual == 'entradas':
+                    tipo = 'C'
+                elif secao_atual == 'saídas':
+                    tipo = 'D'
+                else:
+                    tipo = None
+
+                if descricao and data_atual and tipo:
+                    movimentacoes.append({
+                        'DATA': data_atual,
+                        'DESCRICAO': descricao,
+                        'VALOR': valor,
+                        'TIPO': tipo,
+                        'VALOR_ORIGINAL': valor_txt,
+                        'SECAO': secao_atual
+                    })
+
+
+        # =========================
+        # 5. DATAFRAME FINAL
+        # =========================
+
+        df = pd.DataFrame(movimentacoes)
+        df = df.rename(columns={"DESCRICAO": "DESCRIÇÃO"})
         df["DESCRIÇÃO"] = df["DESCRIÇÃO"].str.upper()
         df = df.rename(columns={"VALOR_BRUTO": "VALOR"})
         df["DATA"] = (
@@ -184,4 +356,5 @@ class Nubank(BankHandler):
         )
         df["DATA"] = pd.to_datetime(df["DATA"], format="%d/%m/%Y", errors="coerce").dt.strftime("%d/%m/%Y")
         df["VALOR"] = df["VALOR"].abs()
+        df = df[["DATA", "DESCRIÇÃO", "VALOR", "TIPO"]]
         return df
