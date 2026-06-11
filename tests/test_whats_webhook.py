@@ -55,6 +55,8 @@ class FakeWhatsApp:
         self.pending_messages = pending_messages or []
         self.processed_ids = set()
         self.pdf_messages_called = False
+        self.group_messages_called = False
+        self.checkpoints_sent = []
 
     def is_processed(self, message_id):
         return self.processed or message_id in self.processed_ids
@@ -76,6 +78,30 @@ class FakeWhatsApp:
     def pdf_messages(self, remote_jid, limit=50):
         self.pdf_messages_called = True
         return self.pending_messages
+
+    def group_messages(self, remote_jid, limit=50):
+        self.group_messages_called = True
+        return self.pending_messages
+
+    def is_checkpoint_message(self, message):
+        text = (
+            message.get("message", {}).get("conversation")
+            or message.get("message", {}).get("extendedTextMessage", {}).get("text")
+            or ""
+        )
+        return text == "PDFS BAIXADOS ATE AQUI"
+
+    def last_checkpoint_timestamp(self, messages):
+        timestamps = [
+            message.get("messageTimestamp")
+            for message in messages
+            if self.is_checkpoint_message(message)
+        ]
+        return max(timestamps) if timestamps else None
+
+    def send_checkpoint(self, remote_jid):
+        self.checkpoints_sent.append(remote_jid)
+        return {"status": "sent"}
 
 
 class WhatsWebhookFilterTest(unittest.TestCase):
@@ -180,6 +206,7 @@ class WhatsWebhookServiceTest(unittest.TestCase):
         executar_conversao.assert_called_once()
         self.assertFalse(downloaded_path.exists())
         self.assertFalse(fake_whatsapp.pdf_messages_called)
+        self.assertEqual(fake_whatsapp.checkpoints_sent, [GROUP_JID])
 
     def test_baixa_pdfs_do_payload_e_chama_conversao_uma_vez(self):
         payload = make_payload(message_id="MSG123")
@@ -227,6 +254,7 @@ class WhatsWebhookServiceTest(unittest.TestCase):
         self.assertEqual(drive.upload.call_count, 2)
         executar_conversao.assert_called_once()
         self.assertFalse(fake_whatsapp.pdf_messages_called)
+        self.assertEqual(fake_whatsapp.checkpoints_sent, [GROUP_JID])
 
     def test_pdf_ja_existente_no_drive_nao_chama_conversao(self):
         payload = make_payload(message_id="MSG123")
@@ -254,6 +282,7 @@ class WhatsWebhookServiceTest(unittest.TestCase):
         fake_whatsapp.mark_processed.assert_called_once()
         executar_conversao.assert_not_called()
         self.assertFalse(fake_whatsapp.pdf_messages_called)
+        self.assertEqual(fake_whatsapp.checkpoints_sent, [])
 
     def test_fluxo_manual_varre_grupo_baixa_novos_e_chama_conversao_uma_vez(self):
         messages = [
@@ -297,7 +326,84 @@ class WhatsWebhookServiceTest(unittest.TestCase):
         self.assertEqual([item[0] for item in processed], ["MSG123", "MSG456"])
         self.assertEqual(drive.upload.call_count, 2)
         executar_conversao.assert_called_once()
-        self.assertTrue(fake_whatsapp.pdf_messages_called)
+        self.assertFalse(fake_whatsapp.pdf_messages_called)
+        self.assertTrue(fake_whatsapp.group_messages_called)
+        self.assertEqual(fake_whatsapp.checkpoints_sent, [GROUP_JID])
+
+    def test_fluxo_manual_ignora_pdfs_antes_do_checkpoint(self):
+        checkpoint = {
+            "key": {"id": "CHECKPOINT", "remoteJid": GROUP_JID},
+            "messageTimestamp": 200,
+            "messageType": "conversation",
+            "message": {"conversation": "PDFS BAIXADOS ATE AQUI"},
+        }
+        old_pdf = make_payload(message_id="MSG_OLD")["data"]
+        old_pdf["messageTimestamp"] = 100
+        new_pdf = make_payload(message_id="MSG_NEW")["data"]
+        new_pdf["messageTimestamp"] = 300
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        processed = []
+
+        fake_whatsapp = FakeWhatsApp(pending_messages=[old_pdf, checkpoint, new_pdf])
+
+        def download_pdf(message, file_name):
+            path = Path(temp_dir.name) / file_name
+            path.write_bytes(b"%PDF-1.4")
+            return path
+
+        def mark_processed(message_id, data):
+            processed.append((message_id, data))
+
+        fake_whatsapp.download_pdf = download_pdf
+        fake_whatsapp.mark_processed = mark_processed
+
+        drive = Mock()
+        drive.find_by_app_property.return_value = None
+        drive.upload.return_value = {"id": "drive-file-id-new"}
+
+        with (
+            patch.object(whats_service, "WhatsAppChat", return_value=fake_whatsapp),
+            patch.object(whats_service, "GoogleDriveAuth", return_value=drive),
+            patch.object(whats_service, "executar_conversao") as executar_conversao,
+        ):
+            result = whats_service.executar_fluxo_whatsapp()
+
+        self.assertEqual(result["status"], "processed")
+        self.assertEqual(result["total_baixados"], 1)
+        self.assertEqual([item[0] for item in processed], ["MSG_NEW"])
+        drive.upload.assert_called_once()
+        executar_conversao.assert_called_once()
+        self.assertEqual(fake_whatsapp.checkpoints_sent, [GROUP_JID])
+
+    def test_fluxo_manual_sem_pdfs_depois_do_checkpoint_nao_executa(self):
+        checkpoint = {
+            "key": {"id": "CHECKPOINT", "remoteJid": GROUP_JID},
+            "messageTimestamp": 200,
+            "messageType": "conversation",
+            "message": {"conversation": "PDFS BAIXADOS ATE AQUI"},
+        }
+        old_pdf = make_payload(message_id="MSG_OLD")["data"]
+        old_pdf["messageTimestamp"] = 100
+        fake_whatsapp = FakeWhatsApp(pending_messages=[old_pdf, checkpoint])
+        fake_whatsapp.download_pdf = Mock()
+
+        drive = Mock()
+        drive.find_by_app_property.return_value = None
+
+        with (
+            patch.object(whats_service, "WhatsAppChat", return_value=fake_whatsapp),
+            patch.object(whats_service, "GoogleDriveAuth", return_value=drive),
+            patch.object(whats_service, "executar_conversao") as executar_conversao,
+        ):
+            result = whats_service.executar_fluxo_whatsapp()
+
+        self.assertEqual(result["status"], "ignored")
+        self.assertEqual(result["total_baixados"], 0)
+        fake_whatsapp.download_pdf.assert_not_called()
+        drive.upload.assert_not_called()
+        executar_conversao.assert_not_called()
+        self.assertEqual(fake_whatsapp.checkpoints_sent, [])
 
     def test_mark_processed_salva_controle_json(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -315,6 +421,31 @@ class WhatsWebhookServiceTest(unittest.TestCase):
 
             self.assertTrue(whatsapp.is_processed("MSG123"))
             self.assertEqual(whatsapp.read_pdfs()["MSG123"]["status"], "enviado_drive")
+
+    def test_checkpoint_helpers_identificam_ultimo_timestamp(self):
+        whatsapp = WhatsAppChat(
+            base_url="https://example.com",
+            api_key="key",
+            instance_name="ExtractPDFs",
+            group_name="ROBO EXTRATO",
+        )
+        messages = [
+            {
+                "messageTimestamp": 100,
+                "message": {"conversation": "PDFS BAIXADOS ATE AQUI"},
+            },
+            {
+                "messageTimestamp": 300,
+                "message": {"extendedTextMessage": {"text": "PDFS BAIXADOS ATE AQUI"}},
+            },
+            {
+                "messageTimestamp": 500,
+                "message": {"conversation": "outra mensagem"},
+            },
+        ]
+
+        self.assertTrue(whatsapp.is_checkpoint_message(messages[0]))
+        self.assertEqual(whatsapp.last_checkpoint_timestamp(messages), 300)
 
 
 class WhatsWebhookEndpointTest(unittest.TestCase):

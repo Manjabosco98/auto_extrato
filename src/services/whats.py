@@ -174,6 +174,7 @@ def _processar_lote_whats(payload: dict[str, Any]) -> dict[str, Any]:
             len(downloaded),
         )
         executar_conversao()
+        _send_checkpoint_safe(whatsapp, _group_jid_from_messages(pending_messages))
 
         return {
             "status": "processed",
@@ -205,10 +206,28 @@ def _executar_fluxo_whatsapp() -> dict[str, Any]:
         token_secret_path=GOOGLE_OAUTH_TOKEN_SECRET,
     )
 
-    messages = whatsapp.pdf_messages(group_jid)
+    messages = whatsapp.group_messages(group_jid)
+    checkpoint_timestamp = whatsapp.last_checkpoint_timestamp(messages)
+    if checkpoint_timestamp is not None:
+        logger.info(
+            "Checkpoint WhatsApp encontrado. Considerando PDFs apos timestamp: %s",
+            checkpoint_timestamp,
+        )
+
     messages_by_id = {}
 
     for message in messages:
+        if checkpoint_timestamp is not None:
+            message_timestamp = message.get("messageTimestamp")
+
+            if not isinstance(message_timestamp, int | float):
+                logger.info("Mensagem ignorada por nao possuir timestamp valido")
+                continue
+
+            if message_timestamp <= checkpoint_timestamp:
+                logger.info("Mensagem ignorada por estar antes do checkpoint")
+                continue
+
         is_valid, reason = _validate_payload_pdf_message(
             whatsapp=whatsapp,
             message=message,
@@ -250,6 +269,7 @@ def _executar_fluxo_whatsapp() -> dict[str, Any]:
         len(downloaded),
     )
     executar_conversao()
+    _send_checkpoint_safe(whatsapp, group_jid)
 
     return {
         "status": "processed",
@@ -261,6 +281,28 @@ def _executar_fluxo_whatsapp() -> dict[str, Any]:
 
 def _message_id(message: dict[str, Any]) -> str | None:
     return message.get("key", {}).get("id")
+
+
+def _group_jid_from_messages(messages: list[dict[str, Any]]) -> str | None:
+    for message in messages:
+        remote_jid = message.get("key", {}).get("remoteJid")
+
+        if remote_jid:
+            return remote_jid
+
+    return None
+
+
+def _send_checkpoint_safe(whatsapp: WhatsAppChat, group_jid: str | None) -> None:
+    if not group_jid:
+        logger.info("Checkpoint WhatsApp nao enviado: grupo nao identificado")
+        return
+
+    try:
+        whatsapp.send_checkpoint(group_jid)
+        logger.info("Checkpoint WhatsApp enviado para o grupo: %s", group_jid)
+    except Exception:
+        logger.exception("Erro ao enviar checkpoint WhatsApp para o grupo: %s", group_jid)
 
 
 def _validate_payload_pdf_message(

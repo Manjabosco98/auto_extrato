@@ -24,6 +24,10 @@ from src.utils.logging_config import setup_logging
 
 logger = logging.getLogger(__name__)
 
+SEM_MOV_PREFIX = "[SEM MOV] - "
+SEM_IMAGEM_PREFIX = "[SEM IMAGEM] - "
+PREFIXOS_INVALIDOS = (SEM_MOV_PREFIX, SEM_IMAGEM_PREFIX)
+
 
 def pdf_possui_senha(pdf_path: Path) -> bool:
     try:
@@ -48,6 +52,38 @@ def extrair_senha_nome_pdf(nome_arquivo: str) -> tuple[str, str] | None:
     senha = match.group("senha").strip()
     nome_limpo = f"{match.group('prefixo').rstrip()}{match.group('sufixo')}{caminho.suffix}"
     return senha, nome_limpo
+
+
+def nome_indica_sem_movimentacao(nome_arquivo: str) -> bool:
+    stem = Path(nome_arquivo).stem.upper()
+    return bool(re.search(r"(^|[\s_-])SM_", stem))
+
+
+def nome_com_prefixo_invalido(nome_arquivo: str, prefixo: str) -> str:
+    if nome_arquivo.startswith(PREFIXOS_INVALIDOS):
+        return nome_arquivo
+    return f"{prefixo}{nome_arquivo}"
+
+
+def renomear_e_mover_para_invalidos(
+    google_drive: GoogleDriveAuth,
+    arquivo_id: str,
+    arquivo_nome: str,
+    invalidos_id: str,
+    prefixo: str,
+    motivo: str,
+) -> str:
+    nome_final = nome_com_prefixo_invalido(arquivo_nome, prefixo)
+
+    if nome_final != arquivo_nome:
+        google_drive.rename_file(arquivo_id, nome_final)
+
+    google_drive.move_file(
+        file_id=arquivo_id,
+        folder_id_destino=invalidos_id,
+    )
+    logger.warning("%s. Movendo para 00_INVALIDOS: %s", motivo, nome_final)
+    return nome_final
 
 
 def processar_pdfs_com_senha(
@@ -228,14 +264,29 @@ def executar_conversao():
                 com_senha += 1
                 continue
 
+            if nome_indica_sem_movimentacao(arquivo_nome):
+                renomear_e_mover_para_invalidos(
+                    google_drive=google_drive,
+                    arquivo_id=arquivo_id,
+                    arquivo_nome=arquivo_nome,
+                    invalidos_id=invalidos_id,
+                    prefixo=SEM_MOV_PREFIX,
+                    motivo="Nome do PDF indica extrato sem movimentacao",
+                )
+                invalidos += 1
+                continue
+
             logger.info("Extraindo conteudo do PDF: %s", arquivo_nome)
             pdf = PDFExtractor(pdf_local).extract()
 
             if not pdf:
-                logger.warning("PDF vazio. Movendo para invalidos: %s", arquivo_nome)
-                google_drive.move_file(
-                    file_id=arquivo_id,
-                    folder_id_destino=invalidos_id,
+                renomear_e_mover_para_invalidos(
+                    google_drive=google_drive,
+                    arquivo_id=arquivo_id,
+                    arquivo_nome=arquivo_nome,
+                    invalidos_id=invalidos_id,
+                    prefixo=SEM_IMAGEM_PREFIX,
+                    motivo="PDF sem texto extraivel, possivelmente imagem",
                 )
                 invalidos += 1
                 continue
@@ -253,10 +304,13 @@ def executar_conversao():
                 continue
 
             if df is None or df.empty:
-                logger.warning("DataFrame vazio. Movendo para invalidos: %s", arquivo_nome)
-                google_drive.move_file(
-                    file_id=arquivo_id,
-                    folder_id_destino=invalidos_id,
+                renomear_e_mover_para_invalidos(
+                    google_drive=google_drive,
+                    arquivo_id=arquivo_id,
+                    arquivo_nome=arquivo_nome,
+                    invalidos_id=invalidos_id,
+                    prefixo=SEM_MOV_PREFIX,
+                    motivo="DataFrame vazio, extrato sem movimentacao",
                 )
                 invalidos += 1
                 continue

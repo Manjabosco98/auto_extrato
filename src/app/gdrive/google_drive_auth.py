@@ -287,6 +287,14 @@ class GoogleDriveAuth:
             supportsAllDrives=True
         ).execute()
 
+    def rename_file(self, file_id: str, new_name: str):
+        return self.service.files().update(
+            fileId=file_id,
+            body={"name": new_name},
+            fields="id, name",
+            supportsAllDrives=True
+        ).execute()
+
     def trash_file(self, file_id: str):
         return self.service.files().update(
             fileId=file_id,

@@ -3,6 +3,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import pandas as pd
+
 from src.services import conversao
 
 
@@ -18,6 +20,7 @@ class FakeDrive:
         ]
         self.password_pdfs = password_pdfs if password_pdfs is not None else []
         self.moved = []
+        self.renamed = []
         self.uploaded = []
         self.trashed = set()
 
@@ -55,6 +58,10 @@ class FakeDrive:
 
     def move_file(self, file_id, folder_id_destino):
         self.moved.append((file_id, folder_id_destino))
+
+    def rename_file(self, file_id, new_name):
+        self.renamed.append((file_id, new_name))
+        return {"id": file_id, "name": new_name}
 
     def list_children(self, folder_id):
         if folder_id != "id-PDFS_COM_SENHAS":
@@ -187,6 +194,129 @@ class ConversaoPasswordTest(unittest.TestCase):
         self.assertEqual(resultado, {"desbloqueados": 0, "ignorados": 0, "erros": 1})
         self.assertEqual(fake_drive.uploaded, [])
         self.assertEqual(fake_drive.trashed, set())
+
+    def test_nome_com_sm_move_para_invalidos_com_prefixo_sem_mov(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_drive = FakeDrive(
+                temp_dir,
+                root_pdfs=[
+                    {
+                        "id": "pdf-sm",
+                        "name": "0526_EXTBAN ITAU 45440-7 SM_CIAL.pdf",
+                        "mimeType": "application/pdf",
+                    }
+                ],
+            )
+
+            with (
+                patch.object(conversao, "GoogleDriveAuth", return_value=fake_drive),
+                patch.object(conversao, "pdf_possui_senha", return_value=False),
+                patch.object(conversao, "PDFExtractor") as pdf_extractor,
+            ):
+                conversao.executar_conversao()
+
+        self.assertEqual(
+            fake_drive.renamed,
+            [
+                (
+                    "pdf-sm",
+                    "[SEM MOV] - 0526_EXTBAN ITAU 45440-7 SM_CIAL.pdf",
+                )
+            ],
+        )
+        self.assertIn(("pdf-sm", "id-00_INVALIDOS"), fake_drive.moved)
+        pdf_extractor.assert_not_called()
+
+    def test_prefixo_sem_mov_nao_duplica(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_drive = FakeDrive(
+                temp_dir,
+                root_pdfs=[
+                    {
+                        "id": "pdf-sm",
+                        "name": "[SEM MOV] - 0526_EXTBAN ITAU 45440-7 SM_CIAL.pdf",
+                        "mimeType": "application/pdf",
+                    }
+                ],
+            )
+
+            with (
+                patch.object(conversao, "GoogleDriveAuth", return_value=fake_drive),
+                patch.object(conversao, "pdf_possui_senha", return_value=False),
+                patch.object(conversao, "PDFExtractor") as pdf_extractor,
+            ):
+                conversao.executar_conversao()
+
+        self.assertEqual(fake_drive.renamed, [])
+        self.assertIn(("pdf-sm", "id-00_INVALIDOS"), fake_drive.moved)
+        pdf_extractor.assert_not_called()
+
+    def test_pdf_sem_texto_move_para_invalidos_com_prefixo_sem_imagem(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_drive = FakeDrive(
+                temp_dir,
+                root_pdfs=[
+                    {
+                        "id": "pdf-imagem",
+                        "name": "0526_EXTBAN IMAGEM_CIAL.pdf",
+                        "mimeType": "application/pdf",
+                    }
+                ],
+            )
+
+            with (
+                patch.object(conversao, "GoogleDriveAuth", return_value=fake_drive),
+                patch.object(conversao, "pdf_possui_senha", return_value=False),
+                patch.object(conversao, "PDFExtractor") as pdf_extractor,
+                patch.object(conversao, "dispatch") as dispatch,
+            ):
+                pdf_extractor.return_value.extract.return_value = []
+                conversao.executar_conversao()
+
+        self.assertEqual(
+            fake_drive.renamed,
+            [
+                (
+                    "pdf-imagem",
+                    "[SEM IMAGEM] - 0526_EXTBAN IMAGEM_CIAL.pdf",
+                )
+            ],
+        )
+        self.assertIn(("pdf-imagem", "id-00_INVALIDOS"), fake_drive.moved)
+        dispatch.assert_not_called()
+
+    def test_dataframe_vazio_move_para_invalidos_com_prefixo_sem_mov(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_drive = FakeDrive(
+                temp_dir,
+                root_pdfs=[
+                    {
+                        "id": "pdf-vazio",
+                        "name": "0526_EXTBAN NORMAL_CIAL.pdf",
+                        "mimeType": "application/pdf",
+                    }
+                ],
+            )
+
+            with (
+                patch.object(conversao, "GoogleDriveAuth", return_value=fake_drive),
+                patch.object(conversao, "pdf_possui_senha", return_value=False),
+                patch.object(conversao, "PDFExtractor") as pdf_extractor,
+                patch.object(conversao, "dispatch", return_value=pd.DataFrame()),
+            ):
+                pdf_extractor.return_value.extract.return_value = ["texto extraido"]
+                conversao.executar_conversao()
+
+        self.assertEqual(
+            fake_drive.renamed,
+            [
+                (
+                    "pdf-vazio",
+                    "[SEM MOV] - 0526_EXTBAN NORMAL_CIAL.pdf",
+                )
+            ],
+        )
+        self.assertIn(("pdf-vazio", "id-00_INVALIDOS"), fake_drive.moved)
 
 
 if __name__ == "__main__":

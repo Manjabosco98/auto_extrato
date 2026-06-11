@@ -21,6 +21,7 @@ class EvolutionAPIError(Exception):
 
 class WhatsAppChat:
     PDF_MIME_TYPE = "application/pdf"
+    CHECKPOINT_TEXT = "PDFS BAIXADOS ATE AQUI"
 
     def __init__(
         self,
@@ -158,6 +159,50 @@ class WhatsAppChat:
                 pdfs.append(message)
 
         return pdfs
+
+    def group_messages(self, remote_jid: str, limit: int = 50) -> list[dict[str, Any]]:
+        response = self.mensagens(remote_jid=remote_jid, limit=limit)
+        return response.get("messages", {}).get("records", [])
+
+    def send_text(self, remote_jid: str, text: str):
+        payload = {
+            "number": remote_jid,
+            "text": text,
+        }
+
+        return self._post(
+            f"/message/sendText/{self.instance_name}",
+            payload,
+            timeout=60,
+        )
+
+    def send_checkpoint(self, remote_jid: str):
+        return self.send_text(remote_jid, self.CHECKPOINT_TEXT)
+
+    def is_checkpoint_message(self, message: dict[str, Any]) -> bool:
+        text = (
+            message.get("message", {}).get("conversation")
+            or message.get("message", {}).get("extendedTextMessage", {}).get("text")
+            or message.get("text")
+            or message.get("body")
+            or ""
+        )
+
+        return text.strip().upper() == self.CHECKPOINT_TEXT
+
+    def last_checkpoint_timestamp(self, messages: list[dict[str, Any]]) -> int | None:
+        timestamps = [
+            message.get("messageTimestamp")
+            for message in messages
+            if self.is_checkpoint_message(message)
+        ]
+        timestamps = [
+            timestamp
+            for timestamp in timestamps
+            if isinstance(timestamp, int | float)
+        ]
+
+        return int(max(timestamps)) if timestamps else None
 
     def is_pdf_message(self, message: dict[str, Any]) -> bool:
         if message.get("messageType") != "documentMessage":
