@@ -25,21 +25,55 @@ class Itau(BankHandler):
     
     @layout(" www.itau.com.br/empresas. ", "Saldo total Limite da conta Utilizado Disponível")
     def layout2(self, pdf):
+        # ============================================================
+        # LIMPEZA INICIAL DO PDF
+        # ============================================================
+
         pdf = pdf[5:]
-        pdf = [item for item in pdf if not any(texto in item for texto in [
-            "aviso: ",
-            "novos lançamentos",
-            "atualizado em ",
-            "Em caso de dúvidas, ",
-            " 24 horas por dia "
-        ])]
 
-        regex_data = re.compile(r"^\s*\d{2}/\d{2}/\d{4}\b")
+        pdf = [
+            item for item in pdf 
+            if not any(texto in item for texto in [
+                "aviso: ",
+                "novos lançamentos",
+                "atualizado em ",
+                "Em caso de dúvidas, ",
+                " 24 horas por dia "
+            ])
+        ]
 
+
+        # ============================================================
+        # REGEX
+        # ============================================================
+
+        # Linha que começa com data completa
+        regex_data = re.compile(
+            r"^\s*\d{2}/\d{2}/\d{4}\b"
+        )
+
+        # Linha que tem somente uma data completa, podendo ter resto depois
+        regex_linha_inicia_com_data = re.compile(
+            r"""
+            ^\s*
+            (?P<data>\d{2}/\d{2}/\d{4})
+            (?:\s+(?P<resto>.*))?
+            \s*$
+            """,
+            re.VERBOSE
+        )
+
+        # Valor no final da linha
         regex_valor_final = re.compile(
             r"-?\d{1,3}(?:\.\d{3})*,\d{2}\s*$"
         )
 
+        # Linha somente com valor
+        regex_valor_somente = re.compile(
+            r"^\s*-?\d{1,3}(?:\.\d{3})*,\d{2}\s*$"
+        )
+
+        # Linha completa: DATA + DESCRIÇÃO + VALOR
         regex_linha_com_data_valor = re.compile(
             r"""
             ^\s*
@@ -53,13 +87,20 @@ class Itau(BankHandler):
             re.VERBOSE
         )
 
+        # Documento CPF/CNPJ
         regex_documento = re.compile(
             r"\b(?:\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}|\d{3}\.\d{3}\.\d{3}-\d{2})\b"
         )
 
+        # Caso venha algo como DOMINIU04/05
         regex_data_curta_colada = re.compile(
             r"[A-ZÀ-Ú]{3,}\d{2}/\d{2}"
         )
+
+
+        # ============================================================
+        # NORMALIZAÇÃO DAS LINHAS
+        # ============================================================
 
         linhas = []
 
@@ -71,138 +112,287 @@ class Itau(BankHandler):
                 linhas.append(item)
 
 
+        # ============================================================
+        # EXTRAÇÃO DAS MOVIMENTAÇÕES
+        # ============================================================
+
         movimentacoes = []
         pendentes_antes = []
 
         i = 0
 
         while i < len(linhas):
-            linha = linhas[i]
+            linha = linhas[i].strip()
+
+            # ========================================================
+            # CASO 1:
+            # Linha já vem completa:
+            # 28/05/2026 DESCRIÇÃO QUALQUER 0,01
+            # ========================================================
 
             match = regex_linha_com_data_valor.match(linha)
 
-            if not match:
-                pendentes_antes.append(linha)
-                i += 1
+            if match:
+                data = match.group("data")
+                descricao_base = match.group("descricao").strip()
+                valor = match.group("valor").strip()
+
+                partes_antes = pendentes_antes
+                pendentes_antes = []
+
+                partes_depois = []
+
+                doc_match = regex_documento.search(descricao_base)
+
+                deve_buscar_depois = False
+
+                if doc_match:
+                    texto_antes_doc = descricao_base[:doc_match.start()].strip()
+                    palavras_antes_doc = texto_antes_doc.split()
+
+                    # Regra estrutural:
+                    # Busca complemento depois quando a descrição antes do documento
+                    # parece incompleta.
+                    if len(palavras_antes_doc) <= 4:
+                        deve_buscar_depois = True
+
+                    if regex_data_curta_colada.search(texto_antes_doc):
+                        deve_buscar_depois = True
+
+                else:
+                    palavras_descricao = descricao_base.split()
+
+                    # Para casos como:
+                    # TRANSFERÊNCIA AUTOM.
+                    # RECEBIDA ...
+                    if len(palavras_descricao) <= 2:
+                        deve_buscar_depois = True
+
+                if deve_buscar_depois:
+                    j = i + 1
+
+                    while j < len(linhas):
+                        proxima = linhas[j].strip()
+
+                        proxima_tem_data = bool(regex_data.match(proxima))
+                        proxima_tem_valor_final = bool(regex_valor_final.search(proxima))
+
+                        if proxima_tem_data:
+                            break
+
+                        if proxima_tem_valor_final:
+                            break
+
+                        partes_depois.append(proxima)
+                        j += 1
+
+                else:
+                    j = i + 1
+
+                complemento_antes = " ".join(partes_antes).strip()
+                complemento_depois = " ".join(partes_depois).strip()
+
+                complemento_antes = re.sub(r"\s+", " ", complemento_antes)
+                complemento_depois = re.sub(r"\s+", " ", complemento_depois)
+
+                complemento = f"{complemento_antes} {complemento_depois}".strip()
+                complemento = re.sub(r"\s+", " ", complemento)
+
+                if doc_match and complemento:
+                    documento = doc_match.group()
+
+                    antes_doc = descricao_base[:doc_match.start()].strip()
+                    depois_doc = descricao_base[doc_match.end():].strip()
+
+                    descricao_final = f"{antes_doc} {complemento} {documento} {depois_doc}"
+
+                elif complemento:
+                    descricao_final = f"{descricao_base} {complemento}"
+
+                else:
+                    descricao_final = descricao_base
+
+                descricao_final = re.sub(r"\s+", " ", descricao_final).strip()
+
+                movimentacoes.append({
+                    "DATA": data,
+                    "DESCRICAO": descricao_final,
+                    "VALOR": valor
+                })
+
+                i = j
                 continue
 
-            data = match.group("data")
-            descricao_base = match.group("descricao").strip()
-            valor = match.group("valor").strip()
+            # ========================================================
+            # CASO 2:
+            # Linha começa com data, mas o valor está em outra linha.
+            #
+            # Exemplos:
+            #
+            # 28/05/2026
+            # RENDIMENTOS REND PAGO APLIC
+            # AUT MAIS
+            # 0,01
+            #
+            # 26/05/2026
+            # TRANSFERÊNCIA AUTOM.
+            # RECEBIDA 4372.44599-1
+            # 413,33
+            # ========================================================
 
-            partes_antes = pendentes_antes
-            pendentes_antes = []
+            match_data = regex_linha_inicia_com_data.match(linha)
 
-            partes_depois = []
+            if match_data:
+                data = match_data.group("data")
+                resto = match_data.group("resto") or ""
 
-            doc_match = regex_documento.search(descricao_base)
+                partes_descricao = []
 
-            deve_buscar_depois = False
+                if resto.strip():
+                    resto = resto.strip()
 
-            if doc_match:
-                texto_antes_doc = descricao_base[:doc_match.start()].strip()
-                palavras_antes_doc = texto_antes_doc.split()
+                    valor_no_resto = regex_valor_final.search(resto)
 
-                # Regra estrutural:
-                # Só busca complemento depois quando a descrição parece incompleta.
-                #
-                # Exemplos incompletos:
-                # PAGAMENTOS PIX QR-CODE 17.895...
-                # PIX ENVIADO 015.338...
-                # PIX RECEBIDO DOMINIU04/05 26.352...
-                # PAGAMENTOS TRANSF CC ITAU 014...
-                #
-                # Exemplos completos:
-                # PIX ENVIADO WAGNER DA SILVA OLIVEIRA 055...
-                # BOLETO PAGO BATER LIFE BATER LIFE 02...
-                if len(palavras_antes_doc) <= 4:
-                    deve_buscar_depois = True
+                    # Caso seja:
+                    # 28/05/2026 DESCRIÇÃO 0,01
+                    if valor_no_resto:
+                        valor = valor_no_resto.group().strip()
+                        descricao = resto[:valor_no_resto.start()].strip()
 
-                if regex_data_curta_colada.search(texto_antes_doc):
-                    deve_buscar_depois = True
+                        movimentacoes.append({
+                            "DATA": data,
+                            "DESCRICAO": descricao,
+                            "VALOR": valor
+                        })
 
-            else:
-                palavras_descricao = descricao_base.split()
+                        pendentes_antes = []
+                        i += 1
+                        continue
 
-                # Para casos como:
-                # TRANSFERÊNCIA AUTOM.
-                # 05/05/2026 720,00
-                # RECEBIDA AEA J
-                if len(palavras_descricao) <= 2:
-                    deve_buscar_depois = True
+                    # Caso seja:
+                    # 28/05/2026 DESCRIÇÃO INICIAL
+                    else:
+                        partes_descricao.append(resto)
 
-            if deve_buscar_depois:
                 j = i + 1
+                valor = None
 
                 while j < len(linhas):
                     proxima = linhas[j].strip()
 
-                    proxima_tem_data = bool(regex_data.match(proxima))
-                    proxima_tem_valor_final = bool(regex_valor_final.search(proxima))
-
-                    if proxima_tem_data:
+                    # Se encontrou uma nova data antes de encontrar valor,
+                    # não mistura com outro lançamento.
+                    if regex_data.match(proxima):
                         break
 
-                    if proxima_tem_valor_final:
+                    # Caso a próxima linha seja apenas o valor:
+                    # 0,01
+                    # 413,33
+                    if regex_valor_somente.match(proxima):
+                        valor = proxima
+                        j += 1
                         break
 
-                    partes_depois.append(proxima)
+                    # Caso a próxima linha tenha descrição + valor no final:
+                    # RECEBIDA 4372.44599-1 413,33
+                    valor_final = regex_valor_final.search(proxima)
+
+                    if valor_final:
+                        valor = valor_final.group().strip()
+                        descricao_antes_valor = proxima[:valor_final.start()].strip()
+
+                        if descricao_antes_valor:
+                            partes_descricao.append(descricao_antes_valor)
+
+                        j += 1
+                        break
+
+                    partes_descricao.append(proxima)
                     j += 1
 
-            else:
-                j = i + 1
+                if valor:
+                    complemento_antes = " ".join(pendentes_antes).strip()
+                    descricao_final = " ".join(partes_descricao).strip()
 
-            complemento_antes = " ".join(partes_antes).strip()
-            complemento_depois = " ".join(partes_depois).strip()
+                    if complemento_antes:
+                        descricao_final = f"{complemento_antes} {descricao_final}"
 
-            complemento_antes = re.sub(r"\s+", " ", complemento_antes)
-            complemento_depois = re.sub(r"\s+", " ", complemento_depois)
+                    descricao_final = re.sub(r"\s+", " ", descricao_final).strip()
 
-            complemento = f"{complemento_antes} {complemento_depois}".strip()
-            complemento = re.sub(r"\s+", " ", complemento)
+                    movimentacoes.append({
+                        "DATA": data,
+                        "DESCRICAO": descricao_final,
+                        "VALOR": valor
+                    })
 
-            if doc_match and complemento:
-                documento = doc_match.group()
+                    pendentes_antes = []
+                    i = j
+                    continue
 
-                antes_doc = descricao_base[:doc_match.start()].strip()
-                depois_doc = descricao_base[doc_match.end():].strip()
+                # Se começou com data, mas não achou valor,
+                # guarda como pendente para não perder informação.
+                pendentes_antes.append(linha)
+                i += 1
+                continue
 
-                descricao_final = f"{antes_doc} {complemento} {documento} {depois_doc}"
+            # ========================================================
+            # CASO 3:
+            # Linha não tem data e não é lançamento completo.
+            # Pode ser complemento de descrição.
+            # ========================================================
 
-            elif complemento:
-                descricao_final = f"{descricao_base} {complemento}"
+            pendentes_antes.append(linha)
+            i += 1
 
-            else:
-                descricao_final = descricao_base
 
-            descricao_final = re.sub(r"\s+", " ", descricao_final).strip()
+        # ============================================================
+        # DATAFRAME FINAL
+        # ============================================================
 
-            movimentacoes.append({
-                "DATA": data,
-                "DESCRICAO": descricao_final,
-                "VALOR": valor
+        df = pd.json_normalize(movimentacoes)
+
+        # Segurança caso nenhuma movimentação seja encontrada
+        if not df.empty:
+
+            df["VALOR"] = (
+                df["VALOR"]
+                .astype(str)
+                .str.strip()
+                .str.replace(".", "", regex=False)
+                .str.replace(",", ".", regex=False)
+                .str.replace(" ", "", regex=False)
+                .astype(float)
+            )
+
+            df["TIPO"] = df.apply(
+                lambda x: "C" if x["VALOR"] > 0 else "D",
+                axis=1
+            )
+
+            df["DESCRICAO"] = (
+                df["DESCRICAO"]
+                .astype(str)
+                .str.upper()
+                .str.strip()
+            )
+
+            # Remove somente linhas que começam com SALDO,
+            # evitando remover lançamentos legítimos que tenham a palavra SALDO no meio.
+            df = df[
+                ~df["DESCRICAO"]
+                .astype(str)
+                .str.upper()
+                .str.match(r"^\s*SALDO\b", na=False)
+            ]
+
+            df["VALOR"] = df["VALOR"].abs()
+
+            df = df.rename(columns={
+                "DESCRICAO": "DESCRIÇÃO"
             })
 
-            i = j
-        df = pd.json_normalize(movimentacoes)
-        df["VALOR"] = (
-            df["VALOR"]
-            .str.strip()
-            .str.replace(".", "", regex=False)
-            .str.replace(",", ".", regex=False)
-            .str.replace(" ", "", regex=False)
-            .astype(float)
-        )
-        df["TIPO"] = df.apply(lambda x: "C" if x["VALOR"] > 0 else "D", axis=1)
-        df["DESCRICAO"] = df["DESCRICAO"].str.upper()
-        df = df[
-            ~df["DESCRICAO"]
-            .astype(str)
-            .str.upper()
-            .str.contains("SALDO", na=False)
-        ]
-        df["VALOR"] = df["VALOR"].abs()
-        df = df.rename(columns={"DESCRICAO": "DESCRIÇÃO"})
+        else:
+            df = pd.DataFrame(columns=["DATA", "DESCRIÇÃO", "VALOR", "TIPO"])
         return df
     
     @layout("extrato mensal ")
