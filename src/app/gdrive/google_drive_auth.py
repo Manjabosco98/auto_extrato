@@ -37,11 +37,7 @@ class GoogleDriveAuth:
         """
 
         if self.token_secret_path and self.token_secret_path.exists():
-            if self.token_secret_path.resolve() == self.token_path.resolve():
-                return
-
-            self.token_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(self.token_secret_path, self.token_path)
+            self.token_path = self.token_secret_path
             return
 
         if self.token_path.exists():
