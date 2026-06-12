@@ -189,7 +189,7 @@ def registrar_historico_conversao(
     google_drive: GoogleDriveAuth,
     pasta_raiz_id: str,
     temp_dir: Path,
-    nome_arquivo: str,
+    nomes_arquivos: list[str],
     pasta_destino: str,
     data_hora: datetime | None = None,
 ) -> None:
@@ -217,13 +217,17 @@ def registrar_historico_conversao(
         worksheet.append(HISTORICO_HEADERS)
 
     momento = data_hora or datetime.now()
-    worksheet.append(
-        [
-            nome_arquivo,
-            momento.strftime("%Y-%m-%d %H:%M:%S"),
-            pasta_destino,
-        ]
-    )
+    data_hora_formatada = momento.strftime("%Y-%m-%d %H:%M:%S")
+
+    for nome_arquivo in nomes_arquivos:
+        worksheet.append(
+            [
+                nome_arquivo,
+                data_hora_formatada,
+                pasta_destino,
+            ]
+        )
+
     workbook.save(historico_local)
 
     if arquivo_historico:
@@ -436,7 +440,7 @@ def executar_conversao():
                 google_drive=google_drive,
                 pasta_raiz_id=extratos_id,
                 temp_dir=temp_dir,
-                nome_arquivo=arquivo_nome,
+                nomes_arquivos=[arquivo_nome, dest_excel.name, dest_lancamento.name],
                 pasta_destino=pasta_destino_historico,
             )
 

@@ -144,7 +144,11 @@ class ConversaoPasswordTest(unittest.TestCase):
                 google_drive=fake_drive,
                 pasta_raiz_id="root-folder",
                 temp_dir=Path(temp_dir),
-                nome_arquivo="0526_EXTBAN C6BANK_LF.pdf",
+                nomes_arquivos=[
+                    "0526_EXTBAN C6BANK_LF.pdf",
+                    "0526_EXTBAN C6BANK_LF.xlsx",
+                    "0526_LANCBAN C6BANK_LF.xlsm",
+                ],
                 pasta_destino="00_CONVERTIDOS/0526_EXTBAN C6BANK_LF",
                 data_hora=conversao.datetime(2026, 6, 12, 9, 30, 0),
             )
@@ -158,6 +162,16 @@ class ConversaoPasswordTest(unittest.TestCase):
                 conversao.HISTORICO_HEADERS,
                 (
                     "0526_EXTBAN C6BANK_LF.pdf",
+                    "2026-06-12 09:30:00",
+                    "00_CONVERTIDOS/0526_EXTBAN C6BANK_LF",
+                ),
+                (
+                    "0526_EXTBAN C6BANK_LF.xlsx",
+                    "2026-06-12 09:30:00",
+                    "00_CONVERTIDOS/0526_EXTBAN C6BANK_LF",
+                ),
+                (
+                    "0526_LANCBAN C6BANK_LF.xlsm",
                     "2026-06-12 09:30:00",
                     "00_CONVERTIDOS/0526_EXTBAN C6BANK_LF",
                 ),
@@ -191,7 +205,11 @@ class ConversaoPasswordTest(unittest.TestCase):
                 google_drive=fake_drive,
                 pasta_raiz_id="root-folder",
                 temp_dir=temp_dir_path,
-                nome_arquivo="0526_EXTBAN C6BANK_LF.pdf",
+                nomes_arquivos=[
+                    "0526_EXTBAN C6BANK_LF.pdf",
+                    "0526_EXTBAN C6BANK_LF.xlsx",
+                    "0526_LANCBAN C6BANK_LF.xlsm",
+                ],
                 pasta_destino="00_CONVERTIDOS/0526_EXTBAN C6BANK_LF",
                 data_hora=conversao.datetime(2026, 6, 12, 9, 30, 0),
             )
@@ -208,6 +226,16 @@ class ConversaoPasswordTest(unittest.TestCase):
                 ),
                 (
                     "0526_EXTBAN C6BANK_LF.pdf",
+                    "2026-06-12 09:30:00",
+                    "00_CONVERTIDOS/0526_EXTBAN C6BANK_LF",
+                ),
+                (
+                    "0526_EXTBAN C6BANK_LF.xlsx",
+                    "2026-06-12 09:30:00",
+                    "00_CONVERTIDOS/0526_EXTBAN C6BANK_LF",
+                ),
+                (
+                    "0526_LANCBAN C6BANK_LF.xlsm",
                     "2026-06-12 09:30:00",
                     "00_CONVERTIDOS/0526_EXTBAN C6BANK_LF",
                 ),
@@ -251,7 +279,14 @@ class ConversaoPasswordTest(unittest.TestCase):
 
             def registrar_historico(**kwargs):
                 eventos.append("historico")
-                self.assertEqual(kwargs["nome_arquivo"], "0526_EXTBAN C6BANK_LF.pdf")
+                self.assertEqual(
+                    kwargs["nomes_arquivos"],
+                    [
+                        "0526_EXTBAN C6BANK_LF.pdf",
+                        "0526_EXTBAN C6BANK_LF.xlsx",
+                        "0526_LANCBAN C6BANK_LF.xlsm",
+                    ],
+                )
                 self.assertEqual(
                     kwargs["pasta_destino"],
                     "00_CONVERTIDOS/0526_EXTBAN C6BANK_LF",
