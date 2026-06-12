@@ -1,8 +1,10 @@
 import logging
 import re
 import shutil
+from datetime import datetime
 from pathlib import Path
 
+from openpyxl import Workbook, load_workbook
 from pypdf import PdfReader
 
 from src.app.gdrive.google_drive_auth import GoogleDriveAuth
@@ -27,6 +29,8 @@ logger = logging.getLogger(__name__)
 SEM_MOV_PREFIX = "[SEM MOV] - "
 SEM_IMAGEM_PREFIX = "[SEM IMAGEM] - "
 PREFIXOS_INVALIDOS = (SEM_MOV_PREFIX, SEM_IMAGEM_PREFIX)
+HISTORICO_CONVERSOES = "HISTORICO_CONVERSOES.xlsx"
+HISTORICO_HEADERS = ("nome_arquivo", "data_hora_conversao", "pasta_destino")
 
 
 def pdf_possui_senha(pdf_path: Path) -> bool:
@@ -179,6 +183,67 @@ def processar_pdfs_com_senha(
         "ignorados": ignorados,
         "erros": erros,
     }
+
+
+def registrar_historico_conversao(
+    google_drive: GoogleDriveAuth,
+    pasta_raiz_id: str,
+    temp_dir: Path,
+    nome_arquivo: str,
+    pasta_destino: str,
+    data_hora: datetime | None = None,
+) -> None:
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    historico_local = temp_dir / HISTORICO_CONVERSOES
+    arquivo_historico = google_drive.find_file_by_name(
+        folder_id=pasta_raiz_id,
+        name=HISTORICO_CONVERSOES,
+        mime_type=XLSX_MIME_TYPE,
+    )
+
+    if arquivo_historico:
+        logger.info("Baixando historico de conversoes existente")
+        google_drive.download(
+            file_id=arquivo_historico["id"],
+            destino_local=historico_local,
+        )
+        workbook = load_workbook(historico_local)
+        worksheet = workbook.active
+    else:
+        logger.info("Criando historico de conversoes")
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.title = "historico"
+        worksheet.append(HISTORICO_HEADERS)
+
+    momento = data_hora or datetime.now()
+    worksheet.append(
+        [
+            nome_arquivo,
+            momento.strftime("%Y-%m-%d %H:%M:%S"),
+            pasta_destino,
+        ]
+    )
+    workbook.save(historico_local)
+
+    if arquivo_historico:
+        google_drive.update_file(
+            file_id=arquivo_historico["id"],
+            caminho_local=historico_local,
+            type_file=XLSX_MIME_TYPE,
+            name_drive=HISTORICO_CONVERSOES,
+        )
+        logger.info("Historico de conversoes atualizado: %s", HISTORICO_CONVERSOES)
+    else:
+        google_drive.upload(
+            caminho_local=historico_local,
+            folder_id_destino=pasta_raiz_id,
+            type_file=XLSX_MIME_TYPE,
+            name_drive=HISTORICO_CONVERSOES,
+        )
+        logger.info("Historico de conversoes criado: %s", HISTORICO_CONVERSOES)
+
+    historico_local.unlink(missing_ok=True)
 
 
 def executar_conversao():
@@ -364,6 +429,15 @@ def executar_conversao():
             google_drive.move_file(
                 file_id=arquivo_id,
                 folder_id_destino=pasta_arquivo_id,
+            )
+
+            pasta_destino_historico = f"00_CONVERTIDOS/{arquivo_stem}"
+            registrar_historico_conversao(
+                google_drive=google_drive,
+                pasta_raiz_id=extratos_id,
+                temp_dir=temp_dir,
+                nome_arquivo=arquivo_nome,
+                pasta_destino=pasta_destino_historico,
             )
 
             convertidos += 1

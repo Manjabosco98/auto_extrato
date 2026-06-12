@@ -270,6 +270,64 @@ class GoogleDriveAuth:
         arquivos = response.get("files", [])
         return arquivos[0] if arquivos else None
 
+    def find_file_by_name(
+        self,
+        folder_id: str,
+        name: str,
+        mime_type: Optional[str] = None
+    ):
+        name = name.replace("'", "\\'")
+        query_parts = [
+            f"'{folder_id}' in parents",
+            f"name = '{name}'",
+            "trashed = false",
+        ]
+
+        if mime_type:
+            mime_type = mime_type.replace("'", "\\'")
+            query_parts.append(f"mimeType = '{mime_type}'")
+
+        response = self.service.files().list(
+            q=" and ".join(query_parts),
+            spaces="drive",
+            fields="files(id, name, mimeType, parents, modifiedTime)",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True
+        ).execute()
+
+        arquivos = response.get("files", [])
+        return arquivos[0] if arquivos else None
+
+    def update_file(
+        self,
+        file_id: str,
+        caminho_local,
+        type_file: str,
+        name_drive: Optional[str] = None
+    ):
+        caminho = Path(caminho_local)
+
+        if not caminho.exists():
+            raise FileNotFoundError(f"Arquivo nÃ£o encontrado: {caminho_local}")
+
+        metadata = {}
+        if name_drive:
+            metadata["name"] = name_drive
+
+        media = MediaFileUpload(
+            filename=str(caminho),
+            mimetype=type_file,
+            resumable=True
+        )
+
+        return self.service.files().update(
+            fileId=file_id,
+            body=metadata,
+            media_body=media,
+            fields="id, name, mimeType, size, modifiedTime, parents",
+            supportsAllDrives=True
+        ).execute()
+
     def move_file(self, file_id: str, folder_id_destino: str):
         arquivo = self.service.files().get(
             fileId=file_id,
