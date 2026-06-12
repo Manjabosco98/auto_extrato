@@ -4,6 +4,7 @@ import shutil
 import unicodedata
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from googleapiclient.errors import HttpError
 from openpyxl import Workbook, load_workbook
@@ -33,10 +34,17 @@ SEM_MOV_PREFIX = "[SEM MOV] - "
 SEM_IMAGEM_PREFIX = "[SEM IMAGEM] - "
 PREFIXOS_INVALIDOS = (SEM_MOV_PREFIX, SEM_IMAGEM_PREFIX)
 HISTORICO_CONVERSOES = "HISTORICO_CONVERSOES.xlsx"
-HISTORICO_HEADERS = ("ID", "EMP", "DATA", "HORA", "NOME ARQUIVO", "PASTA DESTINO")
+TIMEZONE_HISTORICO = ZoneInfo("America/Sao_Paulo")
+HISTORICO_HEADERS = ("ID", "EMP", "DATA", "HORA", "NOME ARQUIVO", "PASTA DESTINO", "DATA HORA MOVIMENTO")
+HISTORICO_HEADERS_COM_HORA_MOVIMENTO = ("ID", "EMP", "DATA", "HORA", "HORA MOVIMENTO", "NOME ARQUIVO", "PASTA DESTINO")
+HISTORICO_HEADERS_SEM_MOVIMENTO = ("ID", "EMP", "DATA", "HORA", "NOME ARQUIVO", "PASTA DESTINO")
 HISTORICO_HEADERS_ANTIGO = ("nome_arquivo", "data_hora_conversao", "pasta_destino")
 BASE_EMP_ATIVAS = Path.cwd() / "data" / "BaseEmpAtivas.xlsm"
 BASE_EMP_ATIVAS_SHEET = "EmpAtivas"
+
+
+def agora_historico() -> datetime:
+    return datetime.now(TIMEZONE_HISTORICO)
 
 
 def pdf_possui_senha(pdf_path: Path) -> bool:
@@ -290,6 +298,40 @@ def migrar_historico_antigo(worksheet) -> None:
     worksheet.delete_rows(1, worksheet.max_row)
     worksheet.append(HISTORICO_HEADERS)
 
+    if headers == HISTORICO_HEADERS_COM_HORA_MOVIMENTO:
+        for empresa_id, empresa_nome, data, hora, hora_movimento, nome_arquivo, pasta_destino in linhas_antigas:
+            data_hora_movimento = ""
+            if data and hora_movimento:
+                data_hora_movimento = f"{data} {hora_movimento}"
+
+            worksheet.append(
+                [
+                    empresa_id or "",
+                    empresa_nome or "",
+                    data or "",
+                    hora or "",
+                    nome_arquivo or "",
+                    pasta_destino or "",
+                    data_hora_movimento,
+                ]
+            )
+        return
+
+    if headers == HISTORICO_HEADERS_SEM_MOVIMENTO:
+        for empresa_id, empresa_nome, data, hora, nome_arquivo, pasta_destino in linhas_antigas:
+            worksheet.append(
+                [
+                    empresa_id or "",
+                    empresa_nome or "",
+                    data or "",
+                    hora or "",
+                    nome_arquivo or "",
+                    pasta_destino or "",
+                    "",
+                ]
+            )
+        return
+
     if headers != HISTORICO_HEADERS_ANTIGO:
         return
 
@@ -303,6 +345,7 @@ def migrar_historico_antigo(worksheet) -> None:
                 hora,
                 nome_arquivo or "",
                 pasta_destino or "",
+                "",
             ]
         )
 
@@ -422,6 +465,7 @@ def registrar_historico_conversao(
     nomes_arquivos: list[str],
     pasta_destino: str,
     data_hora: datetime | None = None,
+    data_hora_movimento: datetime | None = None,
     empresa_id=None,
     empresa_nome: str | None = None,
     empresas: dict[str, tuple[object, str]] | None = None,
@@ -450,9 +494,11 @@ def registrar_historico_conversao(
         worksheet.title = "historico"
         worksheet.append(HISTORICO_HEADERS)
 
-    momento = data_hora or datetime.now()
+    momento = data_hora or agora_historico()
+    momento_movimento = data_hora_movimento or momento
     data_formatada = momento.strftime("%Y-%m-%d")
     hora_formatada = momento.strftime("%H:%M:%S")
+    data_hora_movimento_formatada = momento_movimento.strftime("%Y-%m-%d %H:%M:%S")
     if empresa_id is None or empresa_nome is None:
         cliente = extrair_cliente_nome_arquivo(nomes_arquivos[0]) if nomes_arquivos else ""
         empresa_id, empresa_nome = buscar_empresa_por_cliente(cliente, empresas=empresas)
@@ -466,6 +512,7 @@ def registrar_historico_conversao(
                 hora_formatada,
                 nome_arquivo,
                 pasta_destino,
+                data_hora_movimento_formatada,
             ]
         )
 
@@ -668,6 +715,7 @@ def executar_conversao():
             logger.info("Gerando planilha totalizada: %s", dest_excel)
             df_totalizado = totalizador(df)
             df_totalizado.to_excel(dest_excel, index=False)
+            momento_conversao = agora_historico()
 
             logger.info("Enviando XLSM para o Google Drive: %s", dest_lancamento.name)
             google_drive.upload(
@@ -690,6 +738,7 @@ def executar_conversao():
                 file_id=arquivo_id,
                 folder_id_destino=pasta_destino_id,
             )
+            momento_movimento = agora_historico()
 
             registrar_historico_conversao(
                 google_drive=google_drive,
@@ -697,6 +746,8 @@ def executar_conversao():
                 temp_dir=temp_dir,
                 nomes_arquivos=[arquivo_nome, dest_excel.name, dest_lancamento.name],
                 pasta_destino=pasta_destino_historico,
+                data_hora=momento_conversao,
+                data_hora_movimento=momento_movimento,
                 empresa_id=empresa_id,
                 empresa_nome=empresa_nome,
             )

@@ -244,6 +244,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                     ],
                     pasta_destino="EMP/437_CAMARGOS/MOV/CONT/26/05/EXT",
                     data_hora=conversao.datetime(2026, 6, 12, 9, 30, 0),
+                    data_hora_movimento=conversao.datetime(2026, 6, 12, 9, 31, 5),
                 )
 
         self.assertEqual(fake_drive.updated, [])
@@ -260,6 +261,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                     "09:30:00",
                     "0526_EXTBAN C6BANK_CAMARGOS.pdf",
                     "EMP/437_CAMARGOS/MOV/CONT/26/05/EXT",
+                    "2026-06-12 09:31:05",
                 ),
                 (
                     437,
@@ -268,6 +270,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                     "09:30:00",
                     "0526_EXTBAN C6BANK_CAMARGOS.xlsx",
                     "EMP/437_CAMARGOS/MOV/CONT/26/05/EXT",
+                    "2026-06-12 09:31:05",
                 ),
                 (
                     437,
@@ -276,6 +279,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                     "09:30:00",
                     "0526_LANCBAN C6BANK_CAMARGOS.xlsm",
                     "EMP/437_CAMARGOS/MOV/CONT/26/05/EXT",
+                    "2026-06-12 09:31:05",
                 ),
             ],
         )
@@ -319,6 +323,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                     ],
                     pasta_destino="EMP/437_CAMARGOS/MOV/CONT/26/05/EXT",
                     data_hora=conversao.datetime(2026, 6, 12, 9, 30, 0),
+                    data_hora_movimento=conversao.datetime(2026, 6, 12, 9, 31, 5),
                 )
 
         self.assertEqual(fake_drive.updated[-1]["id"], "history-id")
@@ -333,6 +338,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                     "08:00:00",
                     "0426_EXTBAN C6BANK_LF.pdf",
                     "00_CONVERTIDOS/0426_EXTBAN C6BANK_LF",
+                    None,
                 ),
                 (
                     437,
@@ -341,6 +347,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                     "09:30:00",
                     "0526_EXTBAN C6BANK_CAMARGOS.pdf",
                     "EMP/437_CAMARGOS/MOV/CONT/26/05/EXT",
+                    "2026-06-12 09:31:05",
                 ),
                 (
                     437,
@@ -349,6 +356,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                     "09:30:00",
                     "0526_EXTBAN C6BANK_CAMARGOS.xlsx",
                     "EMP/437_CAMARGOS/MOV/CONT/26/05/EXT",
+                    "2026-06-12 09:31:05",
                 ),
                 (
                     437,
@@ -357,6 +365,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                     "09:30:00",
                     "0526_LANCBAN C6BANK_CAMARGOS.xlsm",
                     "EMP/437_CAMARGOS/MOV/CONT/26/05/EXT",
+                    "2026-06-12 09:31:05",
                 ),
             ],
         )
