@@ -1,4 +1,5 @@
 import logging
+import os
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -24,6 +25,9 @@ from src.utils.logging_config import setup_logging
 logger = logging.getLogger(__name__)
 _whats_batch_lock = Lock()
 CHECKPOINT_LOOKUP_FAILURE = "Falha ao consultar checkpoint WhatsApp"
+WEBHOOK_CHECKPOINT_GRACE_SECONDS = int(
+    os.getenv("WHATS_WEBHOOK_CHECKPOINT_GRACE_SECONDS", "1800")
+)
 
 
 def _normalize_event(event: str | None) -> str:
@@ -121,6 +125,7 @@ def should_process_webhook(
         is_after_checkpoint, reason = _validate_message_after_checkpoint(
             message=message,
             checkpoint_timestamp=checkpoint_timestamp,
+            before_checkpoint_grace_seconds=WEBHOOK_CHECKPOINT_GRACE_SECONDS,
         )
 
         if is_after_checkpoint:
@@ -347,6 +352,7 @@ def _group_checkpoint_context(
 def _validate_message_after_checkpoint(
     message: dict[str, Any],
     checkpoint_timestamp: int | None,
+    before_checkpoint_grace_seconds: int = 0,
 ) -> tuple[bool, str]:
     if checkpoint_timestamp is None:
         return True, "Sem checkpoint"
@@ -357,6 +363,14 @@ def _validate_message_after_checkpoint(
         return False, "Mensagem sem timestamp valido apos checkpoint"
 
     if message_timestamp <= checkpoint_timestamp:
+        seconds_before_checkpoint = checkpoint_timestamp - message_timestamp
+
+        if (
+            before_checkpoint_grace_seconds > 0
+            and seconds_before_checkpoint <= before_checkpoint_grace_seconds
+        ):
+            return True, "Mensagem antes do checkpoint dentro da tolerancia do webhook"
+
         return False, "Mensagem antes do checkpoint"
 
     return True, "Mensagem apos checkpoint"
@@ -440,6 +454,7 @@ def _payload_pdf_messages(
         is_after_checkpoint, reason = _validate_message_after_checkpoint(
             message=message,
             checkpoint_timestamp=checkpoint_timestamp,
+            before_checkpoint_grace_seconds=WEBHOOK_CHECKPOINT_GRACE_SECONDS,
         )
 
         if not is_after_checkpoint:
