@@ -1,4 +1,5 @@
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -37,7 +38,11 @@ class GoogleDriveAuth:
         """
 
         if self.token_secret_path and self.token_secret_path.exists():
-            self.token_path = self.token_secret_path
+            if self.token_secret_path.resolve() == self.token_path.resolve():
+                self.token_path = Path(tempfile.gettempdir()) / self.token_secret_path.name
+
+            self.token_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(self.token_secret_path, self.token_path)
             return
 
         if self.token_path.exists():
