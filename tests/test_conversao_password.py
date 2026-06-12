@@ -27,9 +27,15 @@ class FakeDrive:
         self.trashed = set()
         self.history_file = None
         self.history_rows = []
+        self.file_info = {"id": "srvarq-root", "name": "SRVARQ"}
+        self.folders = []
 
     def get_or_create_folder(self, folder_id_pai, name_folder):
+        self.folders.append((folder_id_pai, name_folder))
         return {"id": f"id-{name_folder}", "name": name_folder}
+
+    def get_file_info(self, file_id):
+        return self.file_info
 
     def pdfs(self, folder_id, pdf_type=None):
         if folder_id == "id-PDFS_COM_SENHAS":
@@ -396,6 +402,8 @@ class ConversaoPasswordTest(unittest.TestCase):
                 "historico",
             ],
         )
+        self.assertIn(("srvarq-root", "EMP"), fake_drive.folders)
+        self.assertIn(("id-EMP", "23_CAMARGOS"), fake_drive.folders)
 
     def test_processa_pdf_com_senha_e_limpa_pasta_vazia(self):
         with tempfile.TemporaryDirectory() as temp_dir:

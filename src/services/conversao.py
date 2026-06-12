@@ -136,6 +136,25 @@ def nome_pasta_empresa(empresa_id, empresa_nome: str) -> str:
     return f"{empresa_id_normalizado}_{empresa_nome_normalizado}"
 
 
+def resolver_pasta_emp_base(
+    google_drive: GoogleDriveAuth,
+    pasta_base_id: str,
+) -> str:
+    pasta_base = google_drive.get_file_info(pasta_base_id)
+    nome_base = normalizar_nome_empresa(pasta_base.get("name"))
+
+    if nome_base == "EMP":
+        return pasta_base_id
+
+    logger.info("Localizando pasta EMP dentro da pasta base: %s", pasta_base.get("name"))
+    pasta_emp = google_drive.get_or_create_folder(
+        folder_id_pai=pasta_base_id,
+        name_folder="EMP",
+    )
+
+    return pasta_emp["id"]
+
+
 def carregar_empresas_ativas(
     base_path: Path = BASE_EMP_ATIVAS,
     sheet_name: str = BASE_EMP_ATIVAS_SHEET,
@@ -474,6 +493,10 @@ def executar_conversao():
     temp_dir.mkdir(parents=True, exist_ok=True)
     logger.info("Diretorio temporario preparado: %s", temp_dir)
     empresas = carregar_empresas_ativas()
+    emp_raiz_id = resolver_pasta_emp_base(
+        google_drive=google_drive,
+        pasta_base_id=emp_id,
+    )
 
     logger.info("Criando ou recuperando pasta de invalidos no Google Drive")
     pasta_invalidos = google_drive.get_or_create_folder(
@@ -599,7 +622,7 @@ def executar_conversao():
             try:
                 pasta_destino_id, pasta_destino_historico = resolver_pasta_destino_emp(
                     google_drive=google_drive,
-                    pasta_emp_id=emp_id,
+                    pasta_emp_id=emp_raiz_id,
                     arquivo_nome=arquivo_nome,
                     empresa_id=empresa_id,
                     empresa_nome=empresa_nome,
