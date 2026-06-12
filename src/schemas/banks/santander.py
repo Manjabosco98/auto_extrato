@@ -11,7 +11,7 @@ class Santander(BankHandler):
     @layout("EXTRATO CONSOLIDADO INTELIGENTE")
     def layout1(self, pdf):
         indice = next((i for i, item in enumerate(pdf) if "“Sesuaempresanãotiverlimitedeconta" in item), None)
-        pdf = pdf[58:indice]
+        pdf = pdf[55:indice]
         pdf = [item for item in pdf if not any(texto in item for texto in [
             "Data Descrição ",
             "Pagina: ",

@@ -1,5 +1,6 @@
 import re
 import pandas as pd
+from typing import Optional
 from src.schemas.base import BankHandler, layout
 from src.schemas.registry import register
 
