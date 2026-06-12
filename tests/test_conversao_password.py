@@ -86,6 +86,13 @@ class ConversaoPasswordTest(unittest.TestCase):
 
         self.assertEqual(resultado, ("639256", "0526_EXTBAN C6BANK_GRB.pdf"))
 
+    def test_extrai_senha_preservando_sm_no_nome_limpo(self):
+        resultado = conversao.extrair_senha_nome_pdf(
+            "0526_EXTBAN C6BANK SENHA 663861 SM_METRIKAL.pdf"
+        )
+
+        self.assertEqual(resultado, ("663861", "0526_EXTBAN C6BANK SM_METRIKAL.pdf"))
+
     def test_retorna_none_quando_nome_nao_tem_padrao_senha(self):
         resultado = conversao.extrair_senha_nome_pdf("0526_EXTBAN C6BANK_GRB.pdf")
 

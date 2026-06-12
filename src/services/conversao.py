@@ -41,7 +41,7 @@ def pdf_possui_senha(pdf_path: Path) -> bool:
 def extrair_senha_nome_pdf(nome_arquivo: str) -> tuple[str, str] | None:
     caminho = Path(nome_arquivo)
     match = re.match(
-        r"^(?P<prefixo>.+?)\s+SENHA\s+(?P<senha>[^_]+)(?P<sufixo>_.*)$",
+        r"^(?P<prefixo>.+?)\s+SENHA\s+(?P<senha>[^\s_]+)(?P<sufixo>.*)$",
         caminho.stem,
         flags=re.IGNORECASE,
     )
@@ -50,7 +50,15 @@ def extrair_senha_nome_pdf(nome_arquivo: str) -> tuple[str, str] | None:
         return None
 
     senha = match.group("senha").strip()
-    nome_limpo = f"{match.group('prefixo').rstrip()}{match.group('sufixo')}{caminho.suffix}"
+    sufixo = match.group("sufixo").strip()
+    nome_limpo_stem = match.group("prefixo").rstrip()
+
+    if sufixo.startswith("_"):
+        nome_limpo_stem = f"{nome_limpo_stem}{sufixo}"
+    elif sufixo:
+        nome_limpo_stem = f"{nome_limpo_stem} {sufixo}"
+
+    nome_limpo = f"{nome_limpo_stem}{caminho.suffix}"
     return senha, nome_limpo
 
 
