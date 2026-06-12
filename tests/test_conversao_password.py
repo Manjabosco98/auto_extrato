@@ -4,6 +4,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pandas as pd
+from googleapiclient.errors import HttpError
+from httplib2 import Response
 from openpyxl import Workbook, load_workbook
 
 from src.services import conversao
@@ -35,6 +37,12 @@ class FakeDrive:
 
     def get_file_info(self, file_id):
         raise AssertionError("get_file_info nao deve ser chamado para resolver SRVARQ > EMP")
+
+    def find_folder_by_name(self, name_folder, shared_with_me=False):
+        if name_folder == "SRVARQ":
+            return {"id": "id-SRVARQ", "name": "SRVARQ"}
+
+        return None
 
     def pdfs(self, folder_id, pdf_type=None):
         if folder_id == "id-PDFS_COM_SENHAS":
@@ -159,6 +167,36 @@ class ConversaoPasswordTest(unittest.TestCase):
         resultado = conversao.nome_pasta_empresa(23, " Camargos ")
 
         self.assertEqual(resultado, "23_CAMARGOS")
+
+    def test_resolve_srvarq_por_nome_quando_id_configurado_nao_abre(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_drive = FakeDrive(temp_dir)
+            chamadas = []
+
+            def get_or_create_folder(folder_id_pai, name_folder):
+                chamadas.append((folder_id_pai, name_folder))
+
+                if folder_id_pai == "srvarq-inacessivel":
+                    response = Response({"status": "404", "reason": "Not Found"})
+                    raise HttpError(response, b"File not found")
+
+                return {"id": f"id-{name_folder}", "name": name_folder}
+
+            fake_drive.get_or_create_folder = get_or_create_folder
+
+            resultado = conversao.resolver_pasta_emp_base(
+                google_drive=fake_drive,
+                pasta_base_id="srvarq-inacessivel",
+            )
+
+        self.assertEqual(resultado, "id-EMP")
+        self.assertEqual(
+            chamadas,
+            [
+                ("srvarq-inacessivel", "EMP"),
+                ("id-SRVARQ", "EMP"),
+            ],
+        )
 
     def test_carrega_empresa_ativa_por_razao_social(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -5,6 +5,7 @@ import unicodedata
 from datetime import datetime
 from pathlib import Path
 
+from googleapiclient.errors import HttpError
 from openpyxl import Workbook, load_workbook
 from pypdf import PdfReader
 
@@ -141,10 +142,31 @@ def resolver_pasta_emp_base(
     pasta_base_id: str,
 ) -> str:
     logger.info("Localizando pasta EMP dentro da pasta base SRVARQ")
-    pasta_emp = google_drive.get_or_create_folder(
-        folder_id_pai=pasta_base_id,
-        name_folder="EMP",
-    )
+    try:
+        pasta_emp = google_drive.get_or_create_folder(
+            folder_id_pai=pasta_base_id,
+            name_folder="EMP",
+        )
+    except HttpError as erro:
+        if erro.resp.status != 404:
+            raise
+
+        logger.warning(
+            "Pasta base SRVARQ nao acessivel pelo ID configurado. Tentando localizar por nome."
+        )
+        pasta_base = (
+            google_drive.find_folder_by_name("SRVARQ", shared_with_me=True)
+            or google_drive.find_folder_by_name("SRVARQ")
+        )
+
+        if not pasta_base:
+            raise
+
+        logger.info("Pasta SRVARQ localizada por nome: %s", pasta_base["id"])
+        pasta_emp = google_drive.get_or_create_folder(
+            folder_id_pai=pasta_base["id"],
+            name_folder="EMP",
+        )
 
     return pasta_emp["id"]
 

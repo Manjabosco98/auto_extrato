@@ -107,6 +107,28 @@ class GoogleDriveAuth:
         pastas = response.get("files", [])
         return pastas[0] if pastas else None
 
+    def find_folder_by_name(self, name_folder: str, shared_with_me: bool = False):
+        name_folder = name_folder.replace("'", "\\'")
+        query_parts = [
+            f"name = '{name_folder}'",
+            f"mimeType = '{self.FOLDER_MIME_TYPE}'",
+            "trashed = false",
+        ]
+
+        if shared_with_me:
+            query_parts.append("sharedWithMe = true")
+
+        response = self.service.files().list(
+            q=" and ".join(query_parts),
+            spaces="drive",
+            fields="files(id, name, mimeType, parents)",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True
+        ).execute()
+
+        pastas = response.get("files", [])
+        return pastas[0] if pastas else None
+
     def create_folder(self, name_folder: str, folder_id_pai: Optional[str] = None):
         metadata = {
             "name": name_folder,
