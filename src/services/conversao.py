@@ -140,13 +140,7 @@ def resolver_pasta_emp_base(
     google_drive: GoogleDriveAuth,
     pasta_base_id: str,
 ) -> str:
-    pasta_base = google_drive.get_file_info(pasta_base_id)
-    nome_base = normalizar_nome_empresa(pasta_base.get("name"))
-
-    if nome_base == "EMP":
-        return pasta_base_id
-
-    logger.info("Localizando pasta EMP dentro da pasta base: %s", pasta_base.get("name"))
+    logger.info("Localizando pasta EMP dentro da pasta base SRVARQ")
     pasta_emp = google_drive.get_or_create_folder(
         folder_id_pai=pasta_base_id,
         name_folder="EMP",
