@@ -30,7 +30,10 @@ SEM_MOV_PREFIX = "[SEM MOV] - "
 SEM_IMAGEM_PREFIX = "[SEM IMAGEM] - "
 PREFIXOS_INVALIDOS = (SEM_MOV_PREFIX, SEM_IMAGEM_PREFIX)
 HISTORICO_CONVERSOES = "HISTORICO_CONVERSOES.xlsx"
-HISTORICO_HEADERS = ("nome_arquivo", "data_hora_conversao", "pasta_destino")
+HISTORICO_HEADERS = ("ID", "EMP", "DATA", "HORA", "NOME ARQUIVO", "PASTA DESTINO")
+HISTORICO_HEADERS_ANTIGO = ("nome_arquivo", "data_hora_conversao", "pasta_destino")
+BASE_EMP_ATIVAS = Path.cwd() / "data" / "BaseEmpAtivas.xlsm"
+BASE_EMP_ATIVAS_SHEET = "EmpAtivas"
 
 
 def pdf_possui_senha(pdf_path: Path) -> bool:
@@ -75,6 +78,130 @@ def nome_com_prefixo_invalido(nome_arquivo: str, prefixo: str) -> str:
     if nome_arquivo.startswith(PREFIXOS_INVALIDOS):
         return nome_arquivo
     return f"{prefixo}{nome_arquivo}"
+
+
+def normalizar_nome_empresa(valor) -> str:
+    return " ".join(str(valor or "").strip().upper().split())
+
+
+def extrair_cliente_nome_arquivo(nome_arquivo: str) -> str:
+    stem = Path(nome_arquivo).stem
+    partes = [parte.strip() for parte in stem.split("_") if parte.strip()]
+    return partes[-1] if partes else stem.strip()
+
+
+def carregar_empresas_ativas(
+    base_path: Path = BASE_EMP_ATIVAS,
+    sheet_name: str = BASE_EMP_ATIVAS_SHEET,
+) -> dict[str, tuple[object, str]]:
+    if not base_path.exists():
+        logger.warning("Base de empresas ativas nao encontrada: %s", base_path)
+        return {}
+
+    workbook = load_workbook(base_path, read_only=True, data_only=True)
+
+    try:
+        if sheet_name not in workbook.sheetnames:
+            logger.warning("Aba %s nao encontrada na base: %s", sheet_name, base_path)
+            return {}
+
+        worksheet = workbook[sheet_name]
+        rows = worksheet.iter_rows(values_only=True)
+        headers = next(rows, None)
+
+        if not headers:
+            logger.warning("Base de empresas ativas sem cabecalho: %s", base_path)
+            return {}
+
+        normalized_headers = [
+            normalizar_nome_empresa(header)
+            for header in headers
+        ]
+
+        try:
+            id_index = normalized_headers.index("ID")
+            emp_index = normalized_headers.index("RAZÃO SOCIAL")
+        except ValueError:
+            logger.warning("Base de empresas ativas sem colunas ID/Razao social: %s", base_path)
+            return {}
+
+        empresas = {}
+
+        for row in rows:
+            if not row:
+                continue
+
+            empresa = row[emp_index] if emp_index < len(row) else None
+            empresa_normalizada = normalizar_nome_empresa(empresa)
+
+            if not empresa_normalizada:
+                continue
+
+            empresa_id = row[id_index] if id_index < len(row) else ""
+            empresas[empresa_normalizada] = (empresa_id or "", str(empresa).strip())
+
+        return empresas
+    finally:
+        workbook.close()
+
+
+def buscar_empresa_por_cliente(
+    cliente: str,
+    empresas: dict[str, tuple[object, str]] | None = None,
+) -> tuple[object, str]:
+    empresas = empresas if empresas is not None else carregar_empresas_ativas()
+    cliente_normalizado = normalizar_nome_empresa(cliente)
+    empresa = empresas.get(cliente_normalizado)
+
+    if not empresa:
+        logger.warning("Cliente nao encontrado na BaseEmpAtivas: %s", cliente)
+        return "", ""
+
+    return empresa
+
+
+def separar_data_hora_historico(valor) -> tuple[str, str]:
+    if isinstance(valor, datetime):
+        return valor.strftime("%Y-%m-%d"), valor.strftime("%H:%M:%S")
+
+    texto = str(valor or "").strip()
+    if not texto:
+        return "", ""
+
+    partes = texto.split(maxsplit=1)
+    data = partes[0]
+    hora = partes[1] if len(partes) > 1 else ""
+    return data, hora
+
+
+def migrar_historico_antigo(worksheet) -> None:
+    headers = tuple(
+        cell.value
+        for cell in worksheet[1]
+    ) if worksheet.max_row else ()
+
+    if headers == HISTORICO_HEADERS:
+        return
+
+    linhas_antigas = list(worksheet.iter_rows(min_row=2, values_only=True))
+    worksheet.delete_rows(1, worksheet.max_row)
+    worksheet.append(HISTORICO_HEADERS)
+
+    if headers != HISTORICO_HEADERS_ANTIGO:
+        return
+
+    for nome_arquivo, data_hora_conversao, pasta_destino in linhas_antigas:
+        data, hora = separar_data_hora_historico(data_hora_conversao)
+        worksheet.append(
+            [
+                "",
+                "",
+                data,
+                hora,
+                nome_arquivo or "",
+                pasta_destino or "",
+            ]
+        )
 
 
 def renomear_e_mover_para_invalidos(
@@ -209,6 +336,7 @@ def registrar_historico_conversao(
         )
         workbook = load_workbook(historico_local)
         worksheet = workbook.active
+        migrar_historico_antigo(worksheet)
     else:
         logger.info("Criando historico de conversoes")
         workbook = Workbook()
@@ -217,13 +345,19 @@ def registrar_historico_conversao(
         worksheet.append(HISTORICO_HEADERS)
 
     momento = data_hora or datetime.now()
-    data_hora_formatada = momento.strftime("%Y-%m-%d %H:%M:%S")
+    data_formatada = momento.strftime("%Y-%m-%d")
+    hora_formatada = momento.strftime("%H:%M:%S")
+    cliente = extrair_cliente_nome_arquivo(nomes_arquivos[0]) if nomes_arquivos else ""
+    empresa_id, empresa_nome = buscar_empresa_por_cliente(cliente)
 
     for nome_arquivo in nomes_arquivos:
         worksheet.append(
             [
+                empresa_id,
+                empresa_nome,
+                data_formatada,
+                hora_formatada,
                 nome_arquivo,
-                data_hora_formatada,
                 pasta_destino,
             ]
         )

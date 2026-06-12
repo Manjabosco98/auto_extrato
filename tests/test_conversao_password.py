@@ -136,22 +136,60 @@ class ConversaoPasswordTest(unittest.TestCase):
 
         self.assertIsNone(resultado)
 
+    def test_extrai_cliente_do_nome_do_arquivo(self):
+        resultado = conversao.extrair_cliente_nome_arquivo(
+            "0526_EXTBAN ITAU_CAMARGOS.pdf"
+        )
+
+        self.assertEqual(resultado, "CAMARGOS")
+
+    def test_carrega_empresa_ativa_por_razao_social(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base_path = Path(temp_dir) / "BaseEmpAtivas.xlsm"
+            workbook = Workbook()
+            worksheet = workbook.active
+            worksheet.title = "EmpAtivas"
+            worksheet.append(["ID", "Razão social", "CNPJ", "Status"])
+            worksheet.append([437, "CAMARGOS", "00.000.000/0001-00", "Ativa"])
+            workbook.save(base_path)
+
+            empresas = conversao.carregar_empresas_ativas(base_path=base_path)
+            resultado = conversao.buscar_empresa_por_cliente(
+                " camargos ",
+                empresas=empresas,
+            )
+
+        self.assertEqual(resultado, (437, "CAMARGOS"))
+
+    def test_cliente_inexistente_retorna_campos_vazios(self):
+        resultado = conversao.buscar_empresa_por_cliente(
+            "NAO EXISTE",
+            empresas={},
+        )
+
+        self.assertEqual(resultado, ("", ""))
+
     def test_registrar_historico_cria_planilha_na_raiz(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             fake_drive = FakeDrive(temp_dir)
 
-            conversao.registrar_historico_conversao(
-                google_drive=fake_drive,
-                pasta_raiz_id="root-folder",
-                temp_dir=Path(temp_dir),
-                nomes_arquivos=[
-                    "0526_EXTBAN C6BANK_LF.pdf",
-                    "0526_EXTBAN C6BANK_LF.xlsx",
-                    "0526_LANCBAN C6BANK_LF.xlsm",
-                ],
-                pasta_destino="00_CONVERTIDOS/0526_EXTBAN C6BANK_LF",
-                data_hora=conversao.datetime(2026, 6, 12, 9, 30, 0),
-            )
+            with patch.object(
+                conversao,
+                "buscar_empresa_por_cliente",
+                return_value=(437, "CAMARGOS"),
+            ):
+                conversao.registrar_historico_conversao(
+                    google_drive=fake_drive,
+                    pasta_raiz_id="root-folder",
+                    temp_dir=Path(temp_dir),
+                    nomes_arquivos=[
+                        "0526_EXTBAN C6BANK_CAMARGOS.pdf",
+                        "0526_EXTBAN C6BANK_CAMARGOS.xlsx",
+                        "0526_LANCBAN C6BANK_CAMARGOS.xlsm",
+                    ],
+                    pasta_destino="00_CONVERTIDOS/0526_EXTBAN C6BANK_CAMARGOS",
+                    data_hora=conversao.datetime(2026, 6, 12, 9, 30, 0),
+                )
 
         self.assertEqual(fake_drive.updated, [])
         self.assertEqual(fake_drive.uploaded[-1]["name"], conversao.HISTORICO_CONVERSOES)
@@ -161,19 +199,28 @@ class ConversaoPasswordTest(unittest.TestCase):
             [
                 conversao.HISTORICO_HEADERS,
                 (
-                    "0526_EXTBAN C6BANK_LF.pdf",
-                    "2026-06-12 09:30:00",
-                    "00_CONVERTIDOS/0526_EXTBAN C6BANK_LF",
+                    437,
+                    "CAMARGOS",
+                    "2026-06-12",
+                    "09:30:00",
+                    "0526_EXTBAN C6BANK_CAMARGOS.pdf",
+                    "00_CONVERTIDOS/0526_EXTBAN C6BANK_CAMARGOS",
                 ),
                 (
-                    "0526_EXTBAN C6BANK_LF.xlsx",
-                    "2026-06-12 09:30:00",
-                    "00_CONVERTIDOS/0526_EXTBAN C6BANK_LF",
+                    437,
+                    "CAMARGOS",
+                    "2026-06-12",
+                    "09:30:00",
+                    "0526_EXTBAN C6BANK_CAMARGOS.xlsx",
+                    "00_CONVERTIDOS/0526_EXTBAN C6BANK_CAMARGOS",
                 ),
                 (
-                    "0526_LANCBAN C6BANK_LF.xlsm",
-                    "2026-06-12 09:30:00",
-                    "00_CONVERTIDOS/0526_EXTBAN C6BANK_LF",
+                    437,
+                    "CAMARGOS",
+                    "2026-06-12",
+                    "09:30:00",
+                    "0526_LANCBAN C6BANK_CAMARGOS.xlsm",
+                    "00_CONVERTIDOS/0526_EXTBAN C6BANK_CAMARGOS",
                 ),
             ],
         )
@@ -184,7 +231,7 @@ class ConversaoPasswordTest(unittest.TestCase):
             historico_existente = temp_dir_path / conversao.HISTORICO_CONVERSOES
             workbook = Workbook()
             worksheet = workbook.active
-            worksheet.append(conversao.HISTORICO_HEADERS)
+            worksheet.append(conversao.HISTORICO_HEADERS_ANTIGO)
             worksheet.append(
                 [
                     "0426_EXTBAN C6BANK_LF.pdf",
@@ -201,18 +248,23 @@ class ConversaoPasswordTest(unittest.TestCase):
                 "content": historico_existente.read_bytes(),
             }
 
-            conversao.registrar_historico_conversao(
-                google_drive=fake_drive,
-                pasta_raiz_id="root-folder",
-                temp_dir=temp_dir_path,
-                nomes_arquivos=[
-                    "0526_EXTBAN C6BANK_LF.pdf",
-                    "0526_EXTBAN C6BANK_LF.xlsx",
-                    "0526_LANCBAN C6BANK_LF.xlsm",
-                ],
-                pasta_destino="00_CONVERTIDOS/0526_EXTBAN C6BANK_LF",
-                data_hora=conversao.datetime(2026, 6, 12, 9, 30, 0),
-            )
+            with patch.object(
+                conversao,
+                "buscar_empresa_por_cliente",
+                return_value=(437, "CAMARGOS"),
+            ):
+                conversao.registrar_historico_conversao(
+                    google_drive=fake_drive,
+                    pasta_raiz_id="root-folder",
+                    temp_dir=temp_dir_path,
+                    nomes_arquivos=[
+                        "0526_EXTBAN C6BANK_CAMARGOS.pdf",
+                        "0526_EXTBAN C6BANK_CAMARGOS.xlsx",
+                        "0526_LANCBAN C6BANK_CAMARGOS.xlsm",
+                    ],
+                    pasta_destino="00_CONVERTIDOS/0526_EXTBAN C6BANK_CAMARGOS",
+                    data_hora=conversao.datetime(2026, 6, 12, 9, 30, 0),
+                )
 
         self.assertEqual(fake_drive.updated[-1]["id"], "history-id")
         self.assertEqual(
@@ -220,24 +272,36 @@ class ConversaoPasswordTest(unittest.TestCase):
             [
                 conversao.HISTORICO_HEADERS,
                 (
+                    None,
+                    None,
+                    "2026-06-11",
+                    "08:00:00",
                     "0426_EXTBAN C6BANK_LF.pdf",
-                    "2026-06-11 08:00:00",
                     "00_CONVERTIDOS/0426_EXTBAN C6BANK_LF",
                 ),
                 (
-                    "0526_EXTBAN C6BANK_LF.pdf",
-                    "2026-06-12 09:30:00",
-                    "00_CONVERTIDOS/0526_EXTBAN C6BANK_LF",
+                    437,
+                    "CAMARGOS",
+                    "2026-06-12",
+                    "09:30:00",
+                    "0526_EXTBAN C6BANK_CAMARGOS.pdf",
+                    "00_CONVERTIDOS/0526_EXTBAN C6BANK_CAMARGOS",
                 ),
                 (
-                    "0526_EXTBAN C6BANK_LF.xlsx",
-                    "2026-06-12 09:30:00",
-                    "00_CONVERTIDOS/0526_EXTBAN C6BANK_LF",
+                    437,
+                    "CAMARGOS",
+                    "2026-06-12",
+                    "09:30:00",
+                    "0526_EXTBAN C6BANK_CAMARGOS.xlsx",
+                    "00_CONVERTIDOS/0526_EXTBAN C6BANK_CAMARGOS",
                 ),
                 (
-                    "0526_LANCBAN C6BANK_LF.xlsm",
-                    "2026-06-12 09:30:00",
-                    "00_CONVERTIDOS/0526_EXTBAN C6BANK_LF",
+                    437,
+                    "CAMARGOS",
+                    "2026-06-12",
+                    "09:30:00",
+                    "0526_LANCBAN C6BANK_CAMARGOS.xlsm",
+                    "00_CONVERTIDOS/0526_EXTBAN C6BANK_CAMARGOS",
                 ),
             ],
         )
