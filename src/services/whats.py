@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -24,9 +25,20 @@ from src.utils.logging_config import setup_logging
 
 logger = logging.getLogger(__name__)
 _whats_batch_lock = Lock()
+_webhook_queue_lock = Lock()
+_checkpoint_send_lock = Lock()
+_webhook_pending_payloads: list[dict[str, Any]] = []
+_webhook_worker_active = False
+_last_checkpoint_sent_at_by_group: dict[str, float] = {}
 CHECKPOINT_LOOKUP_FAILURE = "Falha ao consultar checkpoint WhatsApp"
 WEBHOOK_CHECKPOINT_GRACE_SECONDS = int(
     os.getenv("WHATS_WEBHOOK_CHECKPOINT_GRACE_SECONDS", "1800")
+)
+WEBHOOK_BATCH_WAIT_SECONDS = int(
+    os.getenv("WHATS_WEBHOOK_BATCH_WAIT_SECONDS", "60")
+)
+CHECKPOINT_SEND_COOLDOWN_SECONDS = int(
+    os.getenv("WHATS_CHECKPOINT_SEND_COOLDOWN_SECONDS", "300")
 )
 
 
@@ -137,12 +149,59 @@ def should_process_webhook(
 
 
 def processar_webhook_whats(payload: dict[str, Any]) -> dict[str, Any]:
+    global _webhook_worker_active
+
+    with _webhook_queue_lock:
+        _webhook_pending_payloads.append(payload)
+
+        if _webhook_worker_active:
+            logger.info("Webhook WhatsApp adicionado ao lote pendente")
+            return {
+                "status": "queued",
+                "message": "Webhook WhatsApp adicionado ao lote pendente",
+            }
+
+        _webhook_worker_active = True
+
+    try:
+        return _processar_fila_webhook_whats()
+    finally:
+        with _webhook_queue_lock:
+            _webhook_worker_active = False
+
+
+def _processar_fila_webhook_whats() -> dict[str, Any]:
     if not _whats_batch_lock.acquire(blocking=False):
-        logger.info("Lote WhatsApp ja em processamento. Aguardando para revalidar evento")
+        logger.info("Lote WhatsApp ja em processamento. Aguardando para revalidar fila")
         _whats_batch_lock.acquire()
 
     try:
-        return _processar_lote_whats(payload)
+        resultado = {
+            "status": "ignored",
+            "message": "Nenhum PDF novo baixado",
+            "total_baixados": 0,
+        }
+
+        while True:
+            if WEBHOOK_BATCH_WAIT_SECONDS > 0:
+                logger.info(
+                    "Aguardando %s segundo(s) para agrupar PDFs do webhook WhatsApp",
+                    WEBHOOK_BATCH_WAIT_SECONDS,
+                )
+                time.sleep(WEBHOOK_BATCH_WAIT_SECONDS)
+
+            with _webhook_queue_lock:
+                payloads = list(_webhook_pending_payloads)
+                _webhook_pending_payloads.clear()
+
+            if not payloads:
+                return resultado
+
+            resultado = _processar_lote_whats(payloads)
+
+            with _webhook_queue_lock:
+                if not _webhook_pending_payloads:
+                    return resultado
     finally:
         _whats_batch_lock.release()
 
@@ -158,14 +217,24 @@ def executar_fluxo_whatsapp() -> dict[str, Any]:
         _whats_batch_lock.release()
 
 
-def _processar_lote_whats(payload: dict[str, Any]) -> dict[str, Any]:
+def _processar_lote_whats(payloads: list[dict[str, Any]] | dict[str, Any]) -> dict[str, Any]:
     setup_logging()
     whatsapp = WhatsAppChat()
-    should_process, reason, message = should_process_webhook(payload, whatsapp=whatsapp)
+    payloads = payloads if isinstance(payloads, list) else [payloads]
 
-    if not should_process:
-        logger.info("Webhook WhatsApp ignorado: %s", reason)
-        return {"status": "ignored", "message": reason}
+    pending_messages = _payloads_pdf_messages(
+        whatsapp=whatsapp,
+        payloads=payloads,
+    )
+    logger.info("PDFs novos identificados no payload WhatsApp: %s", len(pending_messages))
+
+    if not pending_messages:
+        logger.info("Nenhum PDF novo foi baixado no lote WhatsApp")
+        return {
+            "status": "ignored",
+            "message": "Nenhum PDF novo baixado",
+            "total_baixados": 0,
+        }
 
     google_drive = GoogleDriveAuth(
         credentials_path=GOOGLE_OAUTH_CREDENTIALS,
@@ -173,24 +242,14 @@ def _processar_lote_whats(payload: dict[str, Any]) -> dict[str, Any]:
         token_secret_path=GOOGLE_OAUTH_TOKEN_SECRET,
     )
 
-    pending_messages = _payload_pdf_messages(
+    uploaded = _download_all_then_upload_all(
         whatsapp=whatsapp,
-        payload=payload,
+        google_drive=google_drive,
+        messages=pending_messages,
+        context="lote WhatsApp",
     )
-    logger.info("PDFs novos identificados no payload WhatsApp: %s", len(pending_messages))
 
-    downloaded = []
-    for pending_message in pending_messages:
-        result = _download_upload_pdf_message(
-            whatsapp=whatsapp,
-            google_drive=google_drive,
-            message=pending_message,
-        )
-
-        if result:
-            downloaded.append(result)
-
-    if not downloaded:
+    if not uploaded:
         logger.info("Nenhum PDF novo foi baixado no lote WhatsApp")
         return {
             "status": "ignored",
@@ -200,8 +259,8 @@ def _processar_lote_whats(payload: dict[str, Any]) -> dict[str, Any]:
 
     try:
         logger.info(
-            "Downloads do lote WhatsApp finalizados. Iniciando conversao unica. Total=%s",
-            len(downloaded),
+            "Uploads do lote WhatsApp finalizados. Iniciando conversao unica. Total=%s",
+            len(uploaded),
         )
         executar_conversao()
         _send_checkpoint_safe(whatsapp, _group_jid_from_messages(pending_messages))
@@ -209,8 +268,8 @@ def _processar_lote_whats(payload: dict[str, Any]) -> dict[str, Any]:
         return {
             "status": "processed",
             "message": "PDFs enviados ao Google Drive e conversao iniciada",
-            "total_baixados": len(downloaded),
-            "arquivos": downloaded,
+            "total_baixados": len(uploaded),
+            "arquivos": uploaded,
         }
     except Exception:
         logger.exception("Erro durante conversao do lote WhatsApp")
@@ -276,18 +335,14 @@ def _executar_fluxo_whatsapp() -> dict[str, Any]:
         len(messages_by_id),
     )
 
-    downloaded = []
-    for message in messages_by_id.values():
-        result = _download_upload_pdf_message(
-            whatsapp=whatsapp,
-            google_drive=google_drive,
-            message=message,
-        )
+    uploaded = _download_all_then_upload_all(
+        whatsapp=whatsapp,
+        google_drive=google_drive,
+        messages=list(messages_by_id.values()),
+        context="fluxo manual WhatsApp",
+    )
 
-        if result:
-            downloaded.append(result)
-
-    if not downloaded:
+    if not uploaded:
         logger.info("Nenhum PDF novo foi baixado no fluxo manual WhatsApp")
         return {
             "status": "ignored",
@@ -296,8 +351,8 @@ def _executar_fluxo_whatsapp() -> dict[str, Any]:
         }
 
     logger.info(
-        "Downloads do fluxo manual WhatsApp finalizados. Iniciando conversao unica. Total=%s",
-        len(downloaded),
+        "Uploads do fluxo manual WhatsApp finalizados. Iniciando conversao unica. Total=%s",
+        len(uploaded),
     )
     executar_conversao()
     _send_checkpoint_safe(whatsapp, group_jid)
@@ -305,8 +360,8 @@ def _executar_fluxo_whatsapp() -> dict[str, Any]:
     return {
         "status": "processed",
         "message": "PDFs do WhatsApp enviados ao Google Drive e conversao iniciada",
-        "total_baixados": len(downloaded),
-        "arquivos": downloaded,
+        "total_baixados": len(uploaded),
+        "arquivos": uploaded,
     }
 
 
@@ -381,11 +436,58 @@ def _send_checkpoint_safe(whatsapp: WhatsAppChat, group_jid: str | None) -> None
         logger.info("Checkpoint WhatsApp nao enviado: grupo nao identificado")
         return
 
+    if _checkpoint_was_recently_sent_locally(group_jid):
+        logger.info("Checkpoint WhatsApp nao enviado: ja foi enviado recentemente")
+        return
+
+    if _group_has_recent_checkpoint(whatsapp, group_jid):
+        logger.info("Checkpoint WhatsApp nao enviado: checkpoint recente ja existe no grupo")
+        _remember_checkpoint_sent(group_jid)
+        return
+
     try:
         whatsapp.send_checkpoint(group_jid)
+        _remember_checkpoint_sent(group_jid)
         logger.info("Checkpoint WhatsApp enviado para o grupo: %s", group_jid)
     except Exception:
         logger.exception("Erro ao enviar checkpoint WhatsApp para o grupo: %s", group_jid)
+
+
+def _checkpoint_was_recently_sent_locally(group_jid: str) -> bool:
+    if CHECKPOINT_SEND_COOLDOWN_SECONDS <= 0:
+        return False
+
+    with _checkpoint_send_lock:
+        last_sent_at = _last_checkpoint_sent_at_by_group.get(group_jid)
+
+    if last_sent_at is None:
+        return False
+
+    return time.time() - last_sent_at <= CHECKPOINT_SEND_COOLDOWN_SECONDS
+
+
+def _remember_checkpoint_sent(group_jid: str) -> None:
+    with _checkpoint_send_lock:
+        _last_checkpoint_sent_at_by_group[group_jid] = time.time()
+
+
+def _group_has_recent_checkpoint(whatsapp: WhatsAppChat, group_jid: str) -> bool:
+    if CHECKPOINT_SEND_COOLDOWN_SECONDS <= 0:
+        return False
+
+    try:
+        messages = whatsapp.group_messages(group_jid)
+    except Exception:
+        logger.exception(
+            "Checkpoint WhatsApp nao enviado: falha ao verificar checkpoint recente"
+        )
+        return True
+
+    checkpoint_timestamp = whatsapp.last_checkpoint_timestamp(messages)
+    if checkpoint_timestamp is None:
+        return False
+
+    return time.time() - float(checkpoint_timestamp) <= CHECKPOINT_SEND_COOLDOWN_SECONDS
 
 
 def _validate_payload_pdf_message(
@@ -416,6 +518,13 @@ def _payload_pdf_messages(
     whatsapp: WhatsAppChat,
     payload: dict[str, Any],
 ) -> list[dict[str, Any]]:
+    return _payloads_pdf_messages(whatsapp=whatsapp, payloads=[payload])
+
+
+def _payloads_pdf_messages(
+    whatsapp: WhatsAppChat,
+    payloads: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
     group_jid = whatsapp.find_group_name()
 
     if not group_jid:
@@ -424,18 +533,29 @@ def _payload_pdf_messages(
 
     messages_by_id = {}
 
-    for message in _payload_messages(payload):
-        is_valid, reason = _validate_payload_pdf_message(
-            whatsapp=whatsapp,
-            message=message,
-            group_jid=group_jid,
-        )
-
-        if not is_valid:
-            logger.info("Mensagem do payload ignorada: %s", reason)
+    for payload in payloads:
+        event = _normalize_event(payload.get("event"))
+        if event != "messages.upsert":
+            logger.info("Payload ignorado no lote WhatsApp: Evento ignorado")
             continue
 
-        messages_by_id[_message_id(message)] = message
+        instance = payload.get("instance")
+        if instance and instance != whatsapp.instance_name:
+            logger.info("Payload ignorado no lote WhatsApp: Instancia ignorada")
+            continue
+
+        for message in _payload_messages(payload):
+            is_valid, reason = _validate_payload_pdf_message(
+                whatsapp=whatsapp,
+                message=message,
+                group_jid=group_jid,
+            )
+
+            if not is_valid:
+                logger.info("Mensagem do payload ignorada: %s", reason)
+                continue
+
+            messages_by_id[_message_id(message)] = message
 
     if not messages_by_id:
         return []
@@ -466,7 +586,50 @@ def _payload_pdf_messages(
     return list(filtered_messages.values())
 
 
-def _download_upload_pdf_message(
+def _download_all_then_upload_all(
+    whatsapp: WhatsAppChat,
+    google_drive: GoogleDriveAuth,
+    messages: list[dict[str, Any]],
+    context: str,
+) -> list[dict[str, Any]]:
+    if not messages:
+        return []
+
+    downloaded = []
+    for message in messages:
+        result = _download_pdf_message(
+            whatsapp=whatsapp,
+            google_drive=google_drive,
+            message=message,
+        )
+
+        if result:
+            downloaded.append(result)
+
+    if not downloaded:
+        return []
+
+    logger.info(
+        "Downloads do %s finalizados. Total=%s. Iniciando uploads no Google Drive",
+        context,
+        len(downloaded),
+    )
+
+    uploaded = []
+    for downloaded_pdf in downloaded:
+        result = _upload_downloaded_pdf_message(
+            whatsapp=whatsapp,
+            google_drive=google_drive,
+            downloaded_pdf=downloaded_pdf,
+        )
+
+        if result:
+            uploaded.append(result)
+
+    return uploaded
+
+
+def _download_pdf_message(
     whatsapp: WhatsAppChat,
     google_drive: GoogleDriveAuth,
     message: dict[str, Any],
@@ -513,6 +676,48 @@ def _download_upload_pdf_message(
 
     try:
         local_path = whatsapp.download_pdf(message, file_name)
+        unique_local_path = local_path.with_name(f"{message_id}_{local_path.name}")
+
+        if unique_local_path != local_path:
+            local_path.replace(unique_local_path)
+            local_path = unique_local_path
+
+        return {
+            "message": message,
+            "file_name": file_name,
+            "message_id": message_id,
+            "local_path": local_path,
+        }
+    except EvolutionAPIError as error:
+        whatsapp.mark_processed(
+            message_id,
+            _control_data(
+                message=message,
+                file_name=file_name,
+                local_path=None,
+                status=f"indisponivel_{error.status_code}",
+                error_response=error.body,
+            ),
+        )
+        logger.exception("PDF indisponivel na Evolution API: %s", file_name)
+        return None
+    except Exception:
+        logger.exception("Erro ao baixar PDF do WhatsApp: %s", file_name)
+        return None
+
+
+def _upload_downloaded_pdf_message(
+    whatsapp: WhatsAppChat,
+    google_drive: GoogleDriveAuth,
+    downloaded_pdf: dict[str, Any],
+) -> dict[str, Any] | None:
+    message = downloaded_pdf["message"]
+    key = message.get("key", {})
+    message_id = downloaded_pdf["message_id"]
+    file_name = downloaded_pdf["file_name"]
+    local_path = downloaded_pdf["local_path"]
+
+    try:
         uploaded = google_drive.upload(
             caminho_local=local_path,
             folder_id_destino=GOOGLE_DRIVE_FOLDER_ID,
@@ -542,25 +747,11 @@ def _download_upload_pdf_message(
             "message_id": message_id,
             "google_drive_file_id": uploaded.get("id"),
         }
-    except EvolutionAPIError as error:
-        whatsapp.mark_processed(
-            message_id,
-            _control_data(
-                message=message,
-                file_name=file_name,
-                local_path=None,
-                status=f"indisponivel_{error.status_code}",
-                error_response=error.body,
-            ),
-        )
-        logger.exception("PDF indisponivel na Evolution API: %s", file_name)
-        return None
     except Exception:
-        logger.exception("Erro ao baixar ou enviar PDF do WhatsApp: %s", file_name)
+        logger.exception("Erro ao enviar PDF do WhatsApp para o Google Drive: %s", file_name)
         return None
     finally:
-        if local_path is not None:
-            local_path.unlink(missing_ok=True)
+        Path(local_path).unlink(missing_ok=True)
 
 
 def _control_data(
