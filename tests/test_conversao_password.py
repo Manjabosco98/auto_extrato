@@ -143,6 +143,18 @@ class ConversaoPasswordTest(unittest.TestCase):
 
         self.assertEqual(resultado, "CAMARGOS")
 
+    def test_extrai_periodo_do_nome_do_arquivo(self):
+        resultado = conversao.extrair_periodo_nome_arquivo(
+            "0526_EXTBAN ITAU_CAMARGOS.pdf"
+        )
+
+        self.assertEqual(resultado, ("05", "26"))
+
+    def test_nome_pasta_empresa_usa_id_e_razao_social(self):
+        resultado = conversao.nome_pasta_empresa(23, " Camargos ")
+
+        self.assertEqual(resultado, "23_CAMARGOS")
+
     def test_carrega_empresa_ativa_por_razao_social(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             base_path = Path(temp_dir) / "BaseEmpAtivas.xlsm"
@@ -187,7 +199,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                         "0526_EXTBAN C6BANK_CAMARGOS.xlsx",
                         "0526_LANCBAN C6BANK_CAMARGOS.xlsm",
                     ],
-                    pasta_destino="00_CONVERTIDOS/0526_EXTBAN C6BANK_CAMARGOS",
+                    pasta_destino="EMP/437_CAMARGOS/MOV/CONT/26/05/EXT",
                     data_hora=conversao.datetime(2026, 6, 12, 9, 30, 0),
                 )
 
@@ -204,7 +216,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                     "2026-06-12",
                     "09:30:00",
                     "0526_EXTBAN C6BANK_CAMARGOS.pdf",
-                    "00_CONVERTIDOS/0526_EXTBAN C6BANK_CAMARGOS",
+                    "EMP/437_CAMARGOS/MOV/CONT/26/05/EXT",
                 ),
                 (
                     437,
@@ -212,7 +224,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                     "2026-06-12",
                     "09:30:00",
                     "0526_EXTBAN C6BANK_CAMARGOS.xlsx",
-                    "00_CONVERTIDOS/0526_EXTBAN C6BANK_CAMARGOS",
+                    "EMP/437_CAMARGOS/MOV/CONT/26/05/EXT",
                 ),
                 (
                     437,
@@ -220,7 +232,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                     "2026-06-12",
                     "09:30:00",
                     "0526_LANCBAN C6BANK_CAMARGOS.xlsm",
-                    "00_CONVERTIDOS/0526_EXTBAN C6BANK_CAMARGOS",
+                    "EMP/437_CAMARGOS/MOV/CONT/26/05/EXT",
                 ),
             ],
         )
@@ -262,7 +274,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                         "0526_EXTBAN C6BANK_CAMARGOS.xlsx",
                         "0526_LANCBAN C6BANK_CAMARGOS.xlsm",
                     ],
-                    pasta_destino="00_CONVERTIDOS/0526_EXTBAN C6BANK_CAMARGOS",
+                    pasta_destino="EMP/437_CAMARGOS/MOV/CONT/26/05/EXT",
                     data_hora=conversao.datetime(2026, 6, 12, 9, 30, 0),
                 )
 
@@ -285,7 +297,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                     "2026-06-12",
                     "09:30:00",
                     "0526_EXTBAN C6BANK_CAMARGOS.pdf",
-                    "00_CONVERTIDOS/0526_EXTBAN C6BANK_CAMARGOS",
+                    "EMP/437_CAMARGOS/MOV/CONT/26/05/EXT",
                 ),
                 (
                     437,
@@ -293,7 +305,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                     "2026-06-12",
                     "09:30:00",
                     "0526_EXTBAN C6BANK_CAMARGOS.xlsx",
-                    "00_CONVERTIDOS/0526_EXTBAN C6BANK_CAMARGOS",
+                    "EMP/437_CAMARGOS/MOV/CONT/26/05/EXT",
                 ),
                 (
                     437,
@@ -301,7 +313,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                     "2026-06-12",
                     "09:30:00",
                     "0526_LANCBAN C6BANK_CAMARGOS.xlsm",
-                    "00_CONVERTIDOS/0526_EXTBAN C6BANK_CAMARGOS",
+                    "EMP/437_CAMARGOS/MOV/CONT/26/05/EXT",
                 ),
             ],
         )
@@ -327,7 +339,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 root_pdfs=[
                     {
                         "id": "pdf-1",
-                        "name": "0526_EXTBAN C6BANK_LF.pdf",
+                        "name": "0526_EXTBAN C6BANK_CAMARGOS.pdf",
                         "mimeType": "application/pdf",
                     }
                 ],
@@ -346,15 +358,17 @@ class ConversaoPasswordTest(unittest.TestCase):
                 self.assertEqual(
                     kwargs["nomes_arquivos"],
                     [
-                        "0526_EXTBAN C6BANK_LF.pdf",
-                        "0526_EXTBAN C6BANK_LF.xlsx",
-                        "0526_LANCBAN C6BANK_LF.xlsm",
+                        "0526_EXTBAN C6BANK_CAMARGOS.pdf",
+                        "0526_EXTBAN C6BANK_CAMARGOS.xlsx",
+                        "0526_LANCBAN C6BANK_CAMARGOS.xlsm",
                     ],
                 )
                 self.assertEqual(
                     kwargs["pasta_destino"],
-                    "00_CONVERTIDOS/0526_EXTBAN C6BANK_LF",
+                    "EMP/23_CAMARGOS/MOV/CONT/26/05/EXT",
                 )
+                self.assertEqual(kwargs["empresa_id"], 23)
+                self.assertEqual(kwargs["empresa_nome"], "CAMARGOS")
 
             fake_drive.move_file = move_file
 
@@ -364,6 +378,7 @@ class ConversaoPasswordTest(unittest.TestCase):
 
             with (
                 patch.object(conversao, "GoogleDriveAuth", return_value=fake_drive),
+                patch.object(conversao, "carregar_empresas_ativas", return_value={"CAMARGOS": (23, "CAMARGOS")}),
                 patch.object(conversao, "pdf_possui_senha", return_value=False),
                 patch.object(conversao, "PDFExtractor") as pdf_extractor,
                 patch.object(conversao, "dispatch", return_value=df),
@@ -377,7 +392,7 @@ class ConversaoPasswordTest(unittest.TestCase):
         self.assertEqual(
             eventos,
             [
-                "move:id-0526_EXTBAN C6BANK_LF",
+                "move:id-EXT",
                 "historico",
             ],
         )

@@ -29,6 +29,11 @@ GOOGLE_DRIVE_FOLDER_ID = os.getenv(
     "1w3AY5xp-hHyQh263jfvhGoUdzH-0Ls0F"
 )
 
+GOOGLE_DRIVE_EMP_FOLDER_ID = os.getenv(
+    "GOOGLE_DRIVE_EMP_FOLDER_ID",
+    GOOGLE_DRIVE_FOLDER_ID
+)
+
 PDF_MIME_TYPE = "application/pdf"
 XLSX_MIME_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 XLSM_MIME_TYPE = "application/vnd.ms-excel.sheet.macroenabled.12"

@@ -1,6 +1,7 @@
 import logging
 import re
 import shutil
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 
@@ -9,6 +10,7 @@ from pypdf import PdfReader
 
 from src.app.gdrive.google_drive_auth import GoogleDriveAuth
 from src.app.gdrive.settings import (
+    GOOGLE_DRIVE_EMP_FOLDER_ID,
     GOOGLE_DRIVE_FOLDER_ID,
     GOOGLE_OAUTH_CREDENTIALS,
     GOOGLE_OAUTH_TOKEN,
@@ -84,10 +86,54 @@ def normalizar_nome_empresa(valor) -> str:
     return " ".join(str(valor or "").strip().upper().split())
 
 
+def normalizar_cabecalho_base(valor) -> str:
+    texto = normalizar_nome_empresa(valor)
+    texto_sem_acentos = "".join(
+        caractere
+        for caractere in unicodedata.normalize("NFKD", texto)
+        if not unicodedata.combining(caractere)
+    )
+
+    if "RAZ" in texto_sem_acentos and "SOCIAL" in texto_sem_acentos:
+        return "RAZ" + chr(195) + "O SOCIAL"
+
+    return texto_sem_acentos
+
+
 def extrair_cliente_nome_arquivo(nome_arquivo: str) -> str:
     stem = Path(nome_arquivo).stem
     partes = [parte.strip() for parte in stem.split("_") if parte.strip()]
     return partes[-1] if partes else stem.strip()
+
+
+def extrair_periodo_nome_arquivo(nome_arquivo: str) -> tuple[str, str]:
+    prefixo_periodo = Path(nome_arquivo).stem.split("_", maxsplit=1)[0]
+    match = re.match(r"^(?P<mes>\d{2})(?P<ano>\d{2})$", prefixo_periodo)
+
+    if not match:
+        raise ValueError(f"Nome do arquivo sem periodo MMAA valido: {nome_arquivo}")
+
+    return match.group("mes"), match.group("ano")
+
+
+def normalizar_id_empresa(empresa_id) -> str:
+    if empresa_id is None:
+        return ""
+
+    if isinstance(empresa_id, float) and empresa_id.is_integer():
+        return str(int(empresa_id))
+
+    return str(empresa_id).strip()
+
+
+def nome_pasta_empresa(empresa_id, empresa_nome: str) -> str:
+    empresa_id_normalizado = normalizar_id_empresa(empresa_id)
+    empresa_nome_normalizado = normalizar_nome_empresa(empresa_nome)
+
+    if not empresa_id_normalizado or not empresa_nome_normalizado:
+        raise ValueError("ID/EMP ausente para resolver pasta da empresa")
+
+    return f"{empresa_id_normalizado}_{empresa_nome_normalizado}"
 
 
 def carregar_empresas_ativas(
@@ -114,7 +160,7 @@ def carregar_empresas_ativas(
             return {}
 
         normalized_headers = [
-            normalizar_nome_empresa(header)
+            normalizar_cabecalho_base(header)
             for header in headers
         ]
 
@@ -158,6 +204,28 @@ def buscar_empresa_por_cliente(
         return "", ""
 
     return empresa
+
+
+def resolver_pasta_destino_emp(
+    google_drive: GoogleDriveAuth,
+    pasta_emp_id: str,
+    arquivo_nome: str,
+    empresa_id,
+    empresa_nome: str,
+) -> tuple[str, str]:
+    mes, ano = extrair_periodo_nome_arquivo(arquivo_nome)
+    nome_cliente = nome_pasta_empresa(empresa_id, empresa_nome)
+    caminho_partes = ["EMP", nome_cliente, "MOV", "CONT", ano, mes, "EXT"]
+    pasta_atual_id = pasta_emp_id
+
+    for nome_pasta in caminho_partes[1:]:
+        pasta_atual = google_drive.get_or_create_folder(
+            folder_id_pai=pasta_atual_id,
+            name_folder=nome_pasta,
+        )
+        pasta_atual_id = pasta_atual["id"]
+
+    return pasta_atual_id, "/".join(caminho_partes)
 
 
 def separar_data_hora_historico(valor) -> tuple[str, str]:
@@ -319,6 +387,9 @@ def registrar_historico_conversao(
     nomes_arquivos: list[str],
     pasta_destino: str,
     data_hora: datetime | None = None,
+    empresa_id=None,
+    empresa_nome: str | None = None,
+    empresas: dict[str, tuple[object, str]] | None = None,
 ) -> None:
     temp_dir.mkdir(parents=True, exist_ok=True)
     historico_local = temp_dir / HISTORICO_CONVERSOES
@@ -347,8 +418,9 @@ def registrar_historico_conversao(
     momento = data_hora or datetime.now()
     data_formatada = momento.strftime("%Y-%m-%d")
     hora_formatada = momento.strftime("%H:%M:%S")
-    cliente = extrair_cliente_nome_arquivo(nomes_arquivos[0]) if nomes_arquivos else ""
-    empresa_id, empresa_nome = buscar_empresa_por_cliente(cliente)
+    if empresa_id is None or empresa_nome is None:
+        cliente = extrair_cliente_nome_arquivo(nomes_arquivos[0]) if nomes_arquivos else ""
+        empresa_id, empresa_nome = buscar_empresa_por_cliente(cliente, empresas=empresas)
 
     for nome_arquivo in nomes_arquivos:
         worksheet.append(
@@ -396,21 +468,17 @@ def executar_conversao():
     )
 
     extratos_id = GOOGLE_DRIVE_FOLDER_ID
+    emp_id = GOOGLE_DRIVE_EMP_FOLDER_ID
     lancamento = Path.cwd() / "data" / "Lancamentos_Contabeis.xlsm"
     temp_dir = Path.cwd() / "temp"
     temp_dir.mkdir(parents=True, exist_ok=True)
     logger.info("Diretorio temporario preparado: %s", temp_dir)
+    empresas = carregar_empresas_ativas()
 
     logger.info("Criando ou recuperando pasta de invalidos no Google Drive")
     pasta_invalidos = google_drive.get_or_create_folder(
         folder_id_pai=extratos_id,
         name_folder="00_INVALIDOS",
-    )
-
-    logger.info("Criando ou recuperando pasta de convertidos no Google Drive")
-    pasta_convertidos = google_drive.get_or_create_folder(
-        folder_id_pai=extratos_id,
-        name_folder="00_CONVERTIDOS",
     )
 
     logger.info("Criando ou recuperando pasta de PDFs com senha no Google Drive")
@@ -420,7 +488,6 @@ def executar_conversao():
     )
 
     invalidos_id = pasta_invalidos["id"]
-    convertidos_id = pasta_convertidos["id"]
     pdfs_com_senhas_id = pasta_pdfs_com_senhas["id"]
 
     logger.info("Listando PDFs da pasta do Google Drive")
@@ -526,12 +593,28 @@ def executar_conversao():
                 invalidos += 1
                 continue
 
-            logger.info("Criando ou recuperando pasta do arquivo convertido: %s", arquivo_stem)
-            pasta_arquivo = google_drive.get_or_create_folder(
-                folder_id_pai=convertidos_id,
-                name_folder=arquivo_stem,
-            )
-            pasta_arquivo_id = pasta_arquivo["id"]
+            cliente = extrair_cliente_nome_arquivo(arquivo_nome)
+            empresa_id, empresa_nome = buscar_empresa_por_cliente(cliente, empresas=empresas)
+
+            try:
+                pasta_destino_id, pasta_destino_historico = resolver_pasta_destino_emp(
+                    google_drive=google_drive,
+                    pasta_emp_id=emp_id,
+                    arquivo_nome=arquivo_nome,
+                    empresa_id=empresa_id,
+                    empresa_nome=empresa_nome,
+                )
+            except ValueError:
+                logger.exception(
+                    "Nao foi possivel resolver pasta EMP para o PDF. Movendo para invalidos: %s",
+                    arquivo_nome,
+                )
+                google_drive.move_file(
+                    file_id=arquivo_id,
+                    folder_id_destino=invalidos_id,
+                )
+                invalidos += 1
+                continue
 
             nome_lancamento = arquivo_stem.replace("EXT", "LANC")
             dest_lancamento = temp_dir / f"{nome_lancamento}.xlsm"
@@ -550,7 +633,7 @@ def executar_conversao():
             logger.info("Enviando XLSM para o Google Drive: %s", dest_lancamento.name)
             google_drive.upload(
                 caminho_local=dest_lancamento,
-                folder_id_destino=pasta_arquivo_id,
+                folder_id_destino=pasta_destino_id,
                 type_file=XLSM_MIME_TYPE,
                 name_drive=dest_lancamento.name,
             )
@@ -558,29 +641,30 @@ def executar_conversao():
             logger.info("Enviando XLSX para o Google Drive: %s", dest_excel.name)
             google_drive.upload(
                 caminho_local=dest_excel,
-                folder_id_destino=pasta_arquivo_id,
+                folder_id_destino=pasta_destino_id,
                 type_file=XLSX_MIME_TYPE,
                 name_drive=dest_excel.name,
             )
 
-            logger.info("Movendo PDF original para pasta convertida: %s", arquivo_nome)
+            logger.info("Movendo PDF original para pasta destino EMP: %s", arquivo_nome)
             google_drive.move_file(
                 file_id=arquivo_id,
-                folder_id_destino=pasta_arquivo_id,
+                folder_id_destino=pasta_destino_id,
             )
 
-            pasta_destino_historico = f"00_CONVERTIDOS/{arquivo_stem}"
             registrar_historico_conversao(
                 google_drive=google_drive,
                 pasta_raiz_id=extratos_id,
                 temp_dir=temp_dir,
                 nomes_arquivos=[arquivo_nome, dest_excel.name, dest_lancamento.name],
                 pasta_destino=pasta_destino_historico,
+                empresa_id=empresa_id,
+                empresa_nome=empresa_nome,
             )
 
             convertidos += 1
             logger.info("PDF convertido com sucesso: %s", arquivo_nome)
-            logger.info("Arquivos enviados para a pasta: %s", arquivo_stem)
+            logger.info("Arquivos enviados para a pasta: %s", pasta_destino_historico)
         except Exception:
             logger.exception("Erro ao processar PDF: %s", arquivo_nome)
             raise
