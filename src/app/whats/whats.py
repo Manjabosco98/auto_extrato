@@ -249,4 +249,19 @@ class WhatsAppChat:
         self.save_pdfs_control(control)
 
     def is_processed(self, message_id: str) -> bool:
-        return message_id in self.read_pdfs()
+        data = self.read_pdfs().get(message_id)
+
+        if not isinstance(data, dict):
+            return False
+
+        if data.get("google_drive_file_id"):
+            return True
+
+        status = data.get("status")
+        if not isinstance(status, str):
+            return False
+
+        return (
+            status in {"enviado_drive", "ja_enviado_drive"}
+            or status.startswith("indisponivel_")
+        )

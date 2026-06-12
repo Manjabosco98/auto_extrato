@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -558,6 +559,35 @@ class WhatsWebhookServiceTest(unittest.TestCase):
 
             self.assertTrue(whatsapp.is_processed("MSG123"))
             self.assertEqual(whatsapp.read_pdfs()["MSG123"]["status"], "enviado_drive")
+
+    def test_registro_legado_baixado_sem_drive_id_nao_bloqueia_upload(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            controle = Path(temp_dir) / "controle_pdf.json"
+            controle.write_text(
+                json.dumps(
+                    {
+                        "MSG_BAIXADO": {"status": "baixado"},
+                        "MSG_DRIVE": {
+                            "status": "baixado",
+                            "google_drive_file_id": "drive-file-id",
+                        },
+                        "MSG_INDISPONIVEL": {"status": "indisponivel_400"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            whatsapp = WhatsAppChat(
+                base_url="https://example.com",
+                api_key="key",
+                instance_name="ExtractPDFs",
+                group_name="ROBO EXTRATO",
+                controle_pdf=controle,
+                downloads_dir=Path(temp_dir) / "downloads",
+            )
+
+            self.assertFalse(whatsapp.is_processed("MSG_BAIXADO"))
+            self.assertTrue(whatsapp.is_processed("MSG_DRIVE"))
+            self.assertTrue(whatsapp.is_processed("MSG_INDISPONIVEL"))
 
     def test_checkpoint_helpers_identificam_ultimo_timestamp(self):
         whatsapp = WhatsAppChat(
