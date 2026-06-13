@@ -17,92 +17,116 @@ class Inter(BankHandler):
             if not item.startswith(("Fale com a gente", "SAC: "))
         ]
 
-        re_data_num = re.compile(r'\b\d{2}/\d{2}(?:/\d{2,4})?\b')
-        re_data_ext = re.compile(
-            r'\b(\d{1,2})\s+de\s+'
-            r'(janeiro|fevereiro|março|marco|abril|maio|junho|julho|'
-            r'agosto|setembro|outubro|novembro|dezembro)\s+de\s+(\d{4})\b',
-            re.I
-        )
-        re_valor = re.compile(
-            r'[+-]?\s*R\$\s*-?\s*\d{1,3}(?:\.\d{3})*,\d{2}[CD]?|'
-            r'[+-]?\s*-?\d{1,3}(?:\.\d{3})*,\d{2}[CD]?'
-        )
-        re_ignorar = re.compile(
-            r'\b(SALDO\s+DO\s+DIA|VALOR\s+SALDO\s+POR\s+TRANSA[CÇ][AÃ]O|'
-            r'SALDO\s+FINAL|SALDO\s+ANTERIOR|SALDO\s+DISPON[IÍ]VEL|'
-            r'AG[EÊ]NCIA|CONTA|CPF|CNPJ|EXTRATO|P[AÁ]GINA|PAGINA|BANCO|'
-            r'OUVIDORIA|SAC|CENTRAL\s+DE\s+ATENDIMENTO|PER[IÍ]ODO|PERIODO)\b',
-            re.I
+        REGEX_DIA = re.compile(
+            r'^(?P<data>\d{1,2}\s+de\s+[A-Za-zçÇãÃéÉíÍóÓúÚ]+\s+de\s+\d{4})'
+            r'\s+Saldo do dia:\s+'
+            r'(?P<saldo_dia>-?R\$\s*[\d\.]+,\d{2})'
+            r'(?:\s+Valor\s+Saldo por transação)?$',
+            re.IGNORECASE
         )
 
-        meses = {
-            'janeiro': '01', 'fevereiro': '02', 'março': '03', 'marco': '03',
-            'abril': '04', 'maio': '05', 'junho': '06', 'julho': '07',
-            'agosto': '08', 'setembro': '09', 'outubro': '10',
-            'novembro': '11', 'dezembro': '12'
-        }
 
-        resultado = []
-        data_atual = None
+        REGEX_MOVIMENTACAO = re.compile(
+            r'^(?P<descricao>.+?)\s+'
+            r'(?P<valor>-?R\$\s*[\d\.]+,\d{2})\s+'
+            r'(?P<saldo_transacao>-?R\$\s*[\d\.]+,\d{2})$'
+        )
 
-        for linha in pdf:
-            linha = re.sub(r'\s+', ' ', linha).strip()
-            if not linha:
-                continue
 
-            m_data_num = re_data_num.search(linha)
-            m_data_ext = re_data_ext.search(linha)
+        def brl_para_float(valor: str) -> float:
+            """
+            Converte valores no formato brasileiro:
+            R$ 1.500,00 -> 1500.00
+            -R$ 5.399,00 -> -5399.00
+            """
+            valor = valor.strip()
+            valor = valor.replace("R$", "").replace(" ", "")
+            valor = valor.replace(".", "").replace(",", ".")
 
-            if m_data_ext:
-                dia, mes, ano = m_data_ext.groups()
-                data_atual = f"{int(dia):02d}/{meses[mes.lower()]}/{ano}"
-                continue
+            return float(valor)
 
-            if m_data_num:
-                data_atual = m_data_num.group(0)
-                resto = (linha[:m_data_num.start()] + linha[m_data_num.end():]).strip()
-                if re_ignorar.search(resto):
+
+        def extrair_movimentacoes_inter(linhas: list[str]) -> pd.DataFrame:
+            registros = []
+
+            data_atual = None
+            saldo_dia_atual = None
+
+            for linha in linhas:
+                linha = linha.strip()
+
+                if not linha:
                     continue
 
-            if not data_atual or re_ignorar.fullmatch(linha):
-                continue
+                # Ignora cabeçalhos/rodapés que não são movimentações
+                if linha.startswith(("Solicitado em:", "Fale com a gente", "SAC:", "Ouvidoria:")):
+                    continue
 
-            valores = list(re_valor.finditer(linha))
-            if not valores:
-                continue
+                match_dia = REGEX_DIA.match(linha)
 
-            valor = valores[0].group(0).strip()
-            descricao = linha[:valores[0].start()].strip()
-            descricao = re.sub(r'\s+', ' ', descricao)
+                if match_dia:
+                    data_atual = match_dia.group("data")
+                    saldo_dia_atual = match_dia.group("saldo_dia")
+                    continue
 
-            if descricao:
-                resultado.append(f"{data_atual} {descricao} {valor}".strip())
+                match_mov = REGEX_MOVIMENTACAO.match(linha)
 
-        dados = resultado
+                if match_mov and data_atual:
+                    descricao = match_mov.group("descricao")
+                    valor = match_mov.group("valor")
+                    saldo_transacao = match_mov.group("saldo_transacao")
 
-        padrao = re.compile(
-            r'^(\d{2}/\d{2}/\d{4})\s+(Pix\s+(?:enviado|recebido):)\s+"([^"]+)"\s+(-?R\$\s*[\d\.]+,\d{2})$'
-        )
+                    registros.append({
+                        "DATA": data_atual,
+                        "SALDO_DIA": saldo_dia_atual,
+                        "DESCRICAO": descricao,
+                        "VALOR_ORIGINAL": valor,
+                        "VALOR": brl_para_float(valor),
+                        "SALDO_TRANSACAO_ORIGINAL": saldo_transacao,
+                        "SALDO_TRANSACAO": brl_para_float(saldo_transacao),
+                        "TIPO": "C" if not valor.strip().startswith("-") else "D"
+                    })
+            return registros
 
-        resultado = []
+        regitros = extrair_movimentacoes_inter(pdf)
+        df = pd.json_normalize(regitros)
+        df = df[["DATA", "DESCRICAO", "VALOR", "TIPO"]]
+        meses = {
+            "Janeiro": "01",
+            "Fevereiro": "02",
+            "Março": "03",
+            "Marco": "03",
+            "Abril": "04",
+            "Maio": "05",
+            "Junho": "06",
+            "Julho": "07",
+            "Agosto": "08",
+            "Setembro": "09",
+            "Outubro": "10",
+            "Novembro": "11",
+            "Dezembro": "12",
+        }
+        def converter_data_ptbr(data):
+            if pd.isna(data):
+                return None
 
-        for linha in dados:
-            match = padrao.search(linha)
+            data = str(data).strip()
 
-            if match:
-                data = match.group(1)
-                operacao = match.group(2)
-                descricao = match.group(3)
-                valor = match.group(4)
+            # Exemplo: "1 de Maio de 2026"
+            partes = data.split(" de ")
 
-                descricao_final = f"{operacao} {descricao}"
+            if len(partes) != 3:
+                return None
 
-                tipo = "D" if valor.startswith("-") else "C"
+            dia = partes[0].zfill(2)
+            mes = meses.get(partes[1])
+            ano = partes[2]
 
-                resultado.append((data, descricao_final, valor, tipo))
+            if not mes:
+                return None
 
-        df = pd.DataFrame(resultado, columns=["DATA", "DESCRIÇÃO", "VALOR", "TIPO"])
-        df["VALOR"] = df["VALOR"].str.replace("-", "").str.replace("R$", "").str.replace(".", "").str.replace(",", ".").astype(float)
-        df["DESCRIÇÃO"] = df["DESCRIÇÃO"].str.upper().str.strip()
+            return f"{dia}/{mes}/{ano}"
+        df["DATA"] = df["DATA"].apply(converter_data_ptbr)
+        df["DESCRICAO"] = df["DESCRICAO"].str.upper()
+        df["VALOR"] = df["VALOR"].abs()
         return df
