@@ -129,4 +129,5 @@ class Inter(BankHandler):
         df["DATA"] = df["DATA"].apply(converter_data_ptbr)
         df["DESCRICAO"] = df["DESCRICAO"].str.upper()
         df["VALOR"] = df["VALOR"].abs()
+        df = df.rename(columns={"DESCRICAO": "DESCRIÇÃO"})
         return df
