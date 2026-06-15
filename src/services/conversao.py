@@ -35,7 +35,8 @@ SEM_IMAGEM_PREFIX = "[SEM IMAGEM] - "
 PREFIXOS_INVALIDOS = (SEM_MOV_PREFIX, SEM_IMAGEM_PREFIX)
 HISTORICO_CONVERSOES = "HISTORICO_CONVERSOES.xlsx"
 TIMEZONE_HISTORICO = ZoneInfo("America/Sao_Paulo")
-HISTORICO_HEADERS = ("ID", "EMP", "DATA", "HORA", "NOME ARQUIVO", "PASTA DESTINO", "DATA HORA MOVIMENTO")
+HISTORICO_HEADERS = ("ID", "EMP", "DATA", "HORA", "NOME ARQUIVO", "PASTA DESTINO", "DATA HORA MOVIMENTO", "BANCO")
+HISTORICO_HEADERS_SEM_BANCO = ("ID", "EMP", "DATA", "HORA", "NOME ARQUIVO", "PASTA DESTINO", "DATA HORA MOVIMENTO")
 HISTORICO_HEADERS_COM_HORA_MOVIMENTO = ("ID", "EMP", "DATA", "HORA", "HORA MOVIMENTO", "NOME ARQUIVO", "PASTA DESTINO")
 HISTORICO_HEADERS_SEM_MOVIMENTO = ("ID", "EMP", "DATA", "HORA", "NOME ARQUIVO", "PASTA DESTINO")
 HISTORICO_HEADERS_ANTIGO = ("nome_arquivo", "data_hora_conversao", "pasta_destino")
@@ -113,6 +114,31 @@ def extrair_cliente_nome_arquivo(nome_arquivo: str) -> str:
     stem = Path(nome_arquivo).stem
     partes = [parte.strip() for parte in stem.split("_") if parte.strip()]
     return partes[-1] if partes else stem.strip()
+
+
+def extrair_banco_nome_arquivo(nome_arquivo: str) -> str:
+    stem = Path(nome_arquivo).stem
+    partes = [parte.strip() for parte in stem.split("_") if parte.strip()]
+
+    if len(partes) < 2:
+        return ""
+
+    descricao = re.sub(
+        r"^(?:EXT|LANC)BAN\s+",
+        "",
+        partes[1],
+        flags=re.IGNORECASE,
+    ).strip()
+
+    if not descricao:
+        return ""
+
+    tokens = descricao.split()
+
+    while tokens and re.fullmatch(r"[\d./-]+", tokens[-1]):
+        tokens.pop()
+
+    return " ".join(tokens).strip().upper()
 
 
 def extrair_periodo_nome_arquivo(nome_arquivo: str) -> tuple[str, str]:
@@ -285,6 +311,31 @@ def separar_data_hora_historico(valor) -> tuple[str, str]:
     return data, hora
 
 
+def preencher_banco_historico(worksheet) -> None:
+    headers = tuple(
+        cell.value
+        for cell in worksheet[1]
+    ) if worksheet.max_row else ()
+
+    if "NOME ARQUIVO" not in headers or "BANCO" not in headers:
+        return
+
+    nome_arquivo_coluna = headers.index("NOME ARQUIVO") + 1
+    banco_coluna = headers.index("BANCO") + 1
+
+    for row_index in range(2, worksheet.max_row + 1):
+        banco_cell = worksheet.cell(row=row_index, column=banco_coluna)
+
+        if banco_cell.value:
+            continue
+
+        nome_arquivo = worksheet.cell(row=row_index, column=nome_arquivo_coluna).value
+        banco = extrair_banco_nome_arquivo(nome_arquivo or "")
+
+        if banco:
+            banco_cell.value = banco
+
+
 def migrar_historico_antigo(worksheet) -> None:
     headers = tuple(
         cell.value
@@ -292,11 +343,28 @@ def migrar_historico_antigo(worksheet) -> None:
     ) if worksheet.max_row else ()
 
     if headers == HISTORICO_HEADERS:
+        preencher_banco_historico(worksheet)
         return
 
     linhas_antigas = list(worksheet.iter_rows(min_row=2, values_only=True))
     worksheet.delete_rows(1, worksheet.max_row)
     worksheet.append(HISTORICO_HEADERS)
+
+    if headers == HISTORICO_HEADERS_SEM_BANCO:
+        for empresa_id, empresa_nome, data, hora, nome_arquivo, pasta_destino, data_hora_movimento in linhas_antigas:
+            worksheet.append(
+                [
+                    empresa_id or "",
+                    empresa_nome or "",
+                    data or "",
+                    hora or "",
+                    nome_arquivo or "",
+                    pasta_destino or "",
+                    data_hora_movimento or "",
+                    extrair_banco_nome_arquivo(nome_arquivo or ""),
+                ]
+            )
+        return
 
     if headers == HISTORICO_HEADERS_COM_HORA_MOVIMENTO:
         for empresa_id, empresa_nome, data, hora, hora_movimento, nome_arquivo, pasta_destino in linhas_antigas:
@@ -313,6 +381,7 @@ def migrar_historico_antigo(worksheet) -> None:
                     nome_arquivo or "",
                     pasta_destino or "",
                     data_hora_movimento,
+                    extrair_banco_nome_arquivo(nome_arquivo or ""),
                 ]
             )
         return
@@ -328,6 +397,7 @@ def migrar_historico_antigo(worksheet) -> None:
                     nome_arquivo or "",
                     pasta_destino or "",
                     "",
+                    extrair_banco_nome_arquivo(nome_arquivo or ""),
                 ]
             )
         return
@@ -346,6 +416,7 @@ def migrar_historico_antigo(worksheet) -> None:
                 nome_arquivo or "",
                 pasta_destino or "",
                 "",
+                extrair_banco_nome_arquivo(nome_arquivo or ""),
             ]
         )
 
@@ -513,6 +584,7 @@ def registrar_historico_conversao(
                 nome_arquivo,
                 pasta_destino,
                 data_hora_movimento_formatada,
+                extrair_banco_nome_arquivo(nome_arquivo),
             ]
         )
 

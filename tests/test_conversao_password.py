@@ -156,6 +156,20 @@ class ConversaoPasswordTest(unittest.TestCase):
 
         self.assertEqual(resultado, "CAMARGOS")
 
+    def test_extrai_banco_do_nome_do_pdf(self):
+        resultado = conversao.extrair_banco_nome_arquivo(
+            "0526_EXTBAN SICOOB_SILVA.pdf"
+        )
+
+        self.assertEqual(resultado, "SICOOB")
+
+    def test_extrai_banco_removendo_conta_do_nome_lancamento(self):
+        resultado = conversao.extrair_banco_nome_arquivo(
+            "0526_LANCBAN ITAU 98313-2_SILVA.xlsm"
+        )
+
+        self.assertEqual(resultado, "ITAU")
+
     def test_extrai_periodo_do_nome_do_arquivo(self):
         resultado = conversao.extrair_periodo_nome_arquivo(
             "0526_EXTBAN ITAU_CAMARGOS.pdf"
@@ -262,6 +276,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                     "0526_EXTBAN C6BANK_CAMARGOS.pdf",
                     "EMP/437_CAMARGOS/MOV/CONT/26/05/EXT",
                     "2026-06-12 09:31:05",
+                    "C6BANK",
                 ),
                 (
                     437,
@@ -271,6 +286,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                     "0526_EXTBAN C6BANK_CAMARGOS.xlsx",
                     "EMP/437_CAMARGOS/MOV/CONT/26/05/EXT",
                     "2026-06-12 09:31:05",
+                    "C6BANK",
                 ),
                 (
                     437,
@@ -280,6 +296,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                     "0526_LANCBAN C6BANK_CAMARGOS.xlsm",
                     "EMP/437_CAMARGOS/MOV/CONT/26/05/EXT",
                     "2026-06-12 09:31:05",
+                    "C6BANK",
                 ),
             ],
         )
@@ -339,6 +356,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                     "0426_EXTBAN C6BANK_LF.pdf",
                     "00_CONVERTIDOS/0426_EXTBAN C6BANK_LF",
                     None,
+                    "C6BANK",
                 ),
                 (
                     437,
@@ -348,6 +366,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                     "0526_EXTBAN C6BANK_CAMARGOS.pdf",
                     "EMP/437_CAMARGOS/MOV/CONT/26/05/EXT",
                     "2026-06-12 09:31:05",
+                    "C6BANK",
                 ),
                 (
                     437,
@@ -357,6 +376,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                     "0526_EXTBAN C6BANK_CAMARGOS.xlsx",
                     "EMP/437_CAMARGOS/MOV/CONT/26/05/EXT",
                     "2026-06-12 09:31:05",
+                    "C6BANK",
                 ),
                 (
                     437,
@@ -366,9 +386,31 @@ class ConversaoPasswordTest(unittest.TestCase):
                     "0526_LANCBAN C6BANK_CAMARGOS.xlsm",
                     "EMP/437_CAMARGOS/MOV/CONT/26/05/EXT",
                     "2026-06-12 09:31:05",
+                    "C6BANK",
                 ),
             ],
         )
+
+    def test_historico_existente_com_banco_vazio_preenche_pelo_nome(self):
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.append(conversao.HISTORICO_HEADERS)
+        worksheet.append(
+            [
+                22,
+                "SILVA",
+                "2026-06-13",
+                "11:45:06",
+                "0526_LANCBAN ITAU 98313-2_SILVA.xlsm",
+                "EMP/22_SILVA/MOV/CONT/26/05/EXT",
+                "2026-06-13 11:45:12",
+                "",
+            ]
+        )
+
+        conversao.migrar_historico_antigo(worksheet)
+
+        self.assertEqual(worksheet.cell(row=2, column=8).value, "ITAU")
 
     def test_move_pdf_com_senha_sem_interromper_conversao(self):
         with tempfile.TemporaryDirectory() as temp_dir:
