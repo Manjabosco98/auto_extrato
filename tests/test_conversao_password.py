@@ -177,6 +177,67 @@ class ConversaoPasswordTest(unittest.TestCase):
 
         self.assertEqual(resultado, ("05", "26"))
 
+    def test_formata_mensagem_google_chat(self):
+        mensagem = conversao.formatar_mensagem_google_chat(
+            ["0626_EXTBAN SICOO_ALE", "0626_EXTBAN SICOO_LF"],
+            momento=conversao.datetime(2026, 6, 15, 12, 31, 0),
+        )
+
+        self.assertEqual(
+            mensagem,
+            (
+                "Extratos salvos 15/06/26 e 12:31 e atualizado na Base de Dados:\n\n"
+                "0626_EXTBAN SICOO_ALE\n"
+                "0626_EXTBAN SICOO_LF"
+            ),
+        )
+
+    def test_envia_notificacao_google_chat_com_payload_correto(self):
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return False
+
+            def read(self):
+                return b"ok"
+
+        requests = []
+
+        def fake_urlopen(request, timeout):
+            requests.append((request, timeout))
+            return FakeResponse()
+
+        with patch.object(conversao.urllib.request, "urlopen", side_effect=fake_urlopen):
+            resultado = conversao.enviar_notificacao_google_chat(
+                ["0626_EXTBAN SICOO_ALE"],
+                momento=conversao.datetime(2026, 6, 15, 12, 31, 0),
+            )
+
+        self.assertTrue(resultado)
+        request, timeout = requests[0]
+        self.assertEqual(request.full_url, conversao.GOOGLE_CHAT_SEND_URL)
+        self.assertEqual(timeout, 30)
+        self.assertIn(b"spaces/AAQAQEHQc-k", request.data)
+        self.assertIn("Extratos salvos 15/06/26 e 12:31".encode("utf-8"), request.data)
+
+    def test_falha_notificacao_google_chat_nao_quebra_fluxo(self):
+        with patch.object(conversao.urllib.request, "urlopen", side_effect=RuntimeError("offline")):
+            resultado = conversao.enviar_notificacao_google_chat(
+                ["0626_EXTBAN SICOO_ALE"],
+                momento=conversao.datetime(2026, 6, 15, 12, 31, 0),
+            )
+
+        self.assertFalse(resultado)
+
+    def test_notificacao_google_chat_ignora_lista_vazia(self):
+        with patch.object(conversao.urllib.request, "urlopen") as urlopen:
+            resultado = conversao.enviar_notificacao_google_chat([])
+
+        self.assertFalse(resultado)
+        urlopen.assert_not_called()
+
     def test_nome_pasta_empresa_usa_id_e_razao_social(self):
         resultado = conversao.nome_pasta_empresa(23, " Camargos ")
 
@@ -464,6 +525,11 @@ class ConversaoPasswordTest(unittest.TestCase):
                 self.assertEqual(kwargs["empresa_id"], 23)
                 self.assertEqual(kwargs["empresa_nome"], "CAMARGOS")
 
+            def enviar_notificacao(nomes_extratos):
+                eventos.append("chat")
+                self.assertEqual(nomes_extratos, ["0526_EXTBAN C6BANK_CAMARGOS"])
+                return True
+
             fake_drive.move_file = move_file
 
             df = pd.DataFrame(
@@ -479,6 +545,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 patch.object(conversao, "planilha_lancamento"),
                 patch.object(conversao.shutil, "copy2", side_effect=copy_modelo),
                 patch.object(conversao, "registrar_historico_conversao", side_effect=registrar_historico),
+                patch.object(conversao, "enviar_notificacao_google_chat", side_effect=enviar_notificacao),
             ):
                 pdf_extractor.return_value.extract.return_value = ["texto extraido"]
                 conversao.executar_conversao()
@@ -488,6 +555,7 @@ class ConversaoPasswordTest(unittest.TestCase):
             [
                 "move:id-EXT",
                 "historico",
+                "chat",
             ],
         )
         self.assertIn((conversao.GOOGLE_DRIVE_EMP_FOLDER_ID, "EMP"), fake_drive.folders)

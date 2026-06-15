@@ -1,6 +1,8 @@
 import logging
+import json
 import re
 import shutil
+import urllib.request
 import unicodedata
 from datetime import datetime
 from pathlib import Path
@@ -42,10 +44,56 @@ HISTORICO_HEADERS_SEM_MOVIMENTO = ("ID", "EMP", "DATA", "HORA", "NOME ARQUIVO", 
 HISTORICO_HEADERS_ANTIGO = ("nome_arquivo", "data_hora_conversao", "pasta_destino")
 BASE_EMP_ATIVAS = Path.cwd() / "data" / "BaseEmpAtivas.xlsm"
 BASE_EMP_ATIVAS_SHEET = "EmpAtivas"
+GOOGLE_CHAT_SEND_URL = "https://google-chat-api.onrender.com/google-chat/send"
+GOOGLE_CHAT_SPACE_NAME = "spaces/AAQAQEHQc-k"
 
 
 def agora_historico() -> datetime:
     return datetime.now(TIMEZONE_HISTORICO)
+
+
+def formatar_mensagem_google_chat(
+    nomes_extratos: list[str],
+    momento: datetime | None = None,
+) -> str:
+    momento = momento or agora_historico()
+    data = momento.strftime("%d/%m/%y")
+    hora = momento.strftime("%H:%M")
+    lista_extratos = "\n".join(nomes_extratos)
+    return (
+        f"Extratos salvos {data} e {hora} e atualizado na Base de Dados:\n\n"
+        f"{lista_extratos}"
+    )
+
+
+def enviar_notificacao_google_chat(
+    nomes_extratos: list[str],
+    momento: datetime | None = None,
+) -> bool:
+    if not nomes_extratos:
+        return False
+
+    mensagem = formatar_mensagem_google_chat(nomes_extratos, momento=momento)
+    payload = {
+        "space_name": GOOGLE_CHAT_SPACE_NAME,
+        "message": mensagem,
+    }
+    dados = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(
+        GOOGLE_CHAT_SEND_URL,
+        data=dados,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            response.read()
+        logger.info("Notificacao enviada ao Google Chat com %s extrato(s)", len(nomes_extratos))
+        return True
+    except Exception:
+        logger.exception("Erro ao enviar notificacao para o Google Chat")
+        return False
 
 
 def pdf_possui_senha(pdf_path: Path) -> bool:
@@ -663,6 +711,7 @@ def executar_conversao():
     invalidos = 0
     ignorados = 0
     com_senha = 0
+    extratos_notificacao = []
 
     for arquivo_drive in arquivos:
         arquivo_id = arquivo_drive["id"]
@@ -825,6 +874,7 @@ def executar_conversao():
             )
 
             convertidos += 1
+            extratos_notificacao.append(arquivo_stem)
             logger.info("PDF convertido com sucesso: %s", arquivo_nome)
             logger.info("Arquivos enviados para a pasta: %s", pasta_destino_historico)
         except Exception:
@@ -844,6 +894,8 @@ def executar_conversao():
         pasta_raiz_id=extratos_id,
         temp_dir=temp_dir,
     )
+
+    enviar_notificacao_google_chat(extratos_notificacao)
 
     logger.info(
         (
