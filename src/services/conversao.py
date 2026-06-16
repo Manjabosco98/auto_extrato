@@ -692,6 +692,15 @@ def executar_conversao():
         google_drive=google_drive,
         pasta_base_id=emp_id,
     )
+    logger.info("Pasta raiz operacional do Google Drive: %s", extratos_id)
+
+    logger.info("Criando ou recuperando pasta de entrada EXT no Google Drive")
+    pasta_entrada_ext = google_drive.get_or_create_folder(
+        folder_id_pai=extratos_id,
+        name_folder="EXT",
+    )
+    entrada_ext_id = pasta_entrada_ext["id"]
+    logger.info("Pasta de entrada EXT do Google Drive: %s", entrada_ext_id)
 
     logger.info("Criando ou recuperando pasta de invalidos no Google Drive")
     pasta_invalidos = google_drive.get_or_create_folder(
@@ -708,15 +717,15 @@ def executar_conversao():
     invalidos_id = pasta_invalidos["id"]
     pdfs_com_senhas_id = pasta_pdfs_com_senhas["id"]
 
-    logger.info("Listando PDFs da pasta do Google Drive")
+    logger.info("Listando PDFs da pasta EXT do Google Drive")
     arquivos = google_drive.pdfs(
-        folder_id=extratos_id,
+        folder_id=entrada_ext_id,
         pdf_type=PDF_MIME_TYPE,
     )
-    logger.info("PDFs encontrados na pasta do Google Drive: %s", len(arquivos))
+    logger.info("PDFs encontrados na pasta EXT do Google Drive: %s", len(arquivos))
 
     if not arquivos:
-        logger.info("Pasta vazia")
+        logger.info("Pasta EXT vazia")
 
     processados = 0
     convertidos = 0

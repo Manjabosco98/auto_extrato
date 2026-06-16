@@ -30,6 +30,7 @@ class FakeDrive:
         self.history_file = None
         self.history_rows = []
         self.folders = []
+        self.pdfs_calls = []
 
     def get_or_create_folder(self, folder_id_pai, name_folder):
         self.folders.append((folder_id_pai, name_folder))
@@ -45,12 +46,17 @@ class FakeDrive:
         return None
 
     def pdfs(self, folder_id, pdf_type=None):
+        self.pdfs_calls.append((folder_id, pdf_type))
+
         if folder_id == "id-PDFS_COM_SENHAS":
             return [
                 arquivo
                 for arquivo in self.password_pdfs
                 if arquivo["id"] not in self.trashed
             ]
+
+        if folder_id != "id-EXT":
+            return []
 
         return [
             arquivo
@@ -499,6 +505,9 @@ class ConversaoPasswordTest(unittest.TestCase):
                 conversao.executar_conversao()
 
         self.assertEqual(fake_drive.moved, [("pdf-1", "id-PDFS_COM_SENHAS")])
+        self.assertIn((conversao.GOOGLE_DRIVE_FOLDER_ID, "EXT"), fake_drive.folders)
+        self.assertIn((conversao.GOOGLE_DRIVE_FOLDER_ID, "PDFS_COM_SENHAS"), fake_drive.folders)
+        self.assertIn(("id-EXT", conversao.PDF_MIME_TYPE), fake_drive.pdfs_calls)
         pdf_extractor.assert_not_called()
 
     def test_pdf_convertido_registra_historico_apos_mover_para_convertidos(self):
@@ -572,6 +581,10 @@ class ConversaoPasswordTest(unittest.TestCase):
                 "chat",
             ],
         )
+        self.assertIn((conversao.GOOGLE_DRIVE_FOLDER_ID, "EXT"), fake_drive.folders)
+        self.assertIn((conversao.GOOGLE_DRIVE_FOLDER_ID, "00_INVALIDOS"), fake_drive.folders)
+        self.assertIn((conversao.GOOGLE_DRIVE_FOLDER_ID, "PDFS_COM_SENHAS"), fake_drive.folders)
+        self.assertIn(("id-EXT", conversao.PDF_MIME_TYPE), fake_drive.pdfs_calls)
         self.assertIn((conversao.GOOGLE_DRIVE_EMP_FOLDER_ID, "EMP"), fake_drive.folders)
         self.assertIn(("id-EMP", "23_CAMARGOS"), fake_drive.folders)
 
