@@ -1,13 +1,12 @@
 import logging
-import json
 import re
 import shutil
-import urllib.request
 import unicodedata
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import requests
 from googleapiclient.errors import HttpError
 from openpyxl import Workbook, load_workbook
 from pypdf import PdfReader
@@ -71,6 +70,7 @@ def enviar_notificacao_google_chat(
     momento: datetime | None = None,
 ) -> bool:
     if not nomes_extratos:
+        logger.info("Notificacao Google Chat nao enviada: nenhum PDF convertido")
         return False
 
     mensagem = formatar_mensagem_google_chat(nomes_extratos, momento=momento)
@@ -78,17 +78,29 @@ def enviar_notificacao_google_chat(
         "space_name": GOOGLE_CHAT_SPACE_NAME,
         "message": mensagem,
     }
-    dados = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    request = urllib.request.Request(
-        GOOGLE_CHAT_SEND_URL,
-        data=dados,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
 
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            response.read()
+        logger.info("Enviando notificacao ao Google Chat com %s extrato(s)", len(nomes_extratos))
+        response = requests.post(
+            GOOGLE_CHAT_SEND_URL,
+            json=payload,
+            timeout=30,
+        )
+        resposta_texto = (response.text or "")[:500]
+        logger.info(
+            "Resposta Google Chat: status=%s body=%s",
+            response.status_code,
+            resposta_texto,
+        )
+
+        if response.status_code < 200 or response.status_code >= 300:
+            logger.error(
+                "Falha ao enviar notificacao para o Google Chat: status=%s body=%s",
+                response.status_code,
+                resposta_texto,
+            )
+            return False
+
         logger.info("Notificacao enviada ao Google Chat com %s extrato(s)", len(nomes_extratos))
         return True
     except Exception:

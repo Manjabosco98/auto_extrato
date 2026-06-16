@@ -194,36 +194,43 @@ class ConversaoPasswordTest(unittest.TestCase):
 
     def test_envia_notificacao_google_chat_com_payload_correto(self):
         class FakeResponse:
-            def __enter__(self):
-                return self
+            status_code = 200
+            text = "ok"
 
-            def __exit__(self, exc_type, exc, traceback):
-                return False
-
-            def read(self):
-                return b"ok"
-
-        requests = []
-
-        def fake_urlopen(request, timeout):
-            requests.append((request, timeout))
-            return FakeResponse()
-
-        with patch.object(conversao.urllib.request, "urlopen", side_effect=fake_urlopen):
+        with patch.object(conversao.requests, "post", return_value=FakeResponse()) as post:
             resultado = conversao.enviar_notificacao_google_chat(
                 ["0626_EXTBAN SICOO_ALE"],
                 momento=conversao.datetime(2026, 6, 15, 12, 31, 0),
             )
 
         self.assertTrue(resultado)
-        request, timeout = requests[0]
-        self.assertEqual(request.full_url, conversao.GOOGLE_CHAT_SEND_URL)
-        self.assertEqual(timeout, 30)
-        self.assertIn(b"spaces/AAQAQEHQc-k", request.data)
-        self.assertIn("Extratos salvos 15/06/26 e 12:31".encode("utf-8"), request.data)
+        post.assert_called_once_with(
+            conversao.GOOGLE_CHAT_SEND_URL,
+            json={
+                "space_name": "spaces/AAQAQEHQc-k",
+                "message": (
+                    "Extratos salvos 15/06/26 e 12:31 e atualizado na Base de Dados:\n\n"
+                    "0626_EXTBAN SICOO_ALE"
+                ),
+            },
+            timeout=30,
+        )
+
+    def test_resposta_nao_2xx_google_chat_retorna_false(self):
+        class FakeResponse:
+            status_code = 500
+            text = "erro interno"
+
+        with patch.object(conversao.requests, "post", return_value=FakeResponse()):
+            resultado = conversao.enviar_notificacao_google_chat(
+                ["0626_EXTBAN SICOO_ALE"],
+                momento=conversao.datetime(2026, 6, 15, 12, 31, 0),
+            )
+
+        self.assertFalse(resultado)
 
     def test_falha_notificacao_google_chat_nao_quebra_fluxo(self):
-        with patch.object(conversao.urllib.request, "urlopen", side_effect=RuntimeError("offline")):
+        with patch.object(conversao.requests, "post", side_effect=RuntimeError("offline")):
             resultado = conversao.enviar_notificacao_google_chat(
                 ["0626_EXTBAN SICOO_ALE"],
                 momento=conversao.datetime(2026, 6, 15, 12, 31, 0),
@@ -232,11 +239,18 @@ class ConversaoPasswordTest(unittest.TestCase):
         self.assertFalse(resultado)
 
     def test_notificacao_google_chat_ignora_lista_vazia(self):
-        with patch.object(conversao.urllib.request, "urlopen") as urlopen:
+        with (
+            patch.object(conversao.requests, "post") as post,
+            self.assertLogs(conversao.logger, level="INFO") as logs,
+        ):
             resultado = conversao.enviar_notificacao_google_chat([])
 
         self.assertFalse(resultado)
-        urlopen.assert_not_called()
+        post.assert_not_called()
+        self.assertIn(
+            "Notificacao Google Chat nao enviada: nenhum PDF convertido",
+            "\n".join(logs.output),
+        )
 
     def test_nome_pasta_empresa_usa_id_e_razao_social(self):
         resultado = conversao.nome_pasta_empresa(23, " Camargos ")
