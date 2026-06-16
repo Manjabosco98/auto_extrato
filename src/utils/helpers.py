@@ -1,39 +1,75 @@
+import os
+import gc
+import shutil
 import pandas as pd
+from copy import copy
 from pathlib import Path
 from openpyxl import load_workbook
 from pypdf import PdfReader, PdfWriter
 
 def planilha_lancamento(df, destino):
     destino = Path(destino)
+    destino_tmp = destino.with_name(f"{destino.stem}_tmp{destino.suffix}")
 
-    wb = load_workbook(destino, keep_vba=True)
-    ws = wb["Plan1"]
+    shutil.copy2(destino, destino_tmp)
 
-    linha_inicial = 2
+    wb = None
 
-    for posicao, (_, row) in enumerate(df.iterrows()):
-        linha_excel = linha_inicial + posicao
+    try:
+        wb = load_workbook(destino_tmp, keep_vba=True)
+        ws = wb["Plan1"]
 
-        # DATA -> coluna A
-        celula_data = ws[f"A{linha_excel}"]
-        celula_data.number_format = "@"
-        celula_data.value = str(row["DATA"])
+        linha_inicial = 2
 
-        # VALOR -> coluna D
-        valor = abs(row["VALOR"])
+        for posicao, (_, row) in enumerate(df.iterrows()):
+            linha_excel = linha_inicial + posicao
 
-        celula_valor = ws[f"D{linha_excel}"]
-        celula_valor.value = valor
+            # DATA -> coluna A
+            celula_data = ws[f"A{linha_excel}"]
+            celula_data.number_format = "@"
+            celula_data.value = str(row["DATA"])
 
-        if row["TIPO"] == "D":
-            celula_valor.font = celula_valor.font.copy(color="FF0000")  # vermelho
-        else:
-            celula_valor.font = celula_valor.font.copy(color="000000")  # preto
+            # VALOR -> coluna D
+            celula_valor = ws[f"D{linha_excel}"]
+            celula_valor.value = abs(row["VALOR"])
 
-        # DESCRIÇÃO -> coluna F
-        ws[f"F{linha_excel}"] = row["DESCRIÇÃO"]
+            fonte = copy(celula_valor.font)
 
-    wb.save(destino)
+            if row["TIPO"] == "D":
+                fonte.color = "FF0000"
+            else:
+                fonte.color = "000000"
+
+            celula_valor.font = fonte
+
+            # DESCRIÇÃO -> coluna F
+            ws[f"F{linha_excel}"] = row["DESCRIÇÃO"]
+
+        wb.save(destino_tmp)
+
+    finally:
+        if wb is not None:
+            # Fecha o arquivo interno usado para preservar macros
+            if hasattr(wb, "vba_archive") and wb.vba_archive is not None:
+                try:
+                    wb.vba_archive.close()
+                except Exception:
+                    pass
+
+                try:
+                    wb.vba_archive = None
+                except Exception:
+                    pass
+
+            try:
+                wb.close()
+            except Exception:
+                pass
+
+            del wb
+            gc.collect()
+
+    os.replace(destino_tmp, destino)
 
     print(f"Arquivo preenchido com sucesso: {destino}")
 

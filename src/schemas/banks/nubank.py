@@ -324,17 +324,22 @@ class Nubank(BankHandler):
 
         resultado = normalizar_movimentacoes(pdf)["movimentacoes"]
         df = pd.json_normalize(resultado)
-        df = df[["data_original", "data", "descricao", "valor_original", "tipo"]]
-        df = df.rename(columns={"data": "DATA", "descricao": "DESCRIÇÃO", "valor_original": "VALOR", "tipo": "TIPO"})
-        df["VALOR"] = (
-            df["VALOR"]
-            .str.strip()
-            .str.replace(".", "", regex=False)
-            .str.replace(",", ".", regex=False)
-            .astype(float)
-        )
-        df["DESCRIÇÃO"] = df["DESCRIÇÃO"].str.upper()
-        df["DATA"] = pd.to_datetime(df["DATA"], errors="coerce").dt.strftime("%d/%m/%Y")
-        df = df[["DATA", "DESCRIÇÃO", "VALOR", "TIPO"]]
-        df["VALOR"] = df["VALOR"].abs()
+
+        if not df.empty:
+            df = df[["data_original", "data", "descricao", "valor_original", "tipo"]]
+            df = df.rename(columns={"data": "DATA", "descricao": "DESCRIÇÃO", "valor_original": "VALOR", "tipo": "TIPO"})
+            df["VALOR"] = (
+                df["VALOR"]
+                .str.strip()
+                .str.replace(".", "", regex=False)
+                .str.replace(",", ".", regex=False)
+                .astype(float)
+            )
+            df["DESCRIÇÃO"] = df["DESCRIÇÃO"].str.upper()
+            df["DATA"] = pd.to_datetime(df["DATA"], errors="coerce").dt.strftime("%d/%m/%Y")
+            df = df[["DATA", "DESCRIÇÃO", "VALOR", "TIPO"]]
+            df["VALOR"] = df["VALOR"].abs()
+        else:
+            df = pd.DataFrame(columns=["DATA", "DESCRIÇÃO", "VALOR", "TIPO"])
         return df
+        
