@@ -8,6 +8,7 @@ from openpyxl import Workbook, load_workbook
 
 from src.app.gdrive.google_drive_auth import GoogleDriveAuth
 from src.app.gdrive.settings import (
+    GOOGLE_DRIVE_EMP_FOLDER_ID,
     GOOGLE_DRIVE_FOLDER_ID,
     GOOGLE_OAUTH_CREDENTIALS,
     GOOGLE_OAUTH_TOKEN,
@@ -24,6 +25,7 @@ from src.services.conversao import (
     nome_pasta_empresa,
     normalizar_id_empresa,
     normalizar_nome_empresa,
+    resolver_pasta_emp_base,
 )
 from src.utils.logging_config import setup_logging
 
@@ -130,15 +132,22 @@ def montar_destino_docs(
         .replace("{MÊS}", mes)
     )
     destino = destino.replace("\\", "/").strip("/")
-    return [parte for parte in destino.split("/") if parte]
+    partes = [parte for parte in destino.split("/") if parte]
+
+    if len(partes) >= 2 and partes[0].upper() == "SRVARQ" and partes[1].upper() == "EMP":
+        partes = partes[2:]
+    elif partes and partes[0].upper() == "EMP":
+        partes = partes[1:]
+
+    return partes
 
 
 def resolver_pasta_destino_docs(
     google_drive: GoogleDriveAuth,
-    docs_folder_id: str,
+    emp_folder_id: str,
     destino_partes: list[str],
 ) -> tuple[str, str]:
-    pasta_atual_id = docs_folder_id
+    pasta_atual_id = emp_folder_id
 
     for nome_pasta in destino_partes:
         pasta = google_drive.get_or_create_folder(
@@ -147,7 +156,7 @@ def resolver_pasta_destino_docs(
         )
         pasta_atual_id = pasta["id"]
 
-    return pasta_atual_id, "/".join([DOCS_FOLDER_NAME, *destino_partes])
+    return pasta_atual_id, "/".join(["EMP", *destino_partes])
 
 
 def registrar_historico_docs(
@@ -313,6 +322,12 @@ def executar_docs() -> dict[str, int]:
     docs_folder_id = docs_folder["id"]
     logger.info("Pasta DOCS localizada: %s", docs_folder_id)
 
+    logger.info("Localizando pasta EMP dentro da pasta base SRVARQ para DOCS")
+    emp_raiz_id = resolver_pasta_emp_base(
+        google_drive=google_drive,
+        pasta_base_id=GOOGLE_DRIVE_EMP_FOLDER_ID,
+    )
+
     caminhos_drive = (
         google_drive.find_file_by_name(
             folder_id=raiz_id,
@@ -402,7 +417,7 @@ def executar_docs() -> dict[str, int]:
             )
             pasta_destino_id, pasta_destino_historico = resolver_pasta_destino_docs(
                 google_drive=google_drive,
-                docs_folder_id=docs_folder_id,
+                emp_folder_id=emp_raiz_id,
                 destino_partes=destino_partes,
             )
 

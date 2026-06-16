@@ -131,7 +131,33 @@ class DocsServiceTest(unittest.TestCase):
 
         self.assertEqual(
             resultado,
-            ["SRVARQ", "EMP", "196_BRITO", "MOV", "CONT", "26", "06", "REL"],
+            ["196_BRITO", "MOV", "CONT", "26", "06", "REL"],
+        )
+
+    def test_monta_destino_docs_remove_prefixo_emp(self):
+        resultado = docs.montar_destino_docs(
+            destino_template="EMP/{EMPRESA}/MOV/CONT/{ANO}/{MES}/REL",
+            empresa_chave="196_BRITO",
+            ano="26",
+            mes="06",
+        )
+
+        self.assertEqual(
+            resultado,
+            ["196_BRITO", "MOV", "CONT", "26", "06", "REL"],
+        )
+
+    def test_monta_destino_docs_aceita_caminho_iniciando_na_empresa(self):
+        resultado = docs.montar_destino_docs(
+            destino_template="{EMPRESA}/MOV/CONT/{ANO}/{MES}/REL",
+            empresa_chave="196_BRITO",
+            ano="26",
+            mes="06",
+        )
+
+        self.assertEqual(
+            resultado,
+            ["196_BRITO", "MOV", "CONT", "26", "06", "REL"],
         )
 
     def test_carrega_caminhos_docs(self):
@@ -157,6 +183,7 @@ class DocsServiceTest(unittest.TestCase):
             with (
                 patch.object(docs, "GoogleDriveAuth", return_value=fake_drive),
                 patch.object(docs, "GOOGLE_DRIVE_FOLDER_ID", "root-folder"),
+                patch.object(docs, "GOOGLE_DRIVE_EMP_FOLDER_ID", "srvarq-folder"),
                 patch.object(docs, "carregar_empresas_ativas", return_value={"BRITO": (196, "BRITO")}),
                 patch.object(docs, "enviar_notificacao_docs_google_chat") as notificacao,
                 patch.object(docs, "agora_historico", return_value=docs.datetime(2026, 6, 16, 12, 30, 5)),
@@ -165,11 +192,10 @@ class DocsServiceTest(unittest.TestCase):
 
         self.assertEqual(resultado, {"processados": 1, "movidos": 1, "ignorados": 0, "erros": 0})
         self.assertIn(("root-folder", "DOCS"), fake_drive.folders)
+        self.assertIn(("srvarq-folder", "EMP"), fake_drive.folders)
         self.assertEqual(
-            fake_drive.folders[-8:],
+            fake_drive.folders[-6:],
             [
-                ("id-DOCS", "SRVARQ"),
-                ("id-SRVARQ", "EMP"),
                 ("id-EMP", "196_BRITO"),
                 ("id-196_BRITO", "MOV"),
                 ("id-MOV", "CONT"),
@@ -191,7 +217,7 @@ class DocsServiceTest(unittest.TestCase):
                     "12:30:05",
                     "JURATPAS",
                     "0626_JURATPAS_BRITO.docx",
-                    "DOCS/SRVARQ/EMP/196_BRITO/MOV/CONT/26/06/REL",
+                    "EMP/196_BRITO/MOV/CONT/26/06/REL",
                     "2026-06-16 12:30:05",
                 ),
             ],
@@ -199,7 +225,7 @@ class DocsServiceTest(unittest.TestCase):
         notificacao.assert_called_once_with(
             [
                 "0626_JURATPAS_BRITO.docx - "
-                "DOCS/SRVARQ/EMP/196_BRITO/MOV/CONT/26/06/REL"
+                "EMP/196_BRITO/MOV/CONT/26/06/REL"
             ]
         )
 
@@ -227,7 +253,7 @@ class DocsServiceTest(unittest.TestCase):
 
         with patch.object(docs.requests, "post", return_value=FakeResponse()) as post:
             resultado = docs.enviar_notificacao_docs_google_chat(
-                ["0626_JURATPAS_BRITO.docx - DOCS/SRVARQ/EMP/196_BRITO/MOV/CONT/26/06/REL"],
+                ["0626_JURATPAS_BRITO.docx - EMP/196_BRITO/MOV/CONT/26/06/REL"],
                 momento=docs.datetime(2026, 6, 16, 12, 30, 0),
             )
 
@@ -239,7 +265,7 @@ class DocsServiceTest(unittest.TestCase):
                 "message": (
                     "Documentos salvos 16/06/26 as 12:30 e atualizado na Base de Dados:\n\n"
                     "0626_JURATPAS_BRITO.docx - "
-                    "DOCS/SRVARQ/EMP/196_BRITO/MOV/CONT/26/06/REL"
+                    "EMP/196_BRITO/MOV/CONT/26/06/REL"
                 ),
             },
             timeout=30,
