@@ -196,7 +196,12 @@ class DocsServiceTest(unittest.TestCase):
                 ),
             ],
         )
-        notificacao.assert_called_once_with(["0626_JURATPAS_BRITO.docx"])
+        notificacao.assert_called_once_with(
+            [
+                "0626_JURATPAS_BRITO.docx - "
+                "DOCS/SRVARQ/EMP/196_BRITO/MOV/CONT/26/06/REL"
+            ]
+        )
 
     def test_executar_docs_ignora_empresa_inexistente(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -222,7 +227,7 @@ class DocsServiceTest(unittest.TestCase):
 
         with patch.object(docs.requests, "post", return_value=FakeResponse()) as post:
             resultado = docs.enviar_notificacao_docs_google_chat(
-                ["0626_JURATPAS_BRITO.docx"],
+                ["0626_JURATPAS_BRITO.docx - DOCS/SRVARQ/EMP/196_BRITO/MOV/CONT/26/06/REL"],
                 momento=docs.datetime(2026, 6, 16, 12, 30, 0),
             )
 
@@ -233,7 +238,8 @@ class DocsServiceTest(unittest.TestCase):
                 "space_name": "spaces/AAQAQEHQc-k",
                 "message": (
                     "Documentos salvos 16/06/26 as 12:30 e atualizado na Base de Dados:\n\n"
-                    "0626_JURATPAS_BRITO.docx"
+                    "0626_JURATPAS_BRITO.docx - "
+                    "DOCS/SRVARQ/EMP/196_BRITO/MOV/CONT/26/06/REL"
                 ),
             },
             timeout=30,

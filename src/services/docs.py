@@ -424,7 +424,7 @@ def executar_docs() -> dict[str, int]:
                     "data_hora_movimento": momento_movimento.strftime("%Y-%m-%d %H:%M:%S"),
                 }
             )
-            documentos_notificacao.append(arquivo_nome)
+            documentos_notificacao.append(f"{arquivo_nome} - {pasta_destino_historico}")
             movidos += 1
         except Exception:
             erros += 1
