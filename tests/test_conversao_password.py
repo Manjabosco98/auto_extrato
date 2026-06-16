@@ -192,7 +192,7 @@ class ConversaoPasswordTest(unittest.TestCase):
         self.assertEqual(
             mensagem,
             (
-                "Extratos salvos 15/06/26 e 12:31 e atualizado na Base de Dados:\n\n"
+                "Extratos salvos 15/06/26 as 12:31 e atualizado na Base de Dados:\n\n"
                 "0626_EXTBAN SICOO_ALE\n"
                 "0626_EXTBAN SICOO_LF"
             ),
@@ -215,7 +215,7 @@ class ConversaoPasswordTest(unittest.TestCase):
             json={
                 "space_name": "spaces/AAQAQEHQc-k",
                 "message": (
-                    "Extratos salvos 15/06/26 e 12:31 e atualizado na Base de Dados:\n\n"
+                    "Extratos salvos 15/06/26 as 12:31 e atualizado na Base de Dados:\n\n"
                     "0626_EXTBAN SICOO_ALE"
                 ),
             },

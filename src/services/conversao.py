@@ -60,7 +60,7 @@ def formatar_mensagem_google_chat(
     hora = momento.strftime("%H:%M")
     lista_extratos = "\n".join(nomes_extratos)
     return (
-        f"Extratos salvos {data} e {hora} e atualizado na Base de Dados:\n\n"
+        f"Extratos salvos {data} as {hora} e atualizado na Base de Dados:\n\n"
         f"{lista_extratos}"
     )
 
