@@ -53,34 +53,59 @@ def agora_historico() -> datetime:
 
 def formatar_mensagem_google_chat(
     nomes_extratos: list[str],
+    pdfs_sem_movimentacao: list[str] | None = None,
     momento: datetime | None = None,
 ) -> str:
     momento = momento or agora_historico()
-    data = momento.strftime("%d/%m/%y")
-    hora = momento.strftime("%H:%M")
-    lista_extratos = "\n".join(nomes_extratos)
-    return (
-        f"Extratos salvos {data} as {hora} e atualizado na Base de Dados:\n\n"
-        f"{lista_extratos}"
-    )
+    pdfs_sem_movimentacao = pdfs_sem_movimentacao or []
+    blocos = []
+
+    if nomes_extratos:
+        data = momento.strftime("%d/%m/%y")
+        hora = momento.strftime("%H:%M")
+        lista_extratos = "\n".join(nomes_extratos)
+        blocos.append(
+            f"Extratos salvos {data} as {hora} e atualizado na Base de Dados:\n\n"
+            f"{lista_extratos}"
+        )
+
+    if pdfs_sem_movimentacao:
+        lista_sem_movimentacao = "\n".join(pdfs_sem_movimentacao)
+        blocos.append(
+            "PDFs sem movimentacao movidos para 00_INVALIDOS:\n\n"
+            f"{lista_sem_movimentacao}"
+        )
+
+    return "\n\n".join(blocos)
 
 
 def enviar_notificacao_google_chat(
     nomes_extratos: list[str],
+    pdfs_sem_movimentacao: list[str] | None = None,
     momento: datetime | None = None,
 ) -> bool:
-    if not nomes_extratos:
-        logger.info("Notificacao Google Chat nao enviada: nenhum PDF convertido")
+    pdfs_sem_movimentacao = pdfs_sem_movimentacao or []
+
+    if not nomes_extratos and not pdfs_sem_movimentacao:
+        logger.info("Notificacao Google Chat nao enviada: nenhum PDF convertido ou sem movimentacao")
         return False
 
-    mensagem = formatar_mensagem_google_chat(nomes_extratos, momento=momento)
+    mensagem = formatar_mensagem_google_chat(
+        nomes_extratos,
+        pdfs_sem_movimentacao=pdfs_sem_movimentacao,
+        momento=momento,
+    )
     payload = {
         "space_name": GOOGLE_CHAT_SPACE_NAME,
         "message": mensagem,
     }
 
     try:
-        logger.info("Enviando notificacao ao Google Chat com %s extrato(s)", len(nomes_extratos))
+        logger.info(
+            "Enviando notificacao ao Google Chat com %s extrato(s) e %s PDF(s) sem movimentacao",
+            len(nomes_extratos),
+            len(pdfs_sem_movimentacao),
+        )
         response = requests.post(
             GOOGLE_CHAT_SEND_URL,
             json=payload,
@@ -101,7 +126,11 @@ def enviar_notificacao_google_chat(
             )
             return False
 
-        logger.info("Notificacao enviada ao Google Chat com %s extrato(s)", len(nomes_extratos))
+        logger.info(
+            "Notificacao enviada ao Google Chat com %s extrato(s) e %s PDF(s) sem movimentacao",
+            len(nomes_extratos),
+            len(pdfs_sem_movimentacao),
+        )
         return True
     except Exception:
         logger.exception("Erro ao enviar notificacao para o Google Chat")
@@ -670,6 +699,26 @@ def registrar_historico_conversao(
     historico_local.unlink(missing_ok=True)
 
 
+def registrar_historico_sem_movimentacao(
+    google_drive: GoogleDriveAuth,
+    pasta_raiz_id: str,
+    temp_dir: Path,
+    nome_arquivo: str,
+    empresas: dict[str, tuple[object, str]] | None = None,
+) -> None:
+    momento = agora_historico()
+    registrar_historico_conversao(
+        google_drive=google_drive,
+        pasta_raiz_id=pasta_raiz_id,
+        temp_dir=temp_dir,
+        nomes_arquivos=[nome_arquivo],
+        pasta_destino="00_INVALIDOS",
+        data_hora=momento,
+        data_hora_movimento=momento,
+        empresas=empresas,
+    )
+
+
 def executar_conversao():
     setup_logging()
     logger.info("Iniciando fluxo de conversao")
@@ -733,6 +782,7 @@ def executar_conversao():
     ignorados = 0
     com_senha = 0
     extratos_notificacao = []
+    pdfs_sem_movimentacao_notificacao = []
 
     for arquivo_drive in arquivos:
         arquivo_id = arquivo_drive["id"]
@@ -771,13 +821,21 @@ def executar_conversao():
                 continue
 
             if nome_indica_sem_movimentacao(arquivo_nome):
-                renomear_e_mover_para_invalidos(
+                nome_sem_movimentacao = renomear_e_mover_para_invalidos(
                     google_drive=google_drive,
                     arquivo_id=arquivo_id,
                     arquivo_nome=arquivo_nome,
                     invalidos_id=invalidos_id,
                     prefixo=SEM_MOV_PREFIX,
                     motivo="Nome do PDF indica extrato sem movimentacao",
+                )
+                pdfs_sem_movimentacao_notificacao.append(nome_sem_movimentacao)
+                registrar_historico_sem_movimentacao(
+                    google_drive=google_drive,
+                    pasta_raiz_id=extratos_id,
+                    temp_dir=temp_dir,
+                    nome_arquivo=nome_sem_movimentacao,
+                    empresas=empresas,
                 )
                 invalidos += 1
                 continue
@@ -810,13 +868,21 @@ def executar_conversao():
                 continue
 
             if df is None or df.empty:
-                renomear_e_mover_para_invalidos(
+                nome_sem_movimentacao = renomear_e_mover_para_invalidos(
                     google_drive=google_drive,
                     arquivo_id=arquivo_id,
                     arquivo_nome=arquivo_nome,
                     invalidos_id=invalidos_id,
                     prefixo=SEM_MOV_PREFIX,
                     motivo="DataFrame vazio, extrato sem movimentacao",
+                )
+                pdfs_sem_movimentacao_notificacao.append(nome_sem_movimentacao)
+                registrar_historico_sem_movimentacao(
+                    google_drive=google_drive,
+                    pasta_raiz_id=extratos_id,
+                    temp_dir=temp_dir,
+                    nome_arquivo=nome_sem_movimentacao,
+                    empresas=empresas,
                 )
                 invalidos += 1
                 continue
@@ -916,7 +982,10 @@ def executar_conversao():
         temp_dir=temp_dir,
     )
 
-    enviar_notificacao_google_chat(extratos_notificacao)
+    enviar_notificacao_google_chat(
+        extratos_notificacao,
+        pdfs_sem_movimentacao=pdfs_sem_movimentacao_notificacao,
+    )
 
     logger.info(
         (
