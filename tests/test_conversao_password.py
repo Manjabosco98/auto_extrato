@@ -202,8 +202,8 @@ class ConversaoPasswordTest(unittest.TestCase):
         mensagem = conversao.formatar_mensagem_google_chat(
             ["0626_EXTBAN SICOO_ALE"],
             pdfs_sem_movimentacao=[
-                "[SEM MOV] - 0526_EXTBAN ITAU 45440-7 SM_CIAL.pdf",
-                "[SEM MOV] - 0526_EXTBAN NORMAL_CIAL.pdf",
+                "0526_EXTBAN ITAU 45440-7 SM_CIAL.pdf - EMP/123_CIAL/MOV/CONT/26/05/EXT",
+                "0526_EXTBAN NORMAL_CIAL.pdf - EMP/123_CIAL/MOV/CONT/26/05/EXT",
             ],
             momento=conversao.datetime(2026, 6, 17, 10, 15, 0),
         )
@@ -213,9 +213,9 @@ class ConversaoPasswordTest(unittest.TestCase):
             (
                 "Extratos salvos 17/06/26 as 10:15 e atualizado na Base de Dados:\n\n"
                 "0626_EXTBAN SICOO_ALE\n\n"
-                "PDFs sem movimentacao movidos para 00_INVALIDOS:\n\n"
-                "[SEM MOV] - 0526_EXTBAN ITAU 45440-7 SM_CIAL.pdf\n"
-                "[SEM MOV] - 0526_EXTBAN NORMAL_CIAL.pdf"
+                "PDFs sem movimentacao salvos na pasta da empresa:\n\n"
+                "0526_EXTBAN ITAU 45440-7 SM_CIAL.pdf - EMP/123_CIAL/MOV/CONT/26/05/EXT\n"
+                "0526_EXTBAN NORMAL_CIAL.pdf - EMP/123_CIAL/MOV/CONT/26/05/EXT"
             ),
         )
 
@@ -223,7 +223,7 @@ class ConversaoPasswordTest(unittest.TestCase):
         mensagem = conversao.formatar_mensagem_google_chat(
             [],
             pdfs_sem_movimentacao=[
-                "[SEM MOV] - 0526_EXTBAN ITAU 45440-7 SM_CIAL.pdf",
+                "0526_EXTBAN ITAU 45440-7 SM_CIAL.pdf - EMP/123_CIAL/MOV/CONT/26/05/EXT",
             ],
             momento=conversao.datetime(2026, 6, 17, 10, 15, 0),
         )
@@ -231,8 +231,25 @@ class ConversaoPasswordTest(unittest.TestCase):
         self.assertEqual(
             mensagem,
             (
-                "PDFs sem movimentacao movidos para 00_INVALIDOS:\n\n"
-                "[SEM MOV] - 0526_EXTBAN ITAU 45440-7 SM_CIAL.pdf"
+                "PDFs sem movimentacao salvos na pasta da empresa:\n\n"
+                "0526_EXTBAN ITAU 45440-7 SM_CIAL.pdf - EMP/123_CIAL/MOV/CONT/26/05/EXT"
+            ),
+        )
+
+    def test_formata_mensagem_google_chat_somente_nao_legiveis(self):
+        mensagem = conversao.formatar_mensagem_google_chat(
+            [],
+            pdfs_nao_legiveis=[
+                "[NAO LEGIVEL] - 0526_EXTBAN IMAGEM_CIAL.pdf",
+            ],
+            momento=conversao.datetime(2026, 6, 17, 10, 15, 0),
+        )
+
+        self.assertEqual(
+            mensagem,
+            (
+                "PDFs nao legiveis movidos para 00_INVALIDOS:\n\n"
+                "[NAO LEGIVEL] - 0526_EXTBAN IMAGEM_CIAL.pdf"
             ),
         )
 
@@ -269,7 +286,7 @@ class ConversaoPasswordTest(unittest.TestCase):
             resultado = conversao.enviar_notificacao_google_chat(
                 [],
                 pdfs_sem_movimentacao=[
-                    "[SEM MOV] - 0526_EXTBAN ITAU 45440-7 SM_CIAL.pdf",
+                    "0526_EXTBAN ITAU 45440-7 SM_CIAL.pdf - EMP/123_CIAL/MOV/CONT/26/05/EXT",
                 ],
                 momento=conversao.datetime(2026, 6, 17, 10, 15, 0),
             )
@@ -280,8 +297,8 @@ class ConversaoPasswordTest(unittest.TestCase):
             json={
                 "space_name": "spaces/AAQAQEHQc-k",
                 "message": (
-                    "PDFs sem movimentacao movidos para 00_INVALIDOS:\n\n"
-                    "[SEM MOV] - 0526_EXTBAN ITAU 45440-7 SM_CIAL.pdf"
+                    "PDFs sem movimentacao salvos na pasta da empresa:\n\n"
+                    "0526_EXTBAN ITAU 45440-7 SM_CIAL.pdf - EMP/123_CIAL/MOV/CONT/26/05/EXT"
                 ),
             },
             timeout=30,
@@ -319,7 +336,7 @@ class ConversaoPasswordTest(unittest.TestCase):
         self.assertFalse(resultado)
         post.assert_not_called()
         self.assertIn(
-            "Notificacao Google Chat nao enviada: nenhum PDF convertido ou sem movimentacao",
+            "Notificacao Google Chat nao enviada: nenhum PDF convertido, sem movimentacao ou nao legivel",
             "\n".join(logs.output),
         )
 
@@ -613,10 +630,11 @@ class ConversaoPasswordTest(unittest.TestCase):
                 self.assertEqual(kwargs["empresa_id"], 23)
                 self.assertEqual(kwargs["empresa_nome"], "CAMARGOS")
 
-            def enviar_notificacao(nomes_extratos, pdfs_sem_movimentacao=None):
+            def enviar_notificacao(nomes_extratos, pdfs_sem_movimentacao=None, pdfs_nao_legiveis=None):
                 eventos.append("chat")
                 self.assertEqual(nomes_extratos, ["0526_EXTBAN C6BANK_CAMARGOS"])
                 self.assertEqual(pdfs_sem_movimentacao, [])
+                self.assertEqual(pdfs_nao_legiveis, [])
                 return True
 
             fake_drive.move_file = move_file
@@ -744,7 +762,7 @@ class ConversaoPasswordTest(unittest.TestCase):
         self.assertEqual(fake_drive.uploaded, [])
         self.assertEqual(fake_drive.trashed, set())
 
-    def test_nome_com_sm_move_para_invalidos_com_prefixo_sem_mov(self):
+    def test_nome_com_sm_move_para_pasta_empresa_sem_renomear(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             fake_drive = FakeDrive(
                 temp_dir,
@@ -759,51 +777,7 @@ class ConversaoPasswordTest(unittest.TestCase):
 
             with (
                 patch.object(conversao, "GoogleDriveAuth", return_value=fake_drive),
-                patch.object(conversao, "pdf_possui_senha", return_value=False),
-                patch.object(conversao, "PDFExtractor") as pdf_extractor,
-                patch.object(conversao, "enviar_notificacao_google_chat") as notificacao,
-            ):
-                conversao.executar_conversao()
-
-        self.assertEqual(
-            fake_drive.renamed,
-            [
-                (
-                    "pdf-sm",
-                    "[SEM MOV] - 0526_EXTBAN ITAU 45440-7 SM_CIAL.pdf",
-                )
-            ],
-        )
-        self.assertIn(("pdf-sm", "id-00_INVALIDOS"), fake_drive.moved)
-        self.assertEqual(fake_drive.history_rows[0], conversao.HISTORICO_HEADERS)
-        self.assertEqual(
-            fake_drive.history_rows[1][4],
-            "[SEM MOV] - 0526_EXTBAN ITAU 45440-7 SM_CIAL.pdf",
-        )
-        self.assertEqual(fake_drive.history_rows[1][5], "00_INVALIDOS")
-        notificacao.assert_called_once_with(
-            [],
-            pdfs_sem_movimentacao=[
-                "[SEM MOV] - 0526_EXTBAN ITAU 45440-7 SM_CIAL.pdf",
-            ],
-        )
-        pdf_extractor.assert_not_called()
-
-    def test_prefixo_sem_mov_nao_duplica(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            fake_drive = FakeDrive(
-                temp_dir,
-                root_pdfs=[
-                    {
-                        "id": "pdf-sm",
-                        "name": "[SEM MOV] - 0526_EXTBAN ITAU 45440-7 SM_CIAL.pdf",
-                        "mimeType": "application/pdf",
-                    }
-                ],
-            )
-
-            with (
-                patch.object(conversao, "GoogleDriveAuth", return_value=fake_drive),
+                patch.object(conversao, "carregar_empresas_ativas", return_value={"CIAL": (123, "CIAL")}),
                 patch.object(conversao, "pdf_possui_senha", return_value=False),
                 patch.object(conversao, "PDFExtractor") as pdf_extractor,
                 patch.object(conversao, "enviar_notificacao_google_chat") as notificacao,
@@ -811,18 +785,51 @@ class ConversaoPasswordTest(unittest.TestCase):
                 conversao.executar_conversao()
 
         self.assertEqual(fake_drive.renamed, [])
-        self.assertIn(("pdf-sm", "id-00_INVALIDOS"), fake_drive.moved)
+        self.assertIn(("pdf-sm", "id-EXT"), fake_drive.moved)
         self.assertEqual(fake_drive.history_rows[0], conversao.HISTORICO_HEADERS)
         self.assertEqual(
             fake_drive.history_rows[1][4],
-            "[SEM MOV] - 0526_EXTBAN ITAU 45440-7 SM_CIAL.pdf",
+            "0526_EXTBAN ITAU 45440-7 SM_CIAL.pdf",
         )
-        self.assertEqual(fake_drive.history_rows[1][5], "00_INVALIDOS")
+        self.assertEqual(fake_drive.history_rows[1][5], "EMP/123_CIAL/MOV/CONT/26/05/EXT")
         notificacao.assert_called_once_with(
             [],
             pdfs_sem_movimentacao=[
-                "[SEM MOV] - 0526_EXTBAN ITAU 45440-7 SM_CIAL.pdf",
+                "0526_EXTBAN ITAU 45440-7 SM_CIAL.pdf - EMP/123_CIAL/MOV/CONT/26/05/EXT",
             ],
+            pdfs_nao_legiveis=[],
+        )
+        pdf_extractor.assert_not_called()
+
+    def test_sem_movimentacao_sem_empresa_permanece_na_ext(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_drive = FakeDrive(
+                temp_dir,
+                root_pdfs=[
+                    {
+                        "id": "pdf-sm",
+                        "name": "0526_EXTBAN ITAU 45440-7 SM_CIAL.pdf",
+                        "mimeType": "application/pdf",
+                    }
+                ],
+            )
+
+            with (
+                patch.object(conversao, "GoogleDriveAuth", return_value=fake_drive),
+                patch.object(conversao, "carregar_empresas_ativas", return_value={}),
+                patch.object(conversao, "pdf_possui_senha", return_value=False),
+                patch.object(conversao, "PDFExtractor") as pdf_extractor,
+                patch.object(conversao, "enviar_notificacao_google_chat") as notificacao,
+            ):
+                conversao.executar_conversao()
+
+        self.assertEqual(fake_drive.renamed, [])
+        self.assertEqual(fake_drive.moved, [])
+        self.assertEqual(fake_drive.history_rows, [])
+        notificacao.assert_called_once_with(
+            [],
+            pdfs_sem_movimentacao=[],
+            pdfs_nao_legiveis=[],
         )
         pdf_extractor.assert_not_called()
 
@@ -854,16 +861,20 @@ class ConversaoPasswordTest(unittest.TestCase):
             [
                 (
                     "pdf-imagem",
-                    "[SEM IMAGEM] - 0526_EXTBAN IMAGEM_CIAL.pdf",
+                    "[NAO LEGIVEL] - 0526_EXTBAN IMAGEM_CIAL.pdf",
                 )
             ],
         )
         self.assertIn(("pdf-imagem", "id-00_INVALIDOS"), fake_drive.moved)
         self.assertEqual(fake_drive.history_rows, [])
-        notificacao.assert_called_once_with([], pdfs_sem_movimentacao=[])
+        notificacao.assert_called_once_with(
+            [],
+            pdfs_sem_movimentacao=[],
+            pdfs_nao_legiveis=["[NAO LEGIVEL] - 0526_EXTBAN IMAGEM_CIAL.pdf"],
+        )
         dispatch.assert_not_called()
 
-    def test_dataframe_vazio_move_para_invalidos_com_prefixo_sem_mov(self):
+    def test_dataframe_vazio_move_para_pasta_empresa_sem_renomear(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             fake_drive = FakeDrive(
                 temp_dir,
@@ -878,6 +889,7 @@ class ConversaoPasswordTest(unittest.TestCase):
 
             with (
                 patch.object(conversao, "GoogleDriveAuth", return_value=fake_drive),
+                patch.object(conversao, "carregar_empresas_ativas", return_value={"CIAL": (123, "CIAL")}),
                 patch.object(conversao, "pdf_possui_senha", return_value=False),
                 patch.object(conversao, "PDFExtractor") as pdf_extractor,
                 patch.object(conversao, "dispatch", return_value=pd.DataFrame()),
@@ -886,27 +898,20 @@ class ConversaoPasswordTest(unittest.TestCase):
                 pdf_extractor.return_value.extract.return_value = ["texto extraido"]
                 conversao.executar_conversao()
 
-        self.assertEqual(
-            fake_drive.renamed,
-            [
-                (
-                    "pdf-vazio",
-                    "[SEM MOV] - 0526_EXTBAN NORMAL_CIAL.pdf",
-                )
-            ],
-        )
-        self.assertIn(("pdf-vazio", "id-00_INVALIDOS"), fake_drive.moved)
+        self.assertEqual(fake_drive.renamed, [])
+        self.assertIn(("pdf-vazio", "id-EXT"), fake_drive.moved)
         self.assertEqual(fake_drive.history_rows[0], conversao.HISTORICO_HEADERS)
         self.assertEqual(
             fake_drive.history_rows[1][4],
-            "[SEM MOV] - 0526_EXTBAN NORMAL_CIAL.pdf",
+            "0526_EXTBAN NORMAL_CIAL.pdf",
         )
-        self.assertEqual(fake_drive.history_rows[1][5], "00_INVALIDOS")
+        self.assertEqual(fake_drive.history_rows[1][5], "EMP/123_CIAL/MOV/CONT/26/05/EXT")
         notificacao.assert_called_once_with(
             [],
             pdfs_sem_movimentacao=[
-                "[SEM MOV] - 0526_EXTBAN NORMAL_CIAL.pdf",
+                "0526_EXTBAN NORMAL_CIAL.pdf - EMP/123_CIAL/MOV/CONT/26/05/EXT",
             ],
+            pdfs_nao_legiveis=[],
         )
 
 

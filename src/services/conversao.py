@@ -33,7 +33,8 @@ logger = logging.getLogger(__name__)
 
 SEM_MOV_PREFIX = "[SEM MOV] - "
 SEM_IMAGEM_PREFIX = "[SEM IMAGEM] - "
-PREFIXOS_INVALIDOS = (SEM_MOV_PREFIX, SEM_IMAGEM_PREFIX)
+NAO_LEGIVEL_PREFIX = "[NAO LEGIVEL] - "
+PREFIXOS_INVALIDOS = (SEM_MOV_PREFIX, SEM_IMAGEM_PREFIX, NAO_LEGIVEL_PREFIX)
 HISTORICO_CONVERSOES = "HISTORICO_CONVERSOES.xlsx"
 TIMEZONE_HISTORICO = ZoneInfo("America/Sao_Paulo")
 HISTORICO_HEADERS = ("ID", "EMP", "DATA", "HORA", "NOME ARQUIVO", "PASTA DESTINO", "DATA HORA MOVIMENTO", "BANCO")
@@ -54,10 +55,12 @@ def agora_historico() -> datetime:
 def formatar_mensagem_google_chat(
     nomes_extratos: list[str],
     pdfs_sem_movimentacao: list[str] | None = None,
+    pdfs_nao_legiveis: list[str] | None = None,
     momento: datetime | None = None,
 ) -> str:
     momento = momento or agora_historico()
     pdfs_sem_movimentacao = pdfs_sem_movimentacao or []
+    pdfs_nao_legiveis = pdfs_nao_legiveis or []
     blocos = []
 
     if nomes_extratos:
@@ -72,8 +75,15 @@ def formatar_mensagem_google_chat(
     if pdfs_sem_movimentacao:
         lista_sem_movimentacao = "\n".join(pdfs_sem_movimentacao)
         blocos.append(
-            "PDFs sem movimentacao movidos para 00_INVALIDOS:\n\n"
+            "PDFs sem movimentacao salvos na pasta da empresa:\n\n"
             f"{lista_sem_movimentacao}"
+        )
+
+    if pdfs_nao_legiveis:
+        lista_nao_legiveis = "\n".join(pdfs_nao_legiveis)
+        blocos.append(
+            "PDFs nao legiveis movidos para 00_INVALIDOS:\n\n"
+            f"{lista_nao_legiveis}"
         )
 
     return "\n\n".join(blocos)
@@ -82,17 +92,20 @@ def formatar_mensagem_google_chat(
 def enviar_notificacao_google_chat(
     nomes_extratos: list[str],
     pdfs_sem_movimentacao: list[str] | None = None,
+    pdfs_nao_legiveis: list[str] | None = None,
     momento: datetime | None = None,
 ) -> bool:
     pdfs_sem_movimentacao = pdfs_sem_movimentacao or []
+    pdfs_nao_legiveis = pdfs_nao_legiveis or []
 
-    if not nomes_extratos and not pdfs_sem_movimentacao:
-        logger.info("Notificacao Google Chat nao enviada: nenhum PDF convertido ou sem movimentacao")
+    if not nomes_extratos and not pdfs_sem_movimentacao and not pdfs_nao_legiveis:
+        logger.info("Notificacao Google Chat nao enviada: nenhum PDF convertido, sem movimentacao ou nao legivel")
         return False
 
     mensagem = formatar_mensagem_google_chat(
         nomes_extratos,
         pdfs_sem_movimentacao=pdfs_sem_movimentacao,
+        pdfs_nao_legiveis=pdfs_nao_legiveis,
         momento=momento,
     )
     payload = {
@@ -102,9 +115,10 @@ def enviar_notificacao_google_chat(
 
     try:
         logger.info(
-            "Enviando notificacao ao Google Chat com %s extrato(s) e %s PDF(s) sem movimentacao",
+            "Enviando notificacao ao Google Chat com %s extrato(s), %s PDF(s) sem movimentacao e %s PDF(s) nao legivel(is)",
             len(nomes_extratos),
             len(pdfs_sem_movimentacao),
+            len(pdfs_nao_legiveis),
         )
         response = requests.post(
             GOOGLE_CHAT_SEND_URL,
@@ -127,9 +141,10 @@ def enviar_notificacao_google_chat(
             return False
 
         logger.info(
-            "Notificacao enviada ao Google Chat com %s extrato(s) e %s PDF(s) sem movimentacao",
+            "Notificacao enviada ao Google Chat com %s extrato(s), %s PDF(s) sem movimentacao e %s PDF(s) nao legivel(is)",
             len(nomes_extratos),
             len(pdfs_sem_movimentacao),
+            len(pdfs_nao_legiveis),
         )
         return True
     except Exception:
@@ -699,24 +714,59 @@ def registrar_historico_conversao(
     historico_local.unlink(missing_ok=True)
 
 
-def registrar_historico_sem_movimentacao(
+def arquivar_pdf_sem_movimentacao(
     google_drive: GoogleDriveAuth,
     pasta_raiz_id: str,
+    pasta_emp_id: str,
     temp_dir: Path,
+    arquivo_id: str,
     nome_arquivo: str,
     empresas: dict[str, tuple[object, str]] | None = None,
-) -> None:
+) -> str | None:
+    cliente = extrair_cliente_nome_arquivo(nome_arquivo)
+    empresa_id, empresa_nome = buscar_empresa_por_cliente(cliente, empresas=empresas)
+
+    try:
+        pasta_destino_id, pasta_destino_historico = resolver_pasta_destino_emp(
+            google_drive=google_drive,
+            pasta_emp_id=pasta_emp_id,
+            arquivo_nome=nome_arquivo,
+            empresa_id=empresa_id,
+            empresa_nome=empresa_nome,
+        )
+    except ValueError:
+        logger.exception(
+            "Nao foi possivel resolver pasta EMP para PDF sem movimentacao. Arquivo mantido na pasta EXT: %s",
+            nome_arquivo,
+        )
+        return None
+
     momento = agora_historico()
+    logger.info("Movendo PDF sem movimentacao para pasta destino EMP: %s", nome_arquivo)
+    google_drive.move_file(
+        file_id=arquivo_id,
+        folder_id_destino=pasta_destino_id,
+    )
+    momento_movimento = agora_historico()
+
     registrar_historico_conversao(
         google_drive=google_drive,
         pasta_raiz_id=pasta_raiz_id,
         temp_dir=temp_dir,
         nomes_arquivos=[nome_arquivo],
-        pasta_destino="00_INVALIDOS",
+        pasta_destino=pasta_destino_historico,
         data_hora=momento,
-        data_hora_movimento=momento,
+        data_hora_movimento=momento_movimento,
+        empresa_id=empresa_id,
+        empresa_nome=empresa_nome,
         empresas=empresas,
     )
+    logger.info(
+        "PDF sem movimentacao salvo na pasta da empresa: %s -> %s",
+        nome_arquivo,
+        pasta_destino_historico,
+    )
+    return f"{nome_arquivo} - {pasta_destino_historico}"
 
 
 def executar_conversao():
@@ -781,8 +831,10 @@ def executar_conversao():
     invalidos = 0
     ignorados = 0
     com_senha = 0
+    sem_movimentacao = 0
     extratos_notificacao = []
     pdfs_sem_movimentacao_notificacao = []
+    pdfs_nao_legiveis_notificacao = []
 
     for arquivo_drive in arquivos:
         arquivo_id = arquivo_drive["id"]
@@ -821,37 +873,33 @@ def executar_conversao():
                 continue
 
             if nome_indica_sem_movimentacao(arquivo_nome):
-                nome_sem_movimentacao = renomear_e_mover_para_invalidos(
-                    google_drive=google_drive,
-                    arquivo_id=arquivo_id,
-                    arquivo_nome=arquivo_nome,
-                    invalidos_id=invalidos_id,
-                    prefixo=SEM_MOV_PREFIX,
-                    motivo="Nome do PDF indica extrato sem movimentacao",
-                )
-                pdfs_sem_movimentacao_notificacao.append(nome_sem_movimentacao)
-                registrar_historico_sem_movimentacao(
+                linha_sem_movimentacao = arquivar_pdf_sem_movimentacao(
                     google_drive=google_drive,
                     pasta_raiz_id=extratos_id,
+                    pasta_emp_id=emp_raiz_id,
                     temp_dir=temp_dir,
-                    nome_arquivo=nome_sem_movimentacao,
+                    arquivo_id=arquivo_id,
+                    nome_arquivo=arquivo_nome,
                     empresas=empresas,
                 )
-                invalidos += 1
+                if linha_sem_movimentacao:
+                    pdfs_sem_movimentacao_notificacao.append(linha_sem_movimentacao)
+                    sem_movimentacao += 1
                 continue
 
             logger.info("Extraindo conteudo do PDF: %s", arquivo_nome)
             pdf = PDFExtractor(pdf_local).extract()
 
             if not pdf:
-                renomear_e_mover_para_invalidos(
+                nome_nao_legivel = renomear_e_mover_para_invalidos(
                     google_drive=google_drive,
                     arquivo_id=arquivo_id,
                     arquivo_nome=arquivo_nome,
                     invalidos_id=invalidos_id,
-                    prefixo=SEM_IMAGEM_PREFIX,
-                    motivo="PDF sem texto extraivel, possivelmente imagem",
+                    prefixo=NAO_LEGIVEL_PREFIX,
+                    motivo="PDF sem texto extraivel, nao legivel ou possivelmente imagem",
                 )
+                pdfs_nao_legiveis_notificacao.append(nome_nao_legivel)
                 invalidos += 1
                 continue
 
@@ -868,23 +916,18 @@ def executar_conversao():
                 continue
 
             if df is None or df.empty:
-                nome_sem_movimentacao = renomear_e_mover_para_invalidos(
-                    google_drive=google_drive,
-                    arquivo_id=arquivo_id,
-                    arquivo_nome=arquivo_nome,
-                    invalidos_id=invalidos_id,
-                    prefixo=SEM_MOV_PREFIX,
-                    motivo="DataFrame vazio, extrato sem movimentacao",
-                )
-                pdfs_sem_movimentacao_notificacao.append(nome_sem_movimentacao)
-                registrar_historico_sem_movimentacao(
+                linha_sem_movimentacao = arquivar_pdf_sem_movimentacao(
                     google_drive=google_drive,
                     pasta_raiz_id=extratos_id,
+                    pasta_emp_id=emp_raiz_id,
                     temp_dir=temp_dir,
-                    nome_arquivo=nome_sem_movimentacao,
+                    arquivo_id=arquivo_id,
+                    nome_arquivo=arquivo_nome,
                     empresas=empresas,
                 )
-                invalidos += 1
+                if linha_sem_movimentacao:
+                    pdfs_sem_movimentacao_notificacao.append(linha_sem_movimentacao)
+                    sem_movimentacao += 1
                 continue
 
             cliente = extrair_cliente_nome_arquivo(arquivo_nome)
@@ -985,16 +1028,18 @@ def executar_conversao():
     enviar_notificacao_google_chat(
         extratos_notificacao,
         pdfs_sem_movimentacao=pdfs_sem_movimentacao_notificacao,
+        pdfs_nao_legiveis=pdfs_nao_legiveis_notificacao,
     )
 
     logger.info(
         (
             "Fluxo de conversao concluido. "
-            "Processados=%s Convertidos=%s Invalidos=%s Ignorados=%s ComSenha=%s "
+            "Processados=%s Convertidos=%s SemMovimentacao=%s Invalidos=%s Ignorados=%s ComSenha=%s "
             "Desbloqueados=%s SenhasIgnoradas=%s SenhasErros=%s"
         ),
         processados,
         convertidos,
+        sem_movimentacao,
         invalidos,
         ignorados,
         com_senha,
