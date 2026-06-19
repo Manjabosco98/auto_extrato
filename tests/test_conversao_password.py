@@ -1,13 +1,14 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 import pandas as pd
 from googleapiclient.errors import HttpError
 from httplib2 import Response
 from openpyxl import Workbook, load_workbook
 
+from src.app.supabase import supabase_api
 from src.services import conversao
 
 
@@ -1106,6 +1107,114 @@ class ConversaoPasswordTest(unittest.TestCase):
         notificacao.assert_called_once()
         notificacao_kwargs = notificacao.call_args[1]
         self.assertEqual(notificacao_kwargs["atualizados_sge"], 0)
+
+    def test_buscar_id_empresa_retorna_uuid(self):
+        fake_response = MagicMock()
+        fake_response.status_code = 200
+        fake_response.json.return_value = {
+            "data": [{"id_empresa": "3f6b2660-b83b-4da4-ae4f-20cd8df4e6de"}],
+        }
+
+        with patch.object(supabase_api.requests, "get", return_value=fake_response):
+            resultado = supabase_api.buscar_id_empresa_supabase(
+                empresa_codigo="428",
+                competencia="2026-02",
+                codigo_documento="EXTBAN",
+            )
+
+        self.assertEqual(resultado, "3f6b2660-b83b-4da4-ae4f-20cd8df4e6de")
+
+    def test_buscar_id_empresa_retorna_none_sem_registro(self):
+        fake_response = MagicMock()
+        fake_response.status_code = 200
+        fake_response.json.return_value = {"data": []}
+
+        with patch.object(supabase_api.requests, "get", return_value=fake_response):
+            resultado = supabase_api.buscar_id_empresa_supabase(
+                empresa_codigo="999",
+                competencia="2026-01",
+                codigo_documento="EXTBAN",
+            )
+
+        self.assertIsNone(resultado)
+
+    def test_buscar_id_empresa_retorna_none_em_erro_http(self):
+        fake_response = MagicMock()
+        fake_response.status_code = 500
+        fake_response.text = "erro interno"
+
+        with patch.object(supabase_api.requests, "get", return_value=fake_response):
+            resultado = supabase_api.buscar_id_empresa_supabase(
+                empresa_codigo="428",
+                competencia="2026-02",
+                codigo_documento="EXTBAN",
+            )
+
+        self.assertIsNone(resultado)
+
+    def test_buscar_id_empresa_retorna_none_em_excecao(self):
+        with patch.object(
+            supabase_api.requests, "get", side_effect=RuntimeError("offline")
+        ):
+            resultado = supabase_api.buscar_id_empresa_supabase(
+                empresa_codigo="428",
+                competencia="2026-02",
+                codigo_documento="EXTBAN",
+            )
+
+        self.assertIsNone(resultado)
+
+    def test_atualizar_controle_busca_uuid_antes_do_put(self):
+        fake_get = MagicMock()
+        fake_get.status_code = 200
+        fake_get.json.return_value = {
+            "data": [{"id_empresa": "uuid-empresa-123"}],
+        }
+
+        fake_put = MagicMock()
+        fake_put.status_code = 200
+        fake_put.text = "ok"
+
+        with (
+            patch.object(supabase_api.requests, "get", return_value=fake_get),
+            patch.object(supabase_api.requests, "put", return_value=fake_put) as mock_put,
+        ):
+            resultado = supabase_api.atualizar_controle_supabase(
+                empresa_codigo="428",
+                competencia="2026-02",
+                codigo_documento="EXTBAN",
+                data_recebimento="2026-06-19",
+                quantidade_arquivos=3,
+                nome_arquivo="0226_EXTBAN_INTER_ACAO.pdf",
+                local_arquivo="Google Drive / EMP/428_ACAO/MOV/CONT/26/02/EXT",
+            )
+
+        self.assertTrue(resultado)
+        put_kwargs = mock_put.call_args[1]["json"]
+        self.assertEqual(put_kwargs["id_empresa"], "uuid-empresa-123")
+        self.assertEqual(put_kwargs["empresa_codigo"], "428")
+
+    def test_atualizar_controle_falha_se_uuid_nao_encontrado(self):
+        fake_get = MagicMock()
+        fake_get.status_code = 200
+        fake_get.json.return_value = {"data": []}
+
+        with (
+            patch.object(supabase_api.requests, "get", return_value=fake_get),
+            patch.object(supabase_api.requests, "put") as mock_put,
+        ):
+            resultado = supabase_api.atualizar_controle_supabase(
+                empresa_codigo="999",
+                competencia="2026-01",
+                codigo_documento="EXTBAN",
+                data_recebimento="2026-06-19",
+                quantidade_arquivos=3,
+                nome_arquivo="0126_EXTBAN_XXX.pdf",
+                local_arquivo="Google Drive / XXX",
+            )
+
+        self.assertFalse(resultado)
+        mock_put.assert_not_called()
 
 
 if __name__ == "__main__":
