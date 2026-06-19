@@ -630,7 +630,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 self.assertEqual(kwargs["empresa_id"], 23)
                 self.assertEqual(kwargs["empresa_nome"], "CAMARGOS")
 
-            def enviar_notificacao(nomes_extratos, pdfs_sem_movimentacao=None, pdfs_nao_legiveis=None):
+            def enviar_notificacao(nomes_extratos, pdfs_sem_movimentacao=None, pdfs_nao_legiveis=None, atualizados_sge=None):
                 eventos.append("chat")
                 self.assertEqual(nomes_extratos, ["0526_EXTBAN C6BANK_CAMARGOS"])
                 self.assertEqual(pdfs_sem_movimentacao, [])
@@ -798,6 +798,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 "0526_EXTBAN ITAU 45440-7 SM_CIAL.pdf - EMP/123_CIAL/MOV/CONT/26/05/EXT",
             ],
             pdfs_nao_legiveis=[],
+            atualizados_sge=0,
         )
         pdf_extractor.assert_not_called()
 
@@ -830,6 +831,7 @@ class ConversaoPasswordTest(unittest.TestCase):
             [],
             pdfs_sem_movimentacao=[],
             pdfs_nao_legiveis=[],
+            atualizados_sge=0,
         )
         pdf_extractor.assert_not_called()
 
@@ -871,6 +873,7 @@ class ConversaoPasswordTest(unittest.TestCase):
             [],
             pdfs_sem_movimentacao=[],
             pdfs_nao_legiveis=["[NAO LEGIVEL] - 0526_EXTBAN IMAGEM_CIAL.pdf"],
+            atualizados_sge=0,
         )
         dispatch.assert_not_called()
 
@@ -912,7 +915,169 @@ class ConversaoPasswordTest(unittest.TestCase):
                 "0526_EXTBAN NORMAL_CIAL.pdf - EMP/123_CIAL/MOV/CONT/26/05/EXT",
             ],
             pdfs_nao_legiveis=[],
+            atualizados_sge=0,
         )
+
+    def test_extrai_competencia_do_nome_do_arquivo(self):
+        resultado = conversao.extrair_competencia_nome_arquivo(
+            "0526_EXTBAN_NUBANK_AMP ENG_99287663-4.pdf"
+        )
+        self.assertEqual(resultado, "2026-05")
+
+    def test_extrai_competencia_dezembro(self):
+        resultado = conversao.extrair_competencia_nome_arquivo(
+            "1225_EXTBAN_ITAU_GRB_12345-6.pdf"
+        )
+        self.assertEqual(resultado, "2025-12")
+
+    def test_extrai_competencia_erro_nome_invalido(self):
+        with self.assertRaises(ValueError):
+            conversao.extrair_competencia_nome_arquivo("EXTBAN_NUBANK_AMP.pdf")
+
+    def test_extrai_codigo_documento_extban(self):
+        resultado = conversao.extrair_codigo_documento(
+            "0526_EXTBAN_NUBANK_AMP ENG_99287663-4.pdf"
+        )
+        self.assertEqual(resultado, "EXTBAN")
+
+    def test_extrai_codigo_documento_curto(self):
+        resultado = conversao.extrair_codigo_documento("0526_EXTBAN_.pdf")
+        self.assertEqual(resultado, "EXTBAN")
+
+    def test_extrai_codigo_documento_maiusculo(self):
+        resultado = conversao.extrair_codigo_documento(
+            "0526_extban_nubank_amp.pdf"
+        )
+        self.assertEqual(resultado, "EXTBAN")
+
+    def test_formatar_mensagem_com_sge(self):
+        mensagem = conversao.formatar_mensagem_google_chat(
+            ["0526_EXTBAN_NUBANK_AMP ENG_99287663-4"],
+            atualizados_sge=2,
+            momento=conversao.datetime(2026, 6, 19, 14, 30, 0),
+        )
+
+        self.assertIn("Baixa dada no portal SGE: 2 documento(s) atualizado(s)", mensagem)
+        self.assertIn("Extratos salvos 19/06/26 as 14:30", mensagem)
+
+    def test_formatar_mensagem_sge_zero_nao_aparece(self):
+        mensagem = conversao.formatar_mensagem_google_chat(
+            ["0526_EXTBAN_NUBANK_AMP ENG_99287663-4"],
+            atualizados_sge=0,
+            momento=conversao.datetime(2026, 6, 19, 14, 30, 0),
+        )
+
+        self.assertNotIn("SGE", mensagem)
+
+    def test_formatar_mensagem_sge_none_nao_aparece(self):
+        mensagem = conversao.formatar_mensagem_google_chat(
+            ["0526_EXTBAN_NUBANK_AMP ENG_99287663-4"],
+            momento=conversao.datetime(2026, 6, 19, 14, 30, 0),
+        )
+
+        self.assertNotIn("SGE", mensagem)
+
+    def test_enviar_notificacao_passa_sge(self):
+        class FakeResponse:
+            status_code = 200
+            text = "ok"
+
+        with patch.object(conversao.requests, "post", return_value=FakeResponse()) as post:
+            resultado = conversao.enviar_notificacao_google_chat(
+                ["0526_EXTBAN_NUBANK_AMP ENG_99287663-4"],
+                atualizados_sge=3,
+                momento=conversao.datetime(2026, 6, 19, 14, 30, 0),
+            )
+
+        self.assertTrue(resultado)
+        call_kwargs = post.call_args
+        mensagem_enviada = call_kwargs[1]["json"]["message"]
+        self.assertIn("Baixa dada no portal SGE: 3 documento(s) atualizado(s)", mensagem_enviada)
+
+    def test_fluxo_completo_chama_supabase(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_drive = FakeDrive(
+                temp_dir,
+                root_pdfs=[
+                    {
+                        "id": "pdf-1",
+                        "name": "0526_EXTBAN C6BANK_CAMARGOS.pdf",
+                        "mimeType": "application/pdf",
+                    }
+                ],
+            )
+
+            def copy_modelo(origem, destino):
+                Path(destino).write_bytes(b"modelo")
+
+            df = pd.DataFrame(
+                [{"DATA": "01/05/2026", "VALOR": 10.0, "TIPO": "C", "DESCRICAO": "PIX"}]
+            )
+
+            with (
+                patch.object(conversao, "GoogleDriveAuth", return_value=fake_drive),
+                patch.object(conversao, "carregar_empresas_ativas", return_value={"CAMARGOS": (23, "CAMARGOS")}),
+                patch.object(conversao, "pdf_possui_senha", return_value=False),
+                patch.object(conversao, "PDFExtractor") as pdf_extractor,
+                patch.object(conversao, "dispatch", return_value=df),
+                patch.object(conversao, "planilha_lancamento"),
+                patch.object(conversao.shutil, "copy2", side_effect=copy_modelo),
+                patch.object(conversao, "atualizar_controle_supabase", return_value=True) as mock_sge,
+                patch.object(conversao, "enviar_notificacao_google_chat") as notificacao,
+            ):
+                pdf_extractor.return_value.extract.return_value = ["texto extraido"]
+                conversao.executar_conversao()
+
+        mock_sge.assert_called_once()
+        call_kwargs = mock_sge.call_args[1]
+        self.assertEqual(call_kwargs["empresa_codigo"], "23")
+        self.assertEqual(call_kwargs["competencia"], "2026-05")
+        self.assertEqual(call_kwargs["codigo_documento"], "EXTBAN")
+        self.assertEqual(call_kwargs["quantidade_arquivos"], 3)
+        self.assertEqual(call_kwargs["nome_arquivo"], "0526_EXTBAN C6BANK_CAMARGOS.pdf")
+        self.assertIn("Google Drive /", call_kwargs["local_arquivo"])
+
+        notificacao.assert_called_once()
+        notificacao_kwargs = notificacao.call_args[1]
+        self.assertEqual(notificacao_kwargs["atualizados_sge"], 1)
+
+    def test_falha_sge_nao_quebra_fluxo(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_drive = FakeDrive(
+                temp_dir,
+                root_pdfs=[
+                    {
+                        "id": "pdf-1",
+                        "name": "0526_EXTBAN C6BANK_CAMARGOS.pdf",
+                        "mimeType": "application/pdf",
+                    }
+                ],
+            )
+
+            def copy_modelo(origem, destino):
+                Path(destino).write_bytes(b"modelo")
+
+            df = pd.DataFrame(
+                [{"DATA": "01/05/2026", "VALOR": 10.0, "TIPO": "C", "DESCRICAO": "PIX"}]
+            )
+
+            with (
+                patch.object(conversao, "GoogleDriveAuth", return_value=fake_drive),
+                patch.object(conversao, "carregar_empresas_ativas", return_value={"CAMARGOS": (23, "CAMARGOS")}),
+                patch.object(conversao, "pdf_possui_senha", return_value=False),
+                patch.object(conversao, "PDFExtractor") as pdf_extractor,
+                patch.object(conversao, "dispatch", return_value=df),
+                patch.object(conversao, "planilha_lancamento"),
+                patch.object(conversao.shutil, "copy2", side_effect=copy_modelo),
+                patch.object(conversao, "atualizar_controle_supabase", return_value=False),
+                patch.object(conversao, "enviar_notificacao_google_chat") as notificacao,
+            ):
+                pdf_extractor.return_value.extract.return_value = ["texto extraido"]
+                conversao.executar_conversao()
+
+        notificacao.assert_called_once()
+        notificacao_kwargs = notificacao.call_args[1]
+        self.assertEqual(notificacao_kwargs["atualizados_sge"], 0)
 
 
 if __name__ == "__main__":

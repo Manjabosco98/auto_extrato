@@ -23,6 +23,7 @@ from src.app.gdrive.settings import (
     XLSM_MIME_TYPE,
     GOOGLE_OAUTH_TOKEN_SECRET
 )
+from src.app.supabase.supabase_api import atualizar_controle_supabase
 from src.schemas import LayoutNotRecognized, dispatch
 from src.schemas.parsers.pdf_extractor import PDFExtractor
 from src.utils.helpers import planilha_lancamento, remover_senha_pdf, totalizador
@@ -56,6 +57,7 @@ def formatar_mensagem_google_chat(
     nomes_extratos: list[str],
     pdfs_sem_movimentacao: list[str] | None = None,
     pdfs_nao_legiveis: list[str] | None = None,
+    atualizados_sge: int | None = None,
     momento: datetime | None = None,
 ) -> str:
     momento = momento or agora_historico()
@@ -86,6 +88,11 @@ def formatar_mensagem_google_chat(
             f"{lista_nao_legiveis}"
         )
 
+    if atualizados_sge is not None and atualizados_sge > 0:
+        blocos.append(
+            f"Baixa dada no portal SGE: {atualizados_sge} documento(s) atualizado(s)"
+        )
+
     return "\n\n".join(blocos)
 
 
@@ -93,6 +100,7 @@ def enviar_notificacao_google_chat(
     nomes_extratos: list[str],
     pdfs_sem_movimentacao: list[str] | None = None,
     pdfs_nao_legiveis: list[str] | None = None,
+    atualizados_sge: int | None = None,
     momento: datetime | None = None,
 ) -> bool:
     pdfs_sem_movimentacao = pdfs_sem_movimentacao or []
@@ -106,6 +114,7 @@ def enviar_notificacao_google_chat(
         nomes_extratos,
         pdfs_sem_movimentacao=pdfs_sem_movimentacao,
         pdfs_nao_legiveis=pdfs_nao_legiveis,
+        atualizados_sge=atualizados_sge,
         momento=momento,
     )
     payload = {
@@ -263,6 +272,27 @@ def normalizar_id_empresa(empresa_id) -> str:
         return str(int(empresa_id))
 
     return str(empresa_id).strip()
+
+
+def extrair_competencia_nome_arquivo(nome_arquivo: str) -> str:
+    stem = Path(nome_arquivo).stem
+    prefixo = stem.split("_", maxsplit=1)[0]
+    match = re.match(r"^(?P<mes>\d{2})(?P<ano>\d{2})$", prefixo)
+
+    if not match:
+        raise ValueError(f"Arquivo sem periodo MMAA valido: {nome_arquivo}")
+
+    return f"20{match.group('ano')}-{match.group('mes')}"
+
+
+def extrair_codigo_documento(nome_arquivo: str) -> str:
+    partes = Path(nome_arquivo).stem.split("_")
+
+    if len(partes) < 2:
+        return "EXTBAN"
+
+    cod_doc = partes[1].strip().upper().split()[0]
+    return cod_doc
 
 
 def nome_pasta_empresa(empresa_id, empresa_nome: str) -> str:
@@ -835,6 +865,7 @@ def executar_conversao():
     extratos_notificacao = []
     pdfs_sem_movimentacao_notificacao = []
     pdfs_nao_legiveis_notificacao = []
+    documentos_convertidos = []
 
     for arquivo_drive in arquivos:
         arquivo_id = arquivo_drive["id"]
@@ -1003,6 +1034,15 @@ def executar_conversao():
                 empresa_nome=empresa_nome,
             )
 
+            documentos_convertidos.append({
+                "empresa_id": empresa_id,
+                "mes": extrair_periodo_nome_arquivo(arquivo_nome)[0],
+                "ano": extrair_periodo_nome_arquivo(arquivo_nome)[1],
+                "arquivo_nome": arquivo_nome,
+                "pasta_destino": pasta_destino_historico,
+                "momento": momento_conversao,
+            })
+
             convertidos += 1
             extratos_notificacao.append(arquivo_stem)
             logger.info("PDF convertido com sucesso: %s", arquivo_nome)
@@ -1025,17 +1065,45 @@ def executar_conversao():
         temp_dir=temp_dir,
     )
 
+    logger.info("Atualizando controle no portal SGE para %s documento(s)", len(documentos_convertidos))
+    atualizados_sge = 0
+    erros_sge = 0
+
+    for doc in documentos_convertidos:
+        try:
+            competencia = extrair_competencia_nome_arquivo(doc["arquivo_nome"])
+            cod_doc = extrair_codigo_documento(doc["arquivo_nome"])
+            local = f"Google Drive / {doc['pasta_destino']}"
+            sucesso = atualizar_controle_supabase(
+                empresa_codigo=str(doc["empresa_id"]),
+                competencia=competencia,
+                codigo_documento=cod_doc,
+                data_recebimento=doc["momento"].strftime("%Y-%m-%d"),
+                quantidade_arquivos=3,
+                nome_arquivo=doc["arquivo_nome"],
+                local_arquivo=local,
+            )
+            if sucesso:
+                atualizados_sge += 1
+            else:
+                erros_sge += 1
+        except Exception:
+            erros_sge += 1
+            logger.exception("Erro ao atualizar controle no SGE: %s", doc["arquivo_nome"])
+
     enviar_notificacao_google_chat(
         extratos_notificacao,
         pdfs_sem_movimentacao=pdfs_sem_movimentacao_notificacao,
         pdfs_nao_legiveis=pdfs_nao_legiveis_notificacao,
+        atualizados_sge=atualizados_sge,
     )
 
     logger.info(
         (
             "Fluxo de conversao concluido. "
             "Processados=%s Convertidos=%s SemMovimentacao=%s Invalidos=%s Ignorados=%s ComSenha=%s "
-            "Desbloqueados=%s SenhasIgnoradas=%s SenhasErros=%s"
+            "Desbloqueados=%s SenhasIgnoradas=%s SenhasErros=%s "
+            "AtualizadosSGE=%s ErrosSGE=%s"
         ),
         processados,
         convertidos,
@@ -1046,6 +1114,8 @@ def executar_conversao():
         resultado_senhas["desbloqueados"],
         resultado_senhas["ignorados"],
         resultado_senhas["erros"],
+        atualizados_sge,
+        erros_sge,
     )
 
 
