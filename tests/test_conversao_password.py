@@ -162,6 +162,34 @@ class ConversaoPasswordTest(unittest.TestCase):
 
         self.assertEqual(resultado, "CAMARGOS")
 
+    def test_extrai_cliente_com_agencia(self):
+        resultado = conversao.extrair_cliente_nome_arquivo(
+            "0126_EXTBAN_ITAU_ACAO_AG 2903_CC 99019-6.pdf"
+        )
+
+        self.assertEqual(resultado, "ACAO")
+
+    def test_extrai_cliente_com_agencia_e_sm(self):
+        resultado = conversao.extrair_cliente_nome_arquivo(
+            "0526_EXTBAN_NUBANK_SM_AMP ENG_AG XXX_CC 99287663-4.pdf"
+        )
+
+        self.assertEqual(resultado, "AMP ENG")
+
+    def test_extrai_cliente_com_agencia_e_senha(self):
+        resultado = conversao.extrair_cliente_nome_arquivo(
+            "0526_EXTBAN_NUBANK_SENHA XXXX_AMP ENG_AG XXX_CC 99287663-4.pdf"
+        )
+
+        self.assertEqual(resultado, "AMP ENG")
+
+    def test_extrai_cliente_com_agencia_e_senha_sm(self):
+        resultado = conversao.extrair_cliente_nome_arquivo(
+            "0526_EXTBAN_NUBANK_SENHA XXXX_SM_AMP ENG_AG XXX_CC 99287663-4.pdf"
+        )
+
+        self.assertEqual(resultado, "AMP ENG")
+
     def test_extrai_banco_do_nome_do_pdf(self):
         resultado = conversao.extrair_banco_nome_arquivo(
             "0526_EXTBAN SICOOB_SILVA.pdf"

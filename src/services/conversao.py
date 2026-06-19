@@ -226,6 +226,11 @@ def normalizar_cabecalho_base(valor) -> str:
 def extrair_cliente_nome_arquivo(nome_arquivo: str) -> str:
     stem = Path(nome_arquivo).stem
     partes = [parte.strip() for parte in stem.split("_") if parte.strip()]
+
+    for i, parte in enumerate(partes):
+        if parte.upper().startswith("AG ") or parte.upper() == "AG":
+            return partes[i - 1] if i > 0 else stem.strip()
+
     return partes[-1] if partes else stem.strip()
 
 
