@@ -13,7 +13,7 @@ from src.services import conversao
 
 
 class FakeDrive:
-    def __init__(self, temp_dir, root_pdfs=None, password_pdfs=None):
+    def __init__(self, temp_dir, root_pdfs=None, password_pdfs=None, existing_folders=None):
         self.temp_dir = Path(temp_dir)
         self.root_pdfs = root_pdfs if root_pdfs is not None else [
             {
@@ -32,10 +32,19 @@ class FakeDrive:
         self.history_rows = []
         self.folders = []
         self.pdfs_calls = []
+        self._existing_folders = existing_folders or set()
 
     def get_or_create_folder(self, folder_id_pai, name_folder):
         self.folders.append((folder_id_pai, name_folder))
         return {"id": f"id-{name_folder}", "name": name_folder}
+
+    def list_folder_by_name(self, folder_id, name_folder):
+        for pai, nome in self.folders:
+            if pai == folder_id and nome == name_folder:
+                return {"id": f"id-{name_folder}", "name": name_folder}
+        if (folder_id, name_folder) in self._existing_folders:
+            return {"id": f"id-{name_folder}", "name": name_folder}
+        return None
 
     def get_file_info(self, file_id):
         raise AssertionError("get_file_info nao deve ser chamado para resolver SRVARQ > EMP")
@@ -632,6 +641,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                         "mimeType": "application/pdf",
                     }
                 ],
+                existing_folders={("id-EMP", "23_CAMARGOS")},
             )
             eventos = []
 
@@ -699,7 +709,7 @@ class ConversaoPasswordTest(unittest.TestCase):
         self.assertIn((conversao.GOOGLE_DRIVE_FOLDER_ID, "PDFS_COM_SENHAS"), fake_drive.folders)
         self.assertIn(("id-EXT", conversao.PDF_MIME_TYPE), fake_drive.pdfs_calls)
         self.assertIn((conversao.GOOGLE_DRIVE_EMP_FOLDER_ID, "EMP"), fake_drive.folders)
-        self.assertIn(("id-EMP", "23_CAMARGOS"), fake_drive.folders)
+        self.assertIn(("id-MOV", "CONT"), fake_drive.folders)
 
     def test_processa_pdf_com_senha_e_limpa_pasta_vazia(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -802,6 +812,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                         "mimeType": "application/pdf",
                     }
                 ],
+                existing_folders={("id-EMP", "123_CIAL")},
             )
 
             with (
@@ -917,6 +928,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                         "mimeType": "application/pdf",
                     }
                 ],
+                existing_folders={("id-EMP", "123_CIAL")},
             )
 
             with (
@@ -1034,6 +1046,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                         "mimeType": "application/pdf",
                     }
                 ],
+                existing_folders={("id-EMP", "23_CAMARGOS")},
             )
 
             def copy_modelo(origem, destino):
@@ -1081,6 +1094,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                         "mimeType": "application/pdf",
                     }
                 ],
+                existing_folders={("id-EMP", "23_CAMARGOS")},
             )
 
             def copy_modelo(origem, destino):
@@ -1215,6 +1229,89 @@ class ConversaoPasswordTest(unittest.TestCase):
 
         self.assertFalse(resultado)
         mock_put.assert_not_called()
+
+    def test_extrai_senha_com_underscore_antes_de_senha(self):
+        resultado = conversao.extrair_senha_nome_pdf(
+            "0526_EXTBAN_C6BANK_SENHA 663861_ SM_METRIKAL_AG 1_CC 421987570.pdf"
+        )
+
+        self.assertIsNotNone(resultado)
+        senha, nome_limpo = resultado
+        self.assertEqual(senha, "663861")
+        self.assertEqual(nome_limpo, "0526_EXTBAN_C6BANK_ SM_METRIKAL_AG 1_CC 421987570.pdf")
+
+    def test_extrai_senha_com_underscore_e_barra_baixo(self):
+        resultado = conversao.extrair_senha_nome_pdf(
+            "0526_EXTBAN_C6BANK_SENHA 123456_GRB.pdf"
+        )
+
+        self.assertIsNotNone(resultado)
+        senha, nome_limpo = resultado
+        self.assertEqual(senha, "123456")
+
+    def test_resolver_pasta_destino_emp_erro_pasta_cliente_nao_existe(self):
+        fake_drive = FakeDrive(
+            "dummy",
+            existing_folders=set(),
+        )
+
+        with self.assertRaises(ValueError) as ctx:
+            conversao.resolver_pasta_destino_emp(
+                google_drive=fake_drive,
+                pasta_emp_id="id-EMP",
+                arquivo_nome="0526_EXTBAN C6BANK_CAMARGOS.pdf",
+                empresa_id=23,
+                empresa_nome="CAMARGOS",
+            )
+
+        self.assertIn("23_CAMARGOS", str(ctx.exception))
+
+    def test_resolver_pasta_destino_emp_funciona_pasta_existente(self):
+        fake_drive = FakeDrive(
+            "dummy",
+            existing_folders={("id-EMP", "23_CAMARGOS")},
+        )
+
+        pasta_id, caminho = conversao.resolver_pasta_destino_emp(
+            google_drive=fake_drive,
+            pasta_emp_id="id-EMP",
+            arquivo_nome="0526_EXTBAN C6BANK_CAMARGOS.pdf",
+            empresa_id=23,
+            empresa_nome="CAMARGOS",
+        )
+
+        self.assertEqual(pasta_id, "id-EXT")
+        self.assertEqual(caminho, "EMP/23_CAMARGOS/MOV/CONT/26/05/EXT")
+
+    def test_processar_pdfs_com_senha_aguarda_consistencia(self):
+        from unittest.mock import call
+
+        fake_drive = FakeDrive(
+            "dummy",
+            password_pdfs=[
+                {
+                    "id": "pw-1",
+                    "name": "0526_EXTBAN C6BANK SENHA 123456_GRB.pdf",
+                    "mimeType": "application/pdf",
+                }
+            ],
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with (
+                patch.object(conversao, "remover_senha_pdf") as mock_remover,
+                patch("src.services.conversao.time.sleep") as mock_sleep,
+            ):
+                mock_remover.side_effect = ValueError("Senha invalida")
+                resultado = conversao.processar_pdfs_com_senha(
+                    google_drive=fake_drive,
+                    pasta_pdfs_com_senhas_id="id-PDFS_COM_SENHAS",
+                    pasta_raiz_id="root",
+                    temp_dir=Path(temp_dir),
+                )
+
+        self.assertEqual(resultado["erros"], 1)
+        self.assertEqual(fake_drive.pdfs_calls[0][0], "id-PDFS_COM_SENHAS")
 
 
 if __name__ == "__main__":

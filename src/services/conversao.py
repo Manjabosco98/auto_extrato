@@ -1,6 +1,7 @@
 import logging
 import re
 import shutil
+import time
 import unicodedata
 from datetime import datetime
 from pathlib import Path
@@ -173,7 +174,7 @@ def pdf_possui_senha(pdf_path: Path) -> bool:
 def extrair_senha_nome_pdf(nome_arquivo: str) -> tuple[str, str] | None:
     caminho = Path(nome_arquivo)
     match = re.match(
-        r"^(?P<prefixo>.+?)\s+SENHA\s+(?P<senha>[^\s_]+)(?P<sufixo>.*)$",
+        r"^(?P<prefixo>.+?)[\s_]+SENHA\s+(?P<senha>[^\s_]+)(?P<sufixo>.*)$",
         caminho.stem,
         flags=re.IGNORECASE,
     )
@@ -426,11 +427,22 @@ def resolver_pasta_destino_emp(
     caminho_partes = ["EMP", nome_cliente, "MOV", "CONT", ano, mes, "EXT"]
     pasta_atual_id = pasta_emp_id
 
-    for nome_pasta in caminho_partes[1:]:
-        pasta_atual = google_drive.get_or_create_folder(
-            folder_id_pai=pasta_atual_id,
-            name_folder=nome_pasta,
-        )
+    for i, nome_pasta in enumerate(caminho_partes[1:]):
+        if i == 0:
+            pasta_atual = google_drive.list_folder_by_name(
+                folder_id=pasta_atual_id,
+                name_folder=nome_pasta,
+            )
+            if not pasta_atual:
+                raise ValueError(
+                    f"Pasta de cliente '{nome_cliente}' nao encontrada em EMP. "
+                    "A pasta deve existir previamente no Google Drive."
+                )
+        else:
+            pasta_atual = google_drive.get_or_create_folder(
+                folder_id_pai=pasta_atual_id,
+                name_folder=nome_pasta,
+            )
         pasta_atual_id = pasta_atual["id"]
 
     return pasta_atual_id, "/".join(caminho_partes)
@@ -589,10 +601,22 @@ def processar_pdfs_com_senha(
 ) -> dict[str, int]:
     logger.info("Verificando pasta PDFS_COM_SENHAS para desbloqueio")
 
-    arquivos = google_drive.pdfs(
-        folder_id=pasta_pdfs_com_senhas_id,
-        pdf_type=PDF_MIME_TYPE,
-    )
+    arquivos = []
+    max_tentativas = 3
+    for tentativa in range(1, max_tentativas + 1):
+        arquivos = google_drive.pdfs(
+            folder_id=pasta_pdfs_com_senhas_id,
+            pdf_type=PDF_MIME_TYPE,
+        )
+        if arquivos:
+            break
+        if tentativa < max_tentativas:
+            logger.info(
+                "PDFS_COM_SENHAS vazia (tentativa %s/%s). Aguardando 2s...",
+                tentativa,
+                max_tentativas,
+            )
+            time.sleep(2)
 
     if not arquivos:
         logger.info("Pasta PDFS_COM_SENHAS sem PDFs para desbloquear")

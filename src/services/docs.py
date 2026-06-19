@@ -149,11 +149,22 @@ def resolver_pasta_destino_docs(
 ) -> tuple[str, str]:
     pasta_atual_id = emp_folder_id
 
-    for nome_pasta in destino_partes:
-        pasta = google_drive.get_or_create_folder(
-            folder_id_pai=pasta_atual_id,
-            name_folder=nome_pasta,
-        )
+    for i, nome_pasta in enumerate(destino_partes):
+        if i == 0:
+            pasta = google_drive.list_folder_by_name(
+                folder_id=pasta_atual_id,
+                name_folder=nome_pasta,
+            )
+            if not pasta:
+                raise ValueError(
+                    f"Pasta de cliente '{nome_pasta}' nao encontrada em EMP. "
+                    "A pasta deve existir previamente no Google Drive."
+                )
+        else:
+            pasta = google_drive.get_or_create_folder(
+                folder_id_pai=pasta_atual_id,
+                name_folder=nome_pasta,
+            )
         pasta_atual_id = pasta["id"]
 
     return pasta_atual_id, "/".join(["EMP", *destino_partes])

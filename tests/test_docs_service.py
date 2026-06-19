@@ -12,7 +12,7 @@ from src.services import docs
 
 
 class FakeDriveDocs:
-    def __init__(self, temp_dir):
+    def __init__(self, temp_dir, existing_folders=None):
         self.temp_dir = Path(temp_dir)
         self.children = [
             {
@@ -28,6 +28,7 @@ class FakeDriveDocs:
         self.history_rows = []
         self.history_file = None
         self.caminhos_content = self._build_caminhos_content()
+        self._existing_folders = existing_folders or set()
 
     def _build_caminhos_content(self):
         caminho = self.temp_dir / docs.DOCS_CAMINHO_NAME
@@ -41,6 +42,14 @@ class FakeDriveDocs:
     def get_or_create_folder(self, folder_id_pai, name_folder):
         self.folders.append((folder_id_pai, name_folder))
         return {"id": f"id-{name_folder}", "name": name_folder}
+
+    def list_folder_by_name(self, folder_id, name_folder):
+        for pai, nome in self.folders:
+            if pai == folder_id and nome == name_folder:
+                return {"id": f"id-{name_folder}", "name": name_folder}
+        if (folder_id, name_folder) in self._existing_folders:
+            return {"id": f"id-{name_folder}", "name": name_folder}
+        return None
 
     def find_file_by_name(self, folder_id, name, mime_type=None):
         if name == docs.DOCS_CAMINHO_NAME:
@@ -178,7 +187,10 @@ class DocsServiceTest(unittest.TestCase):
 
     def test_executar_docs_move_arquivo_registra_historico_e_notifica(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            fake_drive = FakeDriveDocs(temp_dir)
+            fake_drive = FakeDriveDocs(
+                temp_dir,
+                existing_folders={("id-EMP", "196_BRITO")},
+            )
 
             with (
                 patch.object(docs, "GoogleDriveAuth", return_value=fake_drive),
@@ -194,9 +206,8 @@ class DocsServiceTest(unittest.TestCase):
         self.assertIn(("root-folder", "DOCS"), fake_drive.folders)
         self.assertIn(("srvarq-folder", "EMP"), fake_drive.folders)
         self.assertEqual(
-            fake_drive.folders[-6:],
+            fake_drive.folders[-5:],
             [
-                ("id-EMP", "196_BRITO"),
                 ("id-196_BRITO", "MOV"),
                 ("id-MOV", "CONT"),
                 ("id-CONT", "26"),
