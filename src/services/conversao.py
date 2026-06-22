@@ -1,10 +1,11 @@
 import logging
 import re
 import shutil
-import time
 import unicodedata
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 import requests
@@ -27,6 +28,11 @@ from src.app.gdrive.settings import (
 from src.app.supabase.supabase_api import atualizar_controle_supabase
 from src.schemas import LayoutNotRecognized, dispatch
 from src.schemas.parsers.pdf_extractor import PDFExtractor
+from src.services.chat_notifications import (
+    GOOGLE_CHAT_SEND_URL,
+    GOOGLE_CHAT_SPACE_NAME,
+    registrar_e_enviar_notificacao,
+)
 from src.utils.helpers import planilha_lancamento, remover_senha_pdf, totalizador
 from src.utils.logging_config import setup_logging
 
@@ -36,7 +42,17 @@ logger = logging.getLogger(__name__)
 SEM_MOV_PREFIX = "[SEM MOV] - "
 SEM_IMAGEM_PREFIX = "[SEM IMAGEM] - "
 NAO_LEGIVEL_PREFIX = "[NAO LEGIVEL] - "
-PREFIXOS_INVALIDOS = (SEM_MOV_PREFIX, SEM_IMAGEM_PREFIX, NAO_LEGIVEL_PREFIX)
+NOME_INVALIDO_PREFIX = "[NOME INVALIDO] - "
+ERRO_SENHA_PREFIX = "[ERRO SENHA] - "
+LAYOUT_INVALIDO_PREFIX = "[LAYOUT NAO RECONHECIDO] - "
+PREFIXOS_INVALIDOS = (
+    SEM_MOV_PREFIX,
+    SEM_IMAGEM_PREFIX,
+    NAO_LEGIVEL_PREFIX,
+    NOME_INVALIDO_PREFIX,
+    ERRO_SENHA_PREFIX,
+    LAYOUT_INVALIDO_PREFIX,
+)
 HISTORICO_CONVERSOES = "HISTORICO_CONVERSOES.xlsx"
 TIMEZONE_HISTORICO = ZoneInfo("America/Sao_Paulo")
 HISTORICO_HEADERS = ("ID", "EMP", "DATA", "HORA", "NOME ARQUIVO", "PASTA DESTINO", "DATA HORA MOVIMENTO", "BANCO")
@@ -46,8 +62,29 @@ HISTORICO_HEADERS_SEM_MOVIMENTO = ("ID", "EMP", "DATA", "HORA", "NOME ARQUIVO", 
 HISTORICO_HEADERS_ANTIGO = ("nome_arquivo", "data_hora_conversao", "pasta_destino")
 BASE_EMP_ATIVAS = Path.cwd() / "data" / "BaseEmpAtivas.xlsm"
 BASE_EMP_ATIVAS_SHEET = "EmpAtivas"
-GOOGLE_CHAT_SEND_URL = "https://google-chat-api.onrender.com/google-chat/send"
-GOOGLE_CHAT_SPACE_NAME = "spaces/AAQAQEHQc-k"
+MODELO_LANCAMENTOS = Path.cwd() / "data" / "Lancamentos_Contabeis.xlsm"
+
+
+@dataclass(frozen=True)
+class NomeExtrato:
+    nome_original: str
+    nome_limpo: str
+    mes: str
+    ano: str
+    competencia: str
+    codigo_documento: str
+    banco: str
+    senha: str | None
+    sem_movimentacao: bool
+    empresa: str
+    agencia: str
+    conta: str
+
+    @property
+    def nome_lancamento(self) -> str:
+        partes = Path(self.nome_limpo).stem.split("_")
+        partes[1] = "LANCBAN"
+        return "_".join(partes) + ".xlsm"
 
 
 def agora_historico() -> datetime:
@@ -60,10 +97,18 @@ def formatar_mensagem_google_chat(
     pdfs_nao_legiveis: list[str] | None = None,
     atualizados_sge: int | None = None,
     momento: datetime | None = None,
+    nomes_invalidos: list[str] | None = None,
+    erros_senha: list[str] | None = None,
+    layouts_nao_reconhecidos: list[str] | None = None,
+    erros_processamento: list[str] | None = None,
 ) -> str:
     momento = momento or agora_historico()
     pdfs_sem_movimentacao = pdfs_sem_movimentacao or []
     pdfs_nao_legiveis = pdfs_nao_legiveis or []
+    nomes_invalidos = nomes_invalidos or []
+    erros_senha = erros_senha or []
+    layouts_nao_reconhecidos = layouts_nao_reconhecidos or []
+    erros_processamento = erros_processamento or []
     blocos = []
 
     if nomes_extratos:
@@ -89,6 +134,15 @@ def formatar_mensagem_google_chat(
             f"{lista_nao_legiveis}"
         )
 
+    for titulo, itens in (
+        ("PDFs com nome invalido movidos para 00_INVALIDOS:", nomes_invalidos),
+        ("PDFs com erro de senha movidos para 00_INVALIDOS:", erros_senha),
+        ("PDFs com layout nao reconhecido movidos para 00_INVALIDOS:", layouts_nao_reconhecidos),
+        ("PDFs com erro de processamento:", erros_processamento),
+    ):
+        if itens:
+            blocos.append(f"{titulo}\n\n" + "\n".join(itens))
+
     if atualizados_sge is not None and atualizados_sge > 0:
         blocos.append(
             f"Baixa dada no portal SGE: {atualizados_sge} documento(s) atualizado(s)"
@@ -103,12 +157,81 @@ def enviar_notificacao_google_chat(
     pdfs_nao_legiveis: list[str] | None = None,
     atualizados_sge: int | None = None,
     momento: datetime | None = None,
+    nomes_invalidos: list[str] | None = None,
+    erros_senha: list[str] | None = None,
+    layouts_nao_reconhecidos: list[str] | None = None,
+    erros_processamento: list[str] | None = None,
+    google_drive=None,
+    pasta_raiz_id: str | None = None,
+    execucao_id: str | None = None,
+    tipo: str = "CONCLUSAO",
+    status_execucao: str | None = None,
+    total_processados: int = 0,
+    total_convertidos: int = 0,
+    total_sem_movimentacao: int = 0,
+    total_invalidos: int = 0,
+    total_desbloqueados: int = 0,
+    erros_sge: int = 0,
 ) -> bool:
     pdfs_sem_movimentacao = pdfs_sem_movimentacao or []
     pdfs_nao_legiveis = pdfs_nao_legiveis or []
+    nomes_invalidos = nomes_invalidos or []
+    erros_senha = erros_senha or []
+    layouts_nao_reconhecidos = layouts_nao_reconhecidos or []
+    erros_processamento = erros_processamento or []
 
-    if not nomes_extratos and not pdfs_sem_movimentacao and not pdfs_nao_legiveis:
-        logger.info("Notificacao Google Chat nao enviada: nenhum PDF convertido, sem movimentacao ou nao legivel")
+    if execucao_id:
+        momento = momento or agora_historico()
+        detalhes = formatar_mensagem_google_chat(
+            nomes_extratos,
+            pdfs_sem_movimentacao=pdfs_sem_movimentacao,
+            pdfs_nao_legiveis=pdfs_nao_legiveis,
+            atualizados_sge=atualizados_sge,
+            momento=momento,
+            nomes_invalidos=nomes_invalidos,
+            erros_senha=erros_senha,
+            layouts_nao_reconhecidos=layouts_nao_reconhecidos,
+            erros_processamento=erros_processamento,
+        )
+        status_execucao = status_execucao or "SUCESSO"
+        resumo = (
+            f"Execucao: {execucao_id}\n"
+            f"Data/hora: {momento.strftime('%d/%m/%Y %H:%M:%S')}\n"
+            f"Status: {status_execucao}\n\n"
+            "Resumo:\n"
+            f"- Processados: {total_processados}\n"
+            f"- Convertidos: {total_convertidos}\n"
+            f"- Sem movimentacao: {total_sem_movimentacao}\n"
+            f"- Invalidos: {total_invalidos}\n"
+            f"- Desbloqueados: {total_desbloqueados}\n"
+            f"- Atualizados no SGE: {atualizados_sge or 0}\n"
+            f"- Erros no SGE: {erros_sge}"
+        )
+        if detalhes:
+            resumo = f"{resumo}\n\n{detalhes}"
+        elif tipo == "SEM_ARQUIVOS":
+            resumo = f"{resumo}\n\nNenhum PDF encontrado na pasta EXT."
+
+        return registrar_e_enviar_notificacao(
+            google_drive=google_drive,
+            pasta_raiz_id=pasta_raiz_id or GOOGLE_DRIVE_FOLDER_ID,
+            execucao_id=execucao_id,
+            tipo=tipo,
+            mensagem=resumo,
+        )
+
+    if not any(
+        (
+            nomes_extratos,
+            pdfs_sem_movimentacao,
+            pdfs_nao_legiveis,
+            nomes_invalidos,
+            erros_senha,
+            layouts_nao_reconhecidos,
+            erros_processamento,
+        )
+    ):
+        logger.info("Notificacao Google Chat nao enviada: nenhum resultado para informar")
         return False
 
     mensagem = formatar_mensagem_google_chat(
@@ -117,6 +240,10 @@ def enviar_notificacao_google_chat(
         pdfs_nao_legiveis=pdfs_nao_legiveis,
         atualizados_sge=atualizados_sge,
         momento=momento,
+        nomes_invalidos=nomes_invalidos,
+        erros_senha=erros_senha,
+        layouts_nao_reconhecidos=layouts_nao_reconhecidos,
+        erros_processamento=erros_processamento,
     )
     payload = {
         "space_name": GOOGLE_CHAT_SPACE_NAME,
@@ -163,41 +290,122 @@ def enviar_notificacao_google_chat(
 
 
 def pdf_possui_senha(pdf_path: Path) -> bool:
-    try:
-        reader = PdfReader(str(pdf_path))
-        return bool(reader.is_encrypted)
-    except Exception:
-        logger.exception("Erro ao verificar se PDF possui senha: %s", pdf_path)
-        return False
+    reader = PdfReader(str(pdf_path))
+    return bool(reader.is_encrypted)
+
+
+def sanitizar_nome_senha(nome_arquivo: str) -> str:
+    """Remove o segmento SENHA e seu valor para não propagar credenciais."""
+    caminho = Path(nome_arquivo)
+    partes = caminho.stem.split("_")
+    partes_limpas = [
+        parte.strip()
+        for parte in partes
+        if not re.match(r"^SENHA(?:\s+.*)?$", parte.strip(), flags=re.IGNORECASE)
+    ]
+    return "_".join(partes_limpas) + caminho.suffix
+
+
+def interpretar_nome_extrato(nome_arquivo: str) -> NomeExtrato:
+    caminho = Path(nome_arquivo)
+    if caminho.suffix.lower() != ".pdf":
+        raise ValueError("Arquivo nao possui extensao PDF")
+
+    partes = [parte.strip() for parte in caminho.stem.split("_")]
+    if len(partes) < 6 or any(not parte for parte in partes):
+        raise ValueError("Nome fora do padrao de segmentos esperado")
+
+    periodo, codigo_documento, banco = partes[:3]
+    periodo_match = re.fullmatch(r"(?P<mes>\d{2})(?P<ano>\d{2})", periodo)
+    if not periodo_match:
+        raise ValueError("Competencia deve seguir o formato MMAA")
+    if codigo_documento.upper() != "EXTBAN":
+        raise ValueError("Codigo do documento deve ser EXTBAN")
+    if not banco:
+        raise ValueError("Banco ausente no nome")
+
+    indice = 3
+    senha = None
+    senha_match = re.fullmatch(
+        r"SENHA(?:\s+(?P<senha>[^\s_]+))?",
+        partes[indice],
+        flags=re.IGNORECASE,
+    )
+    if senha_match:
+        senha = senha_match.group("senha")
+        if not senha:
+            raise ValueError("Segmento SENHA sem valor")
+        indice += 1
+
+    sem_movimentacao = indice < len(partes) and partes[indice].upper() == "SM"
+    if sem_movimentacao:
+        indice += 1
+
+    if len(partes) != indice + 3:
+        raise ValueError("Nome deve terminar com EMPRESA_AG AGENCIA_CC CONTA")
+
+    empresa = partes[indice]
+    agencia_match = re.fullmatch(r"AG\s+(.+)", partes[indice + 1], flags=re.IGNORECASE)
+    conta_match = re.fullmatch(r"CC\s+(.+)", partes[indice + 2], flags=re.IGNORECASE)
+    if not empresa or not agencia_match or not conta_match:
+        raise ValueError("Empresa, agencia ou conta ausente no nome")
+
+    partes_limpas = partes[:3]
+    if sem_movimentacao:
+        partes_limpas.append("SM")
+    partes_limpas.extend(partes[indice:])
+    nome_limpo = "_".join(partes_limpas) + caminho.suffix
+    mes = periodo_match.group("mes")
+    ano = periodo_match.group("ano")
+
+    return NomeExtrato(
+        nome_original=nome_arquivo,
+        nome_limpo=nome_limpo,
+        mes=mes,
+        ano=ano,
+        competencia=f"20{ano}-{mes}",
+        codigo_documento=codigo_documento.upper(),
+        banco=banco.upper(),
+        senha=senha,
+        sem_movimentacao=sem_movimentacao,
+        empresa=empresa,
+        agencia=agencia_match.group(1).strip(),
+        conta=conta_match.group(1).strip(),
+    )
 
 
 def extrair_senha_nome_pdf(nome_arquivo: str) -> tuple[str, str] | None:
-    caminho = Path(nome_arquivo)
-    match = re.match(
-        r"^(?P<prefixo>.+?)[\s_]+SENHA\s+(?P<senha>[^\s_]+)(?P<sufixo>.*)$",
-        caminho.stem,
-        flags=re.IGNORECASE,
-    )
+    try:
+        dados = interpretar_nome_extrato(nome_arquivo)
+    except ValueError:
+        caminho = Path(nome_arquivo)
+        match = re.match(
+            r"^(?P<prefixo>.+?)[\s_]+SENHA\s+(?P<senha>[^\s_]+)(?P<sufixo>.*)$",
+            caminho.stem,
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            return None
+        senha = match.group("senha").strip()
+        sufixo = match.group("sufixo").strip()
+        nome_limpo_stem = match.group("prefixo").rstrip()
+        if sufixo.startswith("_"):
+            nome_limpo_stem = f"{nome_limpo_stem}{sufixo}"
+        elif sufixo:
+            nome_limpo_stem = f"{nome_limpo_stem} {sufixo}"
+        return senha, f"{nome_limpo_stem}{caminho.suffix}"
 
-    if not match:
+    if not dados.senha:
         return None
-
-    senha = match.group("senha").strip()
-    sufixo = match.group("sufixo").strip()
-    nome_limpo_stem = match.group("prefixo").rstrip()
-
-    if sufixo.startswith("_"):
-        nome_limpo_stem = f"{nome_limpo_stem}{sufixo}"
-    elif sufixo:
-        nome_limpo_stem = f"{nome_limpo_stem} {sufixo}"
-
-    nome_limpo = f"{nome_limpo_stem}{caminho.suffix}"
-    return senha, nome_limpo
+    return dados.senha, dados.nome_limpo
 
 
 def nome_indica_sem_movimentacao(nome_arquivo: str) -> bool:
-    stem = Path(nome_arquivo).stem.upper()
-    return bool(re.search(r"(^|[\s_-])SM_", stem))
+    try:
+        return interpretar_nome_extrato(nome_arquivo).sem_movimentacao
+    except ValueError:
+        partes = [parte.strip().upper() for parte in Path(nome_arquivo).stem.split("_")]
+        return "SM" in partes
 
 
 def nome_com_prefixo_invalido(nome_arquivo: str, prefixo: str) -> str:
@@ -225,6 +433,11 @@ def normalizar_cabecalho_base(valor) -> str:
 
 
 def extrair_cliente_nome_arquivo(nome_arquivo: str) -> str:
+    try:
+        return interpretar_nome_extrato(nome_arquivo).empresa
+    except ValueError:
+        pass
+
     stem = Path(nome_arquivo).stem
     partes = [parte.strip() for parte in stem.split("_") if parte.strip()]
 
@@ -236,6 +449,23 @@ def extrair_cliente_nome_arquivo(nome_arquivo: str) -> str:
 
 
 def extrair_banco_nome_arquivo(nome_arquivo: str) -> str:
+    partes_canonicas = [
+        parte.strip()
+        for parte in Path(nome_arquivo).stem.split("_")
+        if parte.strip()
+    ]
+    if (
+        len(partes_canonicas) >= 3
+        and re.fullmatch(r"\d{4}", partes_canonicas[0])
+        and partes_canonicas[1].upper() in {"EXTBAN", "LANCBAN"}
+    ):
+        return partes_canonicas[2].upper()
+
+    try:
+        return interpretar_nome_extrato(nome_arquivo).banco
+    except ValueError:
+        pass
+
     stem = Path(nome_arquivo).stem
     partes = [parte.strip() for parte in stem.split("_") if parte.strip()]
 
@@ -261,6 +491,12 @@ def extrair_banco_nome_arquivo(nome_arquivo: str) -> str:
 
 
 def extrair_periodo_nome_arquivo(nome_arquivo: str) -> tuple[str, str]:
+    try:
+        dados = interpretar_nome_extrato(nome_arquivo)
+        return dados.mes, dados.ano
+    except ValueError:
+        pass
+
     prefixo_periodo = Path(nome_arquivo).stem.split("_", maxsplit=1)[0]
     match = re.match(r"^(?P<mes>\d{2})(?P<ano>\d{2})$", prefixo_periodo)
 
@@ -281,6 +517,11 @@ def normalizar_id_empresa(empresa_id) -> str:
 
 
 def extrair_competencia_nome_arquivo(nome_arquivo: str) -> str:
+    try:
+        return interpretar_nome_extrato(nome_arquivo).competencia
+    except ValueError:
+        pass
+
     stem = Path(nome_arquivo).stem
     prefixo = stem.split("_", maxsplit=1)[0]
     match = re.match(r"^(?P<mes>\d{2})(?P<ano>\d{2})$", prefixo)
@@ -292,6 +533,11 @@ def extrair_competencia_nome_arquivo(nome_arquivo: str) -> str:
 
 
 def extrair_codigo_documento(nome_arquivo: str) -> str:
+    try:
+        return interpretar_nome_extrato(nome_arquivo).codigo_documento
+    except ValueError:
+        pass
+
     partes = Path(nome_arquivo).stem.split("_")
 
     if len(partes) < 2:
@@ -398,6 +644,74 @@ def carregar_empresas_ativas(
         return empresas
     finally:
         workbook.close()
+
+
+def validar_preparacao_fluxo(
+    base_path: Path = BASE_EMP_ATIVAS,
+    modelo_path: Path = MODELO_LANCAMENTOS,
+) -> None:
+    if not base_path.exists():
+        raise FileNotFoundError(f"Base de empresas ativas nao encontrada: {base_path}")
+    if not modelo_path.exists():
+        raise FileNotFoundError(f"Modelo de lancamentos nao encontrado: {modelo_path}")
+
+    base_workbook = load_workbook(base_path, read_only=True, data_only=True)
+    try:
+        if BASE_EMP_ATIVAS_SHEET not in base_workbook.sheetnames:
+            raise ValueError(f"Aba {BASE_EMP_ATIVAS_SHEET} nao encontrada em {base_path}")
+        headers = next(
+            base_workbook[BASE_EMP_ATIVAS_SHEET].iter_rows(values_only=True),
+            None,
+        )
+        normalized_headers = [normalizar_cabecalho_base(header) for header in (headers or [])]
+        if "ID" not in normalized_headers or "RAZÃO SOCIAL" not in normalized_headers:
+            raise ValueError("Base de empresas ativas sem colunas ID/Razao social")
+    finally:
+        base_workbook.close()
+
+    modelo_workbook = load_workbook(modelo_path, read_only=True, data_only=False)
+    try:
+        if "Plan1" not in modelo_workbook.sheetnames:
+            raise ValueError(f"Aba Plan1 nao encontrada em {modelo_path}")
+    finally:
+        modelo_workbook.close()
+
+
+def validar_dataframe_extrato(df) -> None:
+    colunas_obrigatorias = {"DATA", "VALOR", "TIPO", "DESCRIÇÃO"}
+    ausentes = colunas_obrigatorias.difference(df.columns)
+    if ausentes:
+        raise ValueError(
+            "DataFrame do extrato sem colunas obrigatorias: "
+            + ", ".join(sorted(ausentes))
+        )
+
+
+def enviar_ou_atualizar_arquivo(
+    google_drive: GoogleDriveAuth,
+    caminho_local: Path,
+    folder_id_destino: str,
+    type_file: str,
+    name_drive: str,
+):
+    existente = google_drive.find_file_by_name(
+        folder_id=folder_id_destino,
+        name=name_drive,
+        mime_type=type_file,
+    )
+    if existente:
+        return google_drive.update_file(
+            file_id=existente["id"],
+            caminho_local=caminho_local,
+            type_file=type_file,
+            name_drive=name_drive,
+        )
+    return google_drive.upload(
+        caminho_local=caminho_local,
+        folder_id_destino=folder_id_destino,
+        type_file=type_file,
+        name_drive=name_drive,
+    )
 
 
 def buscar_empresa_por_cliente(
@@ -593,105 +907,6 @@ def renomear_e_mover_para_invalidos(
     return nome_final
 
 
-def processar_pdfs_com_senha(
-    google_drive: GoogleDriveAuth,
-    pasta_pdfs_com_senhas_id: str,
-    pasta_raiz_id: str,
-    temp_dir: Path,
-) -> dict[str, int]:
-    logger.info("Verificando pasta PDFS_COM_SENHAS para desbloqueio")
-
-    arquivos = []
-    max_tentativas = 3
-    for tentativa in range(1, max_tentativas + 1):
-        arquivos = google_drive.pdfs(
-            folder_id=pasta_pdfs_com_senhas_id,
-            pdf_type=PDF_MIME_TYPE,
-        )
-        if arquivos:
-            break
-        if tentativa < max_tentativas:
-            logger.info(
-                "PDFS_COM_SENHAS vazia (tentativa %s/%s). Aguardando 2s...",
-                tentativa,
-                max_tentativas,
-            )
-            time.sleep(2)
-
-    if not arquivos:
-        logger.info("Pasta PDFS_COM_SENHAS sem PDFs para desbloquear")
-
-    desbloqueados = 0
-    ignorados = 0
-    erros = 0
-
-    for arquivo_drive in arquivos:
-        arquivo_id = arquivo_drive["id"]
-        arquivo_nome = arquivo_drive["name"]
-        dados_senha = extrair_senha_nome_pdf(arquivo_nome)
-
-        if not dados_senha:
-            ignorados += 1
-            logger.info(
-                "PDF em PDFS_COM_SENHAS ignorado por nao conter padrao SENHA: %s",
-                arquivo_nome,
-            )
-            continue
-
-        senha, nome_limpo = dados_senha
-        pdf_com_senha = temp_dir / arquivo_nome
-        pdf_sem_senha = temp_dir / nome_limpo
-
-        try:
-            logger.info("Baixando PDF com senha para desbloqueio: %s", arquivo_nome)
-            google_drive.download(
-                file_id=arquivo_id,
-                destino_local=pdf_com_senha,
-            )
-
-            logger.info("Removendo senha do PDF: %s", arquivo_nome)
-            remover_senha_pdf(
-                caminho_pdf=str(pdf_com_senha),
-                senha=senha,
-                caminho_saida=str(pdf_sem_senha),
-            )
-
-            logger.info("Enviando PDF desbloqueado para pasta raiz: %s", nome_limpo)
-            google_drive.upload(
-                caminho_local=pdf_sem_senha,
-                folder_id_destino=pasta_raiz_id,
-                type_file=PDF_MIME_TYPE,
-                name_drive=nome_limpo,
-            )
-
-            logger.info("Movendo PDF original com senha para lixeira: %s", arquivo_nome)
-            google_drive.trash_file(arquivo_id)
-            desbloqueados += 1
-        except Exception:
-            erros += 1
-            logger.exception("Erro ao desbloquear PDF com senha: %s", arquivo_nome)
-        finally:
-            pdf_com_senha.unlink(missing_ok=True)
-            pdf_sem_senha.unlink(missing_ok=True)
-
-    restantes = google_drive.list_children(pasta_pdfs_com_senhas_id)
-
-    if not restantes:
-        logger.info("Pasta PDFS_COM_SENHAS vazia. Movendo pasta para lixeira")
-        google_drive.trash_file(pasta_pdfs_com_senhas_id)
-    else:
-        logger.info(
-            "Pasta PDFS_COM_SENHAS mantida com %s item(ns) restante(s)",
-            len(restantes),
-        )
-
-    return {
-        "desbloqueados": desbloqueados,
-        "ignorados": ignorados,
-        "erros": erros,
-    }
-
-
 def registrar_historico_conversao(
     google_drive: GoogleDriveAuth,
     pasta_raiz_id: str,
@@ -828,11 +1043,14 @@ def arquivar_pdf_sem_movimentacao(
     return f"{nome_arquivo} - {pasta_destino_historico}"
 
 
-def executar_conversao():
+def _executar_conversao(execucao_id: str):
     setup_logging()
     logger.info("Iniciando fluxo de conversao")
-    logger.info("Autenticando Google Drive")
+    logger.info("Validando arquivos locais obrigatorios")
+    validar_preparacao_fluxo()
+    empresas = carregar_empresas_ativas()
 
+    logger.info("Autenticando Google Drive")
     google_drive = GoogleDriveAuth(
         credentials_path=GOOGLE_OAUTH_CREDENTIALS,
         token_path=GOOGLE_OAUTH_TOKEN,
@@ -841,11 +1059,10 @@ def executar_conversao():
 
     extratos_id = GOOGLE_DRIVE_FOLDER_ID
     emp_id = GOOGLE_DRIVE_EMP_FOLDER_ID
-    lancamento = Path.cwd() / "data" / "Lancamentos_Contabeis.xlsm"
+    lancamento = MODELO_LANCAMENTOS
     temp_dir = Path.cwd() / "temp"
     temp_dir.mkdir(parents=True, exist_ok=True)
     logger.info("Diretorio temporario preparado: %s", temp_dir)
-    empresas = carregar_empresas_ativas()
     emp_raiz_id = resolver_pasta_emp_base(
         google_drive=google_drive,
         pasta_base_id=emp_id,
@@ -865,15 +1082,7 @@ def executar_conversao():
         folder_id_pai=extratos_id,
         name_folder="00_INVALIDOS",
     )
-
-    logger.info("Criando ou recuperando pasta de PDFs com senha no Google Drive")
-    pasta_pdfs_com_senhas = google_drive.get_or_create_folder(
-        folder_id_pai=extratos_id,
-        name_folder="PDFS_COM_SENHAS",
-    )
-
     invalidos_id = pasta_invalidos["id"]
-    pdfs_com_senhas_id = pasta_pdfs_com_senhas["id"]
 
     logger.info("Listando PDFs da pasta EXT do Google Drive")
     arquivos = google_drive.pdfs(
@@ -888,51 +1097,129 @@ def executar_conversao():
     processados = 0
     convertidos = 0
     invalidos = 0
-    ignorados = 0
-    com_senha = 0
+    desbloqueados = 0
     sem_movimentacao = 0
     extratos_notificacao = []
     pdfs_sem_movimentacao_notificacao = []
     pdfs_nao_legiveis_notificacao = []
+    nomes_invalidos_notificacao = []
+    erros_senha_notificacao = []
+    layouts_invalidos_notificacao = []
+    erros_processamento_notificacao = []
     documentos_convertidos = []
 
     for arquivo_drive in arquivos:
         arquivo_id = arquivo_drive["id"]
-        arquivo_nome = arquivo_drive["name"]
-        arquivo_stem = Path(arquivo_nome).stem
-
-        if "EXT" not in arquivo_stem:
-            ignorados += 1
-            logger.info("Arquivo ignorado por nao conter EXT no nome: %s", arquivo_nome)
-            continue
-
+        arquivo_nome_original = arquivo_drive["name"]
+        arquivo_nome_seguro = sanitizar_nome_senha(arquivo_nome_original)
+        arquivo_nome = arquivo_nome_seguro
         processados += 1
-        pdf_local = temp_dir / arquivo_nome
+        pdf_local = temp_dir / f"{arquivo_id}.pdf"
+        pdf_sem_senha = temp_dir / f"{arquivo_id}_sem_senha.pdf"
+        pdf_processamento = pdf_local
         dest_lancamento = None
         dest_excel = None
 
-        logger.info("Processando PDF: %s", arquivo_nome)
+        logger.info("Processando PDF: %s", arquivo_nome_seguro)
 
         try:
-            logger.info("Baixando PDF do Google Drive: %s", arquivo_nome)
+            logger.info("Baixando PDF do Google Drive: %s", arquivo_nome_seguro)
             google_drive.download(
                 file_id=arquivo_id,
                 destino_local=pdf_local,
             )
 
-            if pdf_possui_senha(pdf_local):
-                logger.warning(
-                    "PDF protegido por senha. Movendo para PDFS_COM_SENHAS: %s",
-                    arquivo_nome,
+            try:
+                protegido = pdf_possui_senha(pdf_local)
+            except Exception:
+                logger.exception("PDF invalido ou corrompido: %s", arquivo_nome_seguro)
+                nome_final = renomear_e_mover_para_invalidos(
+                    google_drive=google_drive,
+                    arquivo_id=arquivo_id,
+                    arquivo_nome=arquivo_nome_seguro,
+                    invalidos_id=invalidos_id,
+                    prefixo=NAO_LEGIVEL_PREFIX,
+                    motivo="PDF invalido, corrompido ou nao legivel",
                 )
-                google_drive.move_file(
-                    file_id=arquivo_id,
-                    folder_id_destino=pdfs_com_senhas_id,
-                )
-                com_senha += 1
+                pdfs_nao_legiveis_notificacao.append(nome_final)
+                invalidos += 1
                 continue
 
-            if nome_indica_sem_movimentacao(arquivo_nome):
+            dados_senha = extrair_senha_nome_pdf(arquivo_nome_original)
+
+            if protegido:
+                if not dados_senha:
+                    nome_final = renomear_e_mover_para_invalidos(
+                        google_drive=google_drive,
+                        arquivo_id=arquivo_id,
+                        arquivo_nome=arquivo_nome_seguro,
+                        invalidos_id=invalidos_id,
+                        prefixo=ERRO_SENHA_PREFIX,
+                        motivo="PDF protegido sem senha valida no nome",
+                    )
+                    erros_senha_notificacao.append(nome_final)
+                    invalidos += 1
+                    continue
+
+                senha, arquivo_nome = dados_senha
+                try:
+                    remover_senha_pdf(
+                        caminho_pdf=str(pdf_local),
+                        senha=senha,
+                        caminho_saida=str(pdf_sem_senha),
+                    )
+                except ValueError:
+                    logger.exception(
+                        "Senha invalida ou falha ao desbloquear PDF: %s",
+                        arquivo_nome,
+                    )
+                    nome_final = renomear_e_mover_para_invalidos(
+                        google_drive=google_drive,
+                        arquivo_id=arquivo_id,
+                        arquivo_nome=arquivo_nome,
+                        invalidos_id=invalidos_id,
+                        prefixo=ERRO_SENHA_PREFIX,
+                        motivo="Senha invalida ou falha ao desbloquear PDF",
+                    )
+                    erros_senha_notificacao.append(nome_final)
+                    invalidos += 1
+                    continue
+
+                google_drive.update_file(
+                    file_id=arquivo_id,
+                    caminho_local=pdf_sem_senha,
+                    type_file=PDF_MIME_TYPE,
+                    name_drive=arquivo_nome,
+                )
+                pdf_processamento = pdf_sem_senha
+                desbloqueados += 1
+                logger.info("PDF desbloqueado e atualizado no Drive: %s", arquivo_nome)
+            elif dados_senha:
+                _, arquivo_nome = dados_senha
+                google_drive.rename_file(arquivo_id, arquivo_nome)
+                logger.info("Nome do PDF normalizado no Drive: %s", arquivo_nome)
+            else:
+                arquivo_nome = arquivo_nome_original
+
+            try:
+                dados_nome = interpretar_nome_extrato(arquivo_nome)
+            except ValueError as erro_nome:
+                nome_final = renomear_e_mover_para_invalidos(
+                    google_drive=google_drive,
+                    arquivo_id=arquivo_id,
+                    arquivo_nome=sanitizar_nome_senha(arquivo_nome),
+                    invalidos_id=invalidos_id,
+                    prefixo=NOME_INVALIDO_PREFIX,
+                    motivo=f"Nome de PDF invalido: {erro_nome}",
+                )
+                nomes_invalidos_notificacao.append(nome_final)
+                invalidos += 1
+                continue
+
+            arquivo_nome = dados_nome.nome_limpo
+            arquivo_stem = Path(arquivo_nome).stem
+
+            if dados_nome.sem_movimentacao:
                 linha_sem_movimentacao = arquivar_pdf_sem_movimentacao(
                     google_drive=google_drive,
                     pasta_raiz_id=extratos_id,
@@ -945,10 +1232,14 @@ def executar_conversao():
                 if linha_sem_movimentacao:
                     pdfs_sem_movimentacao_notificacao.append(linha_sem_movimentacao)
                     sem_movimentacao += 1
+                else:
+                    erros_processamento_notificacao.append(
+                        f"{arquivo_nome} - empresa ou pasta nao encontrada; mantido na EXT"
+                    )
                 continue
 
             logger.info("Extraindo conteudo do PDF: %s", arquivo_nome)
-            pdf = PDFExtractor(pdf_local).extract()
+            pdf = PDFExtractor(pdf_processamento).extract()
 
             if not pdf:
                 nome_nao_legivel = renomear_e_mover_para_invalidos(
@@ -968,10 +1259,15 @@ def executar_conversao():
                 df = dispatch(pdf)
             except LayoutNotRecognized:
                 logger.exception("Layout nao reconhecido. Movendo para invalidos: %s", arquivo_nome)
-                google_drive.move_file(
-                    file_id=arquivo_id,
-                    folder_id_destino=invalidos_id,
+                nome_final = renomear_e_mover_para_invalidos(
+                    google_drive=google_drive,
+                    arquivo_id=arquivo_id,
+                    arquivo_nome=arquivo_nome,
+                    invalidos_id=invalidos_id,
+                    prefixo=LAYOUT_INVALIDO_PREFIX,
+                    motivo="Layout bancario nao reconhecido",
                 )
+                layouts_invalidos_notificacao.append(nome_final)
                 invalidos += 1
                 continue
 
@@ -988,10 +1284,17 @@ def executar_conversao():
                 if linha_sem_movimentacao:
                     pdfs_sem_movimentacao_notificacao.append(linha_sem_movimentacao)
                     sem_movimentacao += 1
+                else:
+                    erros_processamento_notificacao.append(
+                        f"{arquivo_nome} - empresa ou pasta nao encontrada; mantido na EXT"
+                    )
                 continue
 
-            cliente = extrair_cliente_nome_arquivo(arquivo_nome)
-            empresa_id, empresa_nome = buscar_empresa_por_cliente(cliente, empresas=empresas)
+            validar_dataframe_extrato(df)
+            empresa_id, empresa_nome = buscar_empresa_por_cliente(
+                dados_nome.empresa,
+                empresas=empresas,
+            )
 
             try:
                 pasta_destino_id, pasta_destino_historico = resolver_pasta_destino_emp(
@@ -1003,18 +1306,15 @@ def executar_conversao():
                 )
             except ValueError:
                 logger.exception(
-                    "Nao foi possivel resolver pasta EMP para o PDF. Movendo para invalidos: %s",
+                    "Nao foi possivel resolver pasta EMP para o PDF. Arquivo mantido na EXT: %s",
                     arquivo_nome,
                 )
-                google_drive.move_file(
-                    file_id=arquivo_id,
-                    folder_id_destino=invalidos_id,
+                erros_processamento_notificacao.append(
+                    f"{arquivo_nome} - empresa ou pasta nao encontrada; mantido na EXT"
                 )
-                invalidos += 1
                 continue
 
-            nome_lancamento = arquivo_stem.replace("EXT", "LANC")
-            dest_lancamento = temp_dir / f"{nome_lancamento}.xlsm"
+            dest_lancamento = temp_dir / dados_nome.nome_lancamento
             dest_excel = temp_dir / f"{arquivo_stem}.xlsx"
 
             logger.info("Copiando modelo de lancamento para: %s", dest_lancamento)
@@ -1029,7 +1329,8 @@ def executar_conversao():
             momento_conversao = agora_historico()
 
             logger.info("Enviando XLSM para o Google Drive: %s", dest_lancamento.name)
-            google_drive.upload(
+            enviar_ou_atualizar_arquivo(
+                google_drive=google_drive,
                 caminho_local=dest_lancamento,
                 folder_id_destino=pasta_destino_id,
                 type_file=XLSM_MIME_TYPE,
@@ -1037,7 +1338,8 @@ def executar_conversao():
             )
 
             logger.info("Enviando XLSX para o Google Drive: %s", dest_excel.name)
-            google_drive.upload(
+            enviar_ou_atualizar_arquivo(
+                google_drive=google_drive,
                 caminho_local=dest_excel,
                 folder_id_destino=pasta_destino_id,
                 type_file=XLSX_MIME_TYPE,
@@ -1065,8 +1367,10 @@ def executar_conversao():
 
             documentos_convertidos.append({
                 "empresa_id": empresa_id,
-                "mes": extrair_periodo_nome_arquivo(arquivo_nome)[0],
-                "ano": extrair_periodo_nome_arquivo(arquivo_nome)[1],
+                "mes": dados_nome.mes,
+                "ano": dados_nome.ano,
+                "competencia": dados_nome.competencia,
+                "codigo_documento": dados_nome.codigo_documento,
                 "arquivo_nome": arquivo_nome,
                 "pasta_destino": pasta_destino_historico,
                 "momento": momento_conversao,
@@ -1077,22 +1381,18 @@ def executar_conversao():
             logger.info("PDF convertido com sucesso: %s", arquivo_nome)
             logger.info("Arquivos enviados para a pasta: %s", pasta_destino_historico)
         except Exception:
-            logger.exception("Erro ao processar PDF: %s", arquivo_nome)
-            raise
+            logger.exception("Erro ao processar PDF: %s", arquivo_nome_seguro)
+            erros_processamento_notificacao.append(
+                f"{arquivo_nome_seguro} - erro inesperado; mantido na EXT"
+            )
         finally:
             pdf_local.unlink(missing_ok=True)
+            pdf_sem_senha.unlink(missing_ok=True)
             if dest_lancamento is not None:
                 dest_lancamento.unlink(missing_ok=True)
             if dest_excel is not None:
                 dest_excel.unlink(missing_ok=True)
-            logger.info("Arquivos temporarios limpos para: %s", arquivo_nome)
-
-    resultado_senhas = processar_pdfs_com_senha(
-        google_drive=google_drive,
-        pasta_pdfs_com_senhas_id=pdfs_com_senhas_id,
-        pasta_raiz_id=extratos_id,
-        temp_dir=temp_dir,
-    )
+            logger.info("Arquivos temporarios limpos para: %s", arquivo_nome_seguro)
 
     logger.info("Atualizando controle no portal SGE para %s documento(s)", len(documentos_convertidos))
     atualizados_sge = 0
@@ -1100,13 +1400,11 @@ def executar_conversao():
 
     for doc in documentos_convertidos:
         try:
-            competencia = extrair_competencia_nome_arquivo(doc["arquivo_nome"])
-            cod_doc = extrair_codigo_documento(doc["arquivo_nome"])
             local = f"Google Drive / {doc['pasta_destino']}"
             sucesso = atualizar_controle_supabase(
                 empresa_codigo=str(doc["empresa_id"]),
-                competencia=competencia,
-                codigo_documento=cod_doc,
+                competencia=doc["competencia"],
+                codigo_documento=doc["codigo_documento"],
                 data_recebimento=doc["momento"].strftime("%Y-%m-%d"),
                 quantidade_arquivos=3,
                 nome_arquivo=doc["arquivo_nome"],
@@ -1120,32 +1418,106 @@ def executar_conversao():
             erros_sge += 1
             logger.exception("Erro ao atualizar controle no SGE: %s", doc["arquivo_nome"])
 
+    notificacao_kwargs = {
+        "pdfs_sem_movimentacao": pdfs_sem_movimentacao_notificacao,
+        "pdfs_nao_legiveis": pdfs_nao_legiveis_notificacao,
+        "atualizados_sge": atualizados_sge,
+    }
+    if nomes_invalidos_notificacao:
+        notificacao_kwargs["nomes_invalidos"] = nomes_invalidos_notificacao
+    if erros_senha_notificacao:
+        notificacao_kwargs["erros_senha"] = erros_senha_notificacao
+    if layouts_invalidos_notificacao:
+        notificacao_kwargs["layouts_nao_reconhecidos"] = layouts_invalidos_notificacao
+    if erros_processamento_notificacao:
+        notificacao_kwargs["erros_processamento"] = erros_processamento_notificacao
+
+    possui_alertas = any(
+        (
+            invalidos,
+            erros_sge,
+            nomes_invalidos_notificacao,
+            erros_senha_notificacao,
+            layouts_invalidos_notificacao,
+            erros_processamento_notificacao,
+        )
+    )
+    notificacao_kwargs.update(
+        {
+            "google_drive": google_drive,
+            "pasta_raiz_id": extratos_id,
+            "execucao_id": execucao_id,
+            "tipo": "SEM_ARQUIVOS" if not arquivos else "CONCLUSAO",
+            "status_execucao": "SUCESSO COM ALERTAS" if possui_alertas else "SUCESSO",
+            "total_processados": processados,
+            "total_convertidos": convertidos,
+            "total_sem_movimentacao": sem_movimentacao,
+            "total_invalidos": invalidos,
+            "total_desbloqueados": desbloqueados,
+            "erros_sge": erros_sge,
+        }
+    )
+
     enviar_notificacao_google_chat(
         extratos_notificacao,
-        pdfs_sem_movimentacao=pdfs_sem_movimentacao_notificacao,
-        pdfs_nao_legiveis=pdfs_nao_legiveis_notificacao,
-        atualizados_sge=atualizados_sge,
+        **notificacao_kwargs,
     )
 
     logger.info(
         (
             "Fluxo de conversao concluido. "
-            "Processados=%s Convertidos=%s SemMovimentacao=%s Invalidos=%s Ignorados=%s ComSenha=%s "
-            "Desbloqueados=%s SenhasIgnoradas=%s SenhasErros=%s "
+            "Processados=%s Convertidos=%s SemMovimentacao=%s Invalidos=%s "
+            "Desbloqueados=%s ErrosProcessamento=%s "
             "AtualizadosSGE=%s ErrosSGE=%s"
         ),
         processados,
         convertidos,
         sem_movimentacao,
         invalidos,
-        ignorados,
-        com_senha,
-        resultado_senhas["desbloqueados"],
-        resultado_senhas["ignorados"],
-        resultado_senhas["erros"],
+        desbloqueados,
+        len(erros_processamento_notificacao),
         atualizados_sge,
         erros_sge,
     )
+
+
+def executar_conversao():
+    execucao_id = str(uuid4())
+    try:
+        return _executar_conversao(execucao_id)
+    except Exception as error:
+        logger.exception("Falha critica na execucao da conversao: %s", execucao_id)
+        erro_seguro = re.sub(
+            r"SENHA\s+[^\s_]+",
+            "SENHA ***",
+            str(error),
+            flags=re.IGNORECASE,
+        )[:1_000]
+        google_drive = None
+        try:
+            google_drive = GoogleDriveAuth(
+                credentials_path=GOOGLE_OAUTH_CREDENTIALS,
+                token_path=GOOGLE_OAUTH_TOKEN,
+                token_secret_path=GOOGLE_OAUTH_TOKEN_SECRET,
+            )
+        except Exception:
+            logger.exception(
+                "Google Drive indisponivel para persistir notificacao de falha: %s",
+                execucao_id,
+            )
+
+        enviar_notificacao_google_chat(
+            [],
+            erros_processamento=[
+                f"Falha critica: {type(error).__name__}: {erro_seguro}"
+            ],
+            google_drive=google_drive,
+            pasta_raiz_id=GOOGLE_DRIVE_FOLDER_ID,
+            execucao_id=execucao_id,
+            tipo="FALHA",
+            status_execucao="FALHA",
+        )
+        raise
 
 
 def main():

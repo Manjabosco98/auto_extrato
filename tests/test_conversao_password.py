@@ -18,7 +18,7 @@ class FakeDrive:
         self.root_pdfs = root_pdfs if root_pdfs is not None else [
             {
                 "id": "pdf-1",
-                "name": "0126_EXTBAN TESTE.pdf",
+                "name": "0126_EXTBAN_TESTE_CLIENTE_AG 1_CC 1.pdf",
                 "mimeType": "application/pdf",
             }
         ]
@@ -374,7 +374,7 @@ class ConversaoPasswordTest(unittest.TestCase):
         self.assertFalse(resultado)
         post.assert_not_called()
         self.assertIn(
-            "Notificacao Google Chat nao enviada: nenhum PDF convertido, sem movimentacao ou nao legivel",
+            "Notificacao Google Chat nao enviada: nenhum resultado para informar",
             "\n".join(logs.output),
         )
 
@@ -615,18 +615,41 @@ class ConversaoPasswordTest(unittest.TestCase):
 
     def test_move_pdf_com_senha_sem_interromper_conversao(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            fake_drive = FakeDrive(temp_dir)
+            fake_drive = FakeDrive(
+                temp_dir,
+                root_pdfs=[{
+                    "id": "pdf-1",
+                    "name": "0526_EXTBAN_C6BANK_SENHA 639256_SM_GRB_AG 1_CC 123.pdf",
+                    "mimeType": "application/pdf",
+                }],
+                existing_folders={("id-EMP", "23_GRB")},
+            )
 
             with (
                 patch.object(conversao, "GoogleDriveAuth", return_value=fake_drive),
+                patch.object(conversao, "carregar_empresas_ativas", return_value={"GRB": (23, "GRB")}),
                 patch.object(conversao, "pdf_possui_senha", return_value=True),
+                patch.object(
+                    conversao,
+                    "remover_senha_pdf",
+                    side_effect=lambda caminho_pdf, senha, caminho_saida: Path(caminho_saida).write_bytes(
+                        b"%PDF-1.4 sem senha"
+                    ),
+                ) as remover_senha,
                 patch.object(conversao, "PDFExtractor") as pdf_extractor,
+                patch.object(conversao, "enviar_notificacao_google_chat"),
             ):
                 conversao.executar_conversao()
 
-        self.assertEqual(fake_drive.moved, [("pdf-1", "id-PDFS_COM_SENHAS")])
+        remover_senha.assert_called_once()
+        self.assertEqual(fake_drive.updated[0]["id"], "pdf-1")
+        self.assertEqual(
+            fake_drive.updated[0]["name"],
+            "0526_EXTBAN_C6BANK_SM_GRB_AG 1_CC 123.pdf",
+        )
+        self.assertIn(("pdf-1", "id-EXT"), fake_drive.moved)
         self.assertIn((conversao.GOOGLE_DRIVE_FOLDER_ID, "EXT"), fake_drive.folders)
-        self.assertIn((conversao.GOOGLE_DRIVE_FOLDER_ID, "PDFS_COM_SENHAS"), fake_drive.folders)
+        self.assertNotIn((conversao.GOOGLE_DRIVE_FOLDER_ID, "PDFS_COM_SENHAS"), fake_drive.folders)
         self.assertIn(("id-EXT", conversao.PDF_MIME_TYPE), fake_drive.pdfs_calls)
         pdf_extractor.assert_not_called()
 
@@ -637,7 +660,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 root_pdfs=[
                     {
                         "id": "pdf-1",
-                        "name": "0526_EXTBAN C6BANK_CAMARGOS.pdf",
+                        "name": "0526_EXTBAN_C6BANK_CAMARGOS_AG 1_CC 123.pdf",
                         "mimeType": "application/pdf",
                     }
                 ],
@@ -657,9 +680,9 @@ class ConversaoPasswordTest(unittest.TestCase):
                 self.assertEqual(
                     kwargs["nomes_arquivos"],
                     [
-                        "0526_EXTBAN C6BANK_CAMARGOS.pdf",
-                        "0526_EXTBAN C6BANK_CAMARGOS.xlsx",
-                        "0526_LANCBAN C6BANK_CAMARGOS.xlsm",
+                        "0526_EXTBAN_C6BANK_CAMARGOS_AG 1_CC 123.pdf",
+                        "0526_EXTBAN_C6BANK_CAMARGOS_AG 1_CC 123.xlsx",
+                        "0526_LANCBAN_C6BANK_CAMARGOS_AG 1_CC 123.xlsm",
                     ],
                 )
                 self.assertEqual(
@@ -669,9 +692,9 @@ class ConversaoPasswordTest(unittest.TestCase):
                 self.assertEqual(kwargs["empresa_id"], 23)
                 self.assertEqual(kwargs["empresa_nome"], "CAMARGOS")
 
-            def enviar_notificacao(nomes_extratos, pdfs_sem_movimentacao=None, pdfs_nao_legiveis=None, atualizados_sge=None):
+            def enviar_notificacao(nomes_extratos, pdfs_sem_movimentacao=None, pdfs_nao_legiveis=None, atualizados_sge=None, **kwargs):
                 eventos.append("chat")
-                self.assertEqual(nomes_extratos, ["0526_EXTBAN C6BANK_CAMARGOS"])
+                self.assertEqual(nomes_extratos, ["0526_EXTBAN_C6BANK_CAMARGOS_AG 1_CC 123"])
                 self.assertEqual(pdfs_sem_movimentacao, [])
                 self.assertEqual(pdfs_nao_legiveis, [])
                 return True
@@ -679,7 +702,7 @@ class ConversaoPasswordTest(unittest.TestCase):
             fake_drive.move_file = move_file
 
             df = pd.DataFrame(
-                [{"DATA": "01/05/2026", "VALOR": 10.0, "TIPO": "C", "DESCRIÃ‡ÃƒO": "PIX"}]
+                [{"DATA": "01/05/2026", "VALOR": 10.0, "TIPO": "C", "DESCRIÇÃO": "PIX"}]
             )
 
             with (
@@ -706,100 +729,171 @@ class ConversaoPasswordTest(unittest.TestCase):
         )
         self.assertIn((conversao.GOOGLE_DRIVE_FOLDER_ID, "EXT"), fake_drive.folders)
         self.assertIn((conversao.GOOGLE_DRIVE_FOLDER_ID, "00_INVALIDOS"), fake_drive.folders)
-        self.assertIn((conversao.GOOGLE_DRIVE_FOLDER_ID, "PDFS_COM_SENHAS"), fake_drive.folders)
+        self.assertNotIn((conversao.GOOGLE_DRIVE_FOLDER_ID, "PDFS_COM_SENHAS"), fake_drive.folders)
         self.assertIn(("id-EXT", conversao.PDF_MIME_TYPE), fake_drive.pdfs_calls)
         self.assertIn((conversao.GOOGLE_DRIVE_EMP_FOLDER_ID, "EMP"), fake_drive.folders)
         self.assertIn(("id-MOV", "CONT"), fake_drive.folders)
 
-    def test_processa_pdf_com_senha_e_limpa_pasta_vazia(self):
+    def test_interpreta_quatro_formatos_canonicos(self):
+        casos = [
+            ("0526_EXTBAN_NUBANK_AMP ENG_AG XXX_CC 99287663-4.pdf", None, False),
+            ("0526_EXTBAN_NUBANK_SM_AMP ENG_AG XXX_CC 99287663-4.pdf", None, True),
+            ("0526_EXTBAN_NUBANK_SENHA XXXX_AMP ENG_AG XXX_CC 99287663-4.pdf", "XXXX", False),
+            ("0526_EXTBAN_NUBANK_SENHA XXXX_SM_AMP ENG_AG XXX_CC 99287663-4.pdf", "XXXX", True),
+        ]
+
+        for nome, senha, sem_movimentacao in casos:
+            with self.subTest(nome=nome):
+                dados = conversao.interpretar_nome_extrato(nome)
+                self.assertEqual(dados.competencia, "2026-05")
+                self.assertEqual(dados.banco, "NUBANK")
+                self.assertEqual(dados.empresa, "AMP ENG")
+                self.assertEqual(dados.senha, senha)
+                self.assertEqual(dados.sem_movimentacao, sem_movimentacao)
+
+    def test_banco_canonico_e_extraido_de_pdf_xlsx_e_xlsm(self):
+        self.assertEqual(
+            conversao.extrair_banco_nome_arquivo(
+                "0526_EXTBAN_NUBANK_AMP ENG_AG XXX_CC 99287663-4.pdf"
+            ),
+            "NUBANK",
+        )
+        self.assertEqual(
+            conversao.extrair_banco_nome_arquivo(
+                "0526_EXTBAN_NUBANK_AMP ENG_AG XXX_CC 99287663-4.xlsx"
+            ),
+            "NUBANK",
+        )
+        self.assertEqual(
+            conversao.extrair_banco_nome_arquivo(
+                "0526_LANCBAN_NUBANK_AMP ENG_AG XXX_CC 99287663-4.xlsm"
+            ),
+            "NUBANK",
+        )
+
+    def test_sm_so_e_reconhecido_como_segmento_exato(self):
+        self.assertFalse(
+            conversao.nome_indica_sem_movimentacao(
+                "0526_EXTBAN_NUBANK_SMART EMP_AG XXX_CC 99287663-4.pdf"
+            )
+        )
+
+    def test_pdf_sem_criptografia_com_senha_no_nome_apenas_renomeia(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             fake_drive = FakeDrive(
                 temp_dir,
-                root_pdfs=[],
-                password_pdfs=[
-                    {
-                        "id": "senha-1",
-                        "name": "0526_EXTBAN C6BANK SENHA 639256_GRB.pdf",
-                        "mimeType": "application/pdf",
-                    }
-                ],
+                root_pdfs=[{
+                    "id": "pdf-1",
+                    "name": "0526_EXTBAN_NUBANK_SENHA XXXX_SM_AMP ENG_AG XXX_CC 99287663-4.pdf",
+                    "mimeType": "application/pdf",
+                }],
+                existing_folders={("id-EMP", "23_AMP ENG")},
             )
-
-            with patch.object(
-                conversao,
-                "remover_senha_pdf",
-                side_effect=lambda caminho_pdf, senha, caminho_saida: Path(caminho_saida).write_bytes(
-                    b"%PDF-1.4 sem senha"
-                ),
-            ) as remover_senha:
-                resultado = conversao.processar_pdfs_com_senha(
-                    google_drive=fake_drive,
-                    pasta_pdfs_com_senhas_id="id-PDFS_COM_SENHAS",
-                    pasta_raiz_id="root-folder",
-                    temp_dir=Path(temp_dir),
-                )
-
-        self.assertEqual(resultado, {"desbloqueados": 1, "ignorados": 0, "erros": 0})
-        remover_senha.assert_called_once()
-        self.assertEqual(fake_drive.uploaded[0]["name"], "0526_EXTBAN C6BANK_GRB.pdf")
-        self.assertEqual(fake_drive.uploaded[0]["folder_id_destino"], "root-folder")
-        self.assertIn("senha-1", fake_drive.trashed)
-        self.assertIn("id-PDFS_COM_SENHAS", fake_drive.trashed)
-
-    def test_nome_sem_padrao_mantem_pdf_e_pasta(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            fake_drive = FakeDrive(
-                temp_dir,
-                root_pdfs=[],
-                password_pdfs=[
-                    {
-                        "id": "senha-1",
-                        "name": "0526_EXTBAN C6BANK_GRB.pdf",
-                        "mimeType": "application/pdf",
-                    }
-                ],
-            )
-
-            resultado = conversao.processar_pdfs_com_senha(
-                google_drive=fake_drive,
-                pasta_pdfs_com_senhas_id="id-PDFS_COM_SENHAS",
-                pasta_raiz_id="root-folder",
-                temp_dir=Path(temp_dir),
-            )
-
-        self.assertEqual(resultado, {"desbloqueados": 0, "ignorados": 1, "erros": 0})
-        self.assertEqual(fake_drive.uploaded, [])
-        self.assertEqual(fake_drive.trashed, set())
-
-    def test_senha_invalida_mantem_pdf_e_pasta(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            fake_drive = FakeDrive(
-                temp_dir,
-                root_pdfs=[],
-                password_pdfs=[
-                    {
-                        "id": "senha-1",
-                        "name": "0526_EXTBAN C6BANK SENHA 000000_GRB.pdf",
-                        "mimeType": "application/pdf",
-                    }
-                ],
-            )
-
-            with patch.object(
-                conversao,
-                "remover_senha_pdf",
-                side_effect=ValueError("Senha invalida"),
+            with (
+                patch.object(conversao, "GoogleDriveAuth", return_value=fake_drive),
+                patch.object(conversao, "carregar_empresas_ativas", return_value={"AMP ENG": (23, "AMP ENG")}),
+                patch.object(conversao, "pdf_possui_senha", return_value=False),
+                patch.object(conversao, "enviar_notificacao_google_chat"),
             ):
-                resultado = conversao.processar_pdfs_com_senha(
-                    google_drive=fake_drive,
-                    pasta_pdfs_com_senhas_id="id-PDFS_COM_SENHAS",
-                    pasta_raiz_id="root-folder",
-                    temp_dir=Path(temp_dir),
-                )
+                conversao.executar_conversao()
 
-        self.assertEqual(resultado, {"desbloqueados": 0, "ignorados": 0, "erros": 1})
-        self.assertEqual(fake_drive.uploaded, [])
-        self.assertEqual(fake_drive.trashed, set())
+        self.assertEqual(
+            fake_drive.renamed[0],
+            ("pdf-1", "0526_EXTBAN_NUBANK_SM_AMP ENG_AG XXX_CC 99287663-4.pdf"),
+        )
+        self.assertIn(("pdf-1", "id-EXT"), fake_drive.moved)
+
+    def test_senha_invalida_move_pdf_sanitizado_para_invalidos(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_drive = FakeDrive(
+                temp_dir,
+                root_pdfs=[{
+                    "id": "pdf-1",
+                    "name": "0526_EXTBAN_NUBANK_SENHA 000000_AMP ENG_AG XXX_CC 99287663-4.pdf",
+                    "mimeType": "application/pdf",
+                }],
+            )
+            with (
+                patch.object(conversao, "GoogleDriveAuth", return_value=fake_drive),
+                patch.object(conversao, "pdf_possui_senha", return_value=True),
+                patch.object(conversao, "remover_senha_pdf", side_effect=ValueError("Senha invalida")),
+                patch.object(conversao, "enviar_notificacao_google_chat"),
+            ):
+                conversao.executar_conversao()
+
+        self.assertEqual(
+            fake_drive.renamed[0],
+            ("pdf-1", "[ERRO SENHA] - 0526_EXTBAN_NUBANK_AMP ENG_AG XXX_CC 99287663-4.pdf"),
+        )
+        self.assertIn(("pdf-1", "id-00_INVALIDOS"), fake_drive.moved)
+
+    def test_nome_invalido_move_para_invalidos(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_drive = FakeDrive(
+                temp_dir,
+                root_pdfs=[{
+                    "id": "pdf-1",
+                    "name": "0526_EXTBAN_NUBANK_EMPRESA.pdf",
+                    "mimeType": "application/pdf",
+                }],
+            )
+            with (
+                patch.object(conversao, "GoogleDriveAuth", return_value=fake_drive),
+                patch.object(conversao, "pdf_possui_senha", return_value=False),
+                patch.object(conversao, "enviar_notificacao_google_chat"),
+            ):
+                conversao.executar_conversao()
+
+        self.assertEqual(
+            fake_drive.renamed[0],
+            ("pdf-1", "[NOME INVALIDO] - 0526_EXTBAN_NUBANK_EMPRESA.pdf"),
+        )
+        self.assertIn(("pdf-1", "id-00_INVALIDOS"), fake_drive.moved)
+
+    def test_erro_em_um_pdf_nao_interrompe_o_proximo(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_drive = FakeDrive(
+                temp_dir,
+                root_pdfs=[
+                    {
+                        "id": "pdf-erro",
+                        "name": "0526_EXTBAN_NUBANK_EMPRESA_AG 1_CC 1.pdf",
+                        "mimeType": "application/pdf",
+                    },
+                    {
+                        "id": "pdf-ok",
+                        "name": "0526_EXTBAN_NUBANK_EMPRESA_AG 1_CC 2.pdf",
+                        "mimeType": "application/pdf",
+                    },
+                ],
+                existing_folders={("id-EMP", "23_EMPRESA")},
+            )
+
+            def copy_modelo(origem, destino):
+                Path(destino).write_bytes(b"modelo")
+
+            df = pd.DataFrame(
+                [{"DATA": "01/05/2026", "VALOR": 10.0, "TIPO": "C", "DESCRIÇÃO": "PIX"}]
+            )
+            with (
+                patch.object(conversao, "GoogleDriveAuth", return_value=fake_drive),
+                patch.object(conversao, "carregar_empresas_ativas", return_value={"EMPRESA": (23, "EMPRESA")}),
+                patch.object(conversao, "pdf_possui_senha", return_value=False),
+                patch.object(conversao, "PDFExtractor") as pdf_extractor,
+                patch.object(conversao, "dispatch", return_value=df),
+                patch.object(conversao, "planilha_lancamento"),
+                patch.object(conversao.shutil, "copy2", side_effect=copy_modelo),
+                patch.object(conversao, "registrar_historico_conversao"),
+                patch.object(conversao, "atualizar_controle_supabase", return_value=True),
+                patch.object(conversao, "enviar_notificacao_google_chat"),
+            ):
+                pdf_extractor.return_value.extract.side_effect = [
+                    RuntimeError("PDF quebrado"),
+                    ["texto extraido"],
+                ]
+                conversao.executar_conversao()
+
+        self.assertIn(("pdf-ok", "id-EXT"), fake_drive.moved)
 
     def test_nome_com_sm_move_para_pasta_empresa_sem_renomear(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -808,7 +902,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 root_pdfs=[
                     {
                         "id": "pdf-sm",
-                        "name": "0526_EXTBAN ITAU 45440-7 SM_CIAL.pdf",
+                        "name": "0526_EXTBAN_ITAU_SM_CIAL_AG 1_CC 45440-7.pdf",
                         "mimeType": "application/pdf",
                     }
                 ],
@@ -829,17 +923,15 @@ class ConversaoPasswordTest(unittest.TestCase):
         self.assertEqual(fake_drive.history_rows[0], conversao.HISTORICO_HEADERS)
         self.assertEqual(
             fake_drive.history_rows[1][4],
-            "0526_EXTBAN ITAU 45440-7 SM_CIAL.pdf",
+            "0526_EXTBAN_ITAU_SM_CIAL_AG 1_CC 45440-7.pdf",
         )
         self.assertEqual(fake_drive.history_rows[1][5], "EMP/123_CIAL/MOV/CONT/26/05/EXT")
-        notificacao.assert_called_once_with(
-            [],
-            pdfs_sem_movimentacao=[
-                "0526_EXTBAN ITAU 45440-7 SM_CIAL.pdf - EMP/123_CIAL/MOV/CONT/26/05/EXT",
-            ],
-            pdfs_nao_legiveis=[],
-            atualizados_sge=0,
+        notificacao.assert_called_once()
+        self.assertEqual(
+            notificacao.call_args.kwargs["pdfs_sem_movimentacao"],
+            ["0526_EXTBAN_ITAU_SM_CIAL_AG 1_CC 45440-7.pdf - EMP/123_CIAL/MOV/CONT/26/05/EXT"],
         )
+        self.assertEqual(notificacao.call_args.kwargs["status_execucao"], "SUCESSO")
         pdf_extractor.assert_not_called()
 
     def test_sem_movimentacao_sem_empresa_permanece_na_ext(self):
@@ -849,7 +941,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 root_pdfs=[
                     {
                         "id": "pdf-sm",
-                        "name": "0526_EXTBAN ITAU 45440-7 SM_CIAL.pdf",
+                        "name": "0526_EXTBAN_ITAU_SM_CIAL_AG 1_CC 45440-7.pdf",
                         "mimeType": "application/pdf",
                     }
                 ],
@@ -867,11 +959,14 @@ class ConversaoPasswordTest(unittest.TestCase):
         self.assertEqual(fake_drive.renamed, [])
         self.assertEqual(fake_drive.moved, [])
         self.assertEqual(fake_drive.history_rows, [])
-        notificacao.assert_called_once_with(
-            [],
-            pdfs_sem_movimentacao=[],
-            pdfs_nao_legiveis=[],
-            atualizados_sge=0,
+        notificacao.assert_called_once()
+        self.assertEqual(
+            notificacao.call_args.kwargs["erros_processamento"],
+            ["0526_EXTBAN_ITAU_SM_CIAL_AG 1_CC 45440-7.pdf - empresa ou pasta nao encontrada; mantido na EXT"],
+        )
+        self.assertEqual(
+            notificacao.call_args.kwargs["status_execucao"],
+            "SUCESSO COM ALERTAS",
         )
         pdf_extractor.assert_not_called()
 
@@ -882,7 +977,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 root_pdfs=[
                     {
                         "id": "pdf-imagem",
-                        "name": "0526_EXTBAN IMAGEM_CIAL.pdf",
+                        "name": "0526_EXTBAN_IMAGEM_CIAL_AG 1_CC 1.pdf",
                         "mimeType": "application/pdf",
                     }
                 ],
@@ -903,17 +998,16 @@ class ConversaoPasswordTest(unittest.TestCase):
             [
                 (
                     "pdf-imagem",
-                    "[NAO LEGIVEL] - 0526_EXTBAN IMAGEM_CIAL.pdf",
+                    "[NAO LEGIVEL] - 0526_EXTBAN_IMAGEM_CIAL_AG 1_CC 1.pdf",
                 )
             ],
         )
         self.assertIn(("pdf-imagem", "id-00_INVALIDOS"), fake_drive.moved)
         self.assertEqual(fake_drive.history_rows, [])
-        notificacao.assert_called_once_with(
-            [],
-            pdfs_sem_movimentacao=[],
-            pdfs_nao_legiveis=["[NAO LEGIVEL] - 0526_EXTBAN IMAGEM_CIAL.pdf"],
-            atualizados_sge=0,
+        notificacao.assert_called_once()
+        self.assertEqual(
+            notificacao.call_args.kwargs["pdfs_nao_legiveis"],
+            ["[NAO LEGIVEL] - 0526_EXTBAN_IMAGEM_CIAL_AG 1_CC 1.pdf"],
         )
         dispatch.assert_not_called()
 
@@ -924,7 +1018,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 root_pdfs=[
                     {
                         "id": "pdf-vazio",
-                        "name": "0526_EXTBAN NORMAL_CIAL.pdf",
+                        "name": "0526_EXTBAN_NORMAL_CIAL_AG 1_CC 1.pdf",
                         "mimeType": "application/pdf",
                     }
                 ],
@@ -947,16 +1041,13 @@ class ConversaoPasswordTest(unittest.TestCase):
         self.assertEqual(fake_drive.history_rows[0], conversao.HISTORICO_HEADERS)
         self.assertEqual(
             fake_drive.history_rows[1][4],
-            "0526_EXTBAN NORMAL_CIAL.pdf",
+            "0526_EXTBAN_NORMAL_CIAL_AG 1_CC 1.pdf",
         )
         self.assertEqual(fake_drive.history_rows[1][5], "EMP/123_CIAL/MOV/CONT/26/05/EXT")
-        notificacao.assert_called_once_with(
-            [],
-            pdfs_sem_movimentacao=[
-                "0526_EXTBAN NORMAL_CIAL.pdf - EMP/123_CIAL/MOV/CONT/26/05/EXT",
-            ],
-            pdfs_nao_legiveis=[],
-            atualizados_sge=0,
+        notificacao.assert_called_once()
+        self.assertEqual(
+            notificacao.call_args.kwargs["pdfs_sem_movimentacao"],
+            ["0526_EXTBAN_NORMAL_CIAL_AG 1_CC 1.pdf - EMP/123_CIAL/MOV/CONT/26/05/EXT"],
         )
 
     def test_extrai_competencia_do_nome_do_arquivo(self):
@@ -1042,7 +1133,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 root_pdfs=[
                     {
                         "id": "pdf-1",
-                        "name": "0526_EXTBAN C6BANK_CAMARGOS.pdf",
+                        "name": "0526_EXTBAN_C6BANK_CAMARGOS_AG 1_CC 123.pdf",
                         "mimeType": "application/pdf",
                     }
                 ],
@@ -1053,7 +1144,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 Path(destino).write_bytes(b"modelo")
 
             df = pd.DataFrame(
-                [{"DATA": "01/05/2026", "VALOR": 10.0, "TIPO": "C", "DESCRICAO": "PIX"}]
+                [{"DATA": "01/05/2026", "VALOR": 10.0, "TIPO": "C", "DESCRIÇÃO": "PIX"}]
             )
 
             with (
@@ -1076,7 +1167,7 @@ class ConversaoPasswordTest(unittest.TestCase):
         self.assertEqual(call_kwargs["competencia"], "2026-05")
         self.assertEqual(call_kwargs["codigo_documento"], "EXTBAN")
         self.assertEqual(call_kwargs["quantidade_arquivos"], 3)
-        self.assertEqual(call_kwargs["nome_arquivo"], "0526_EXTBAN C6BANK_CAMARGOS.pdf")
+        self.assertEqual(call_kwargs["nome_arquivo"], "0526_EXTBAN_C6BANK_CAMARGOS_AG 1_CC 123.pdf")
         self.assertIn("Google Drive /", call_kwargs["local_arquivo"])
 
         notificacao.assert_called_once()
@@ -1090,7 +1181,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 root_pdfs=[
                     {
                         "id": "pdf-1",
-                        "name": "0526_EXTBAN C6BANK_CAMARGOS.pdf",
+                        "name": "0526_EXTBAN_C6BANK_CAMARGOS_AG 1_CC 123.pdf",
                         "mimeType": "application/pdf",
                     }
                 ],
@@ -1101,7 +1192,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 Path(destino).write_bytes(b"modelo")
 
             df = pd.DataFrame(
-                [{"DATA": "01/05/2026", "VALOR": 10.0, "TIPO": "C", "DESCRICAO": "PIX"}]
+                [{"DATA": "01/05/2026", "VALOR": 10.0, "TIPO": "C", "DESCRIÇÃO": "PIX"}]
             )
 
             with (
@@ -1238,7 +1329,7 @@ class ConversaoPasswordTest(unittest.TestCase):
         self.assertIsNotNone(resultado)
         senha, nome_limpo = resultado
         self.assertEqual(senha, "663861")
-        self.assertEqual(nome_limpo, "0526_EXTBAN_C6BANK_ SM_METRIKAL_AG 1_CC 421987570.pdf")
+        self.assertEqual(nome_limpo, "0526_EXTBAN_C6BANK_SM_METRIKAL_AG 1_CC 421987570.pdf")
 
     def test_extrai_senha_com_underscore_e_barra_baixo(self):
         resultado = conversao.extrair_senha_nome_pdf(
@@ -1283,35 +1374,36 @@ class ConversaoPasswordTest(unittest.TestCase):
         self.assertEqual(pasta_id, "id-EXT")
         self.assertEqual(caminho, "EMP/23_CAMARGOS/MOV/CONT/26/05/EXT")
 
-    def test_processar_pdfs_com_senha_aguarda_consistencia(self):
-        from unittest.mock import call
-
-        fake_drive = FakeDrive(
-            "dummy",
-            password_pdfs=[
-                {
-                    "id": "pw-1",
-                    "name": "0526_EXTBAN C6BANK SENHA 123456_GRB.pdf",
-                    "mimeType": "application/pdf",
-                }
-            ],
-        )
-
+    def test_preparacao_rejeita_modelo_sem_plan1(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            with (
-                patch.object(conversao, "remover_senha_pdf") as mock_remover,
-                patch("src.services.conversao.time.sleep") as mock_sleep,
-            ):
-                mock_remover.side_effect = ValueError("Senha invalida")
-                resultado = conversao.processar_pdfs_com_senha(
-                    google_drive=fake_drive,
-                    pasta_pdfs_com_senhas_id="id-PDFS_COM_SENHAS",
-                    pasta_raiz_id="root",
-                    temp_dir=Path(temp_dir),
-                )
+            base_path = Path(temp_dir) / "BaseEmpAtivas.xlsm"
+            modelo_path = Path(temp_dir) / "Lancamentos_Contabeis.xlsm"
 
-        self.assertEqual(resultado["erros"], 1)
-        self.assertEqual(fake_drive.pdfs_calls[0][0], "id-PDFS_COM_SENHAS")
+            base = Workbook()
+            base.active.title = "EmpAtivas"
+            base.active.append(["ID", "Razão social"])
+            base.save(base_path)
+
+            modelo = Workbook()
+            modelo.active.title = "OutraAba"
+            modelo.save(modelo_path)
+
+            with self.assertRaisesRegex(ValueError, "Plan1"):
+                conversao.validar_preparacao_fluxo(base_path, modelo_path)
+
+    def test_preparacao_falha_antes_de_autenticar_no_drive(self):
+        with (
+            patch.object(conversao, "validar_preparacao_fluxo", side_effect=ValueError("modelo invalido")),
+            patch.object(conversao, "GoogleDriveAuth") as google_drive,
+            patch.object(conversao, "enviar_notificacao_google_chat") as notificacao,
+        ):
+            with self.assertRaisesRegex(ValueError, "modelo invalido"):
+                conversao.executar_conversao()
+
+        google_drive.assert_called_once()
+        notificacao.assert_called_once()
+        self.assertEqual(notificacao.call_args.kwargs["tipo"], "FALHA")
+        self.assertEqual(notificacao.call_args.kwargs["status_execucao"], "FALHA")
 
 
 if __name__ == "__main__":
