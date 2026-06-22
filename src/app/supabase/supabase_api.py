@@ -201,8 +201,13 @@ def baixar_controle_supabase(
     *,
     url: str = SUPABASE_BAIXA_URL,
     key: str = SUPABASE_CONTROLE_KEY,
-) -> bool:
-    """POST /controle/baixa - marca documento via API SGECONT."""
+) -> tuple[bool, str | None]:
+    """POST /controle/baixa - marca documento via API SGECONT.
+
+    Retorna (True, None) em sucesso ou (False, detalhe) em falha.
+    ``detalhe`` contem uma mensagem amigavel quando a empresa nao
+    esta cadastrada no SGECONT (HTTP 404).
+    """
     payload = {
         "empresa_codigo": empresa_codigo,
         "codigo_documento": codigo_documento,
@@ -239,13 +244,18 @@ def baixar_controle_supabase(
             resposta_texto,
         )
 
+        if response.status_code == 404:
+            detalhe = f"Empresa {empresa_codigo} nao dada baixa: nao esta cadastrada na plataforma SGECONT"
+            logger.warning(detalhe)
+            return False, detalhe
+
         if response.status_code < 200 or response.status_code >= 300:
             logger.error(
                 "Falha na baixa SGECONT: status=%s body=%s",
                 response.status_code,
                 resposta_texto,
             )
-            return False
+            return False, None
 
         logger.info(
             "Baixa SGECONT realizada: empresa=%s competencia=%s arquivo=%s",
@@ -253,11 +263,11 @@ def baixar_controle_supabase(
             competencia,
             nome_arquivo,
         )
-        return True
+        return True, None
     except Exception:
         logger.exception(
             "Erro na baixa SGECONT: empresa=%s arquivo=%s",
             empresa_codigo,
             nome_arquivo,
         )
-        return False
+        return False, None

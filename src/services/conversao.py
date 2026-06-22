@@ -172,6 +172,7 @@ def enviar_notificacao_google_chat(
     total_invalidos: int = 0,
     total_desbloqueados: int = 0,
     erros_sge: int = 0,
+    erros_sge_detalhe: list[str] | None = None,
 ) -> bool:
     pdfs_sem_movimentacao = pdfs_sem_movimentacao or []
     pdfs_nao_legiveis = pdfs_nao_legiveis or []
@@ -179,6 +180,7 @@ def enviar_notificacao_google_chat(
     erros_senha = erros_senha or []
     layouts_nao_reconhecidos = layouts_nao_reconhecidos or []
     erros_processamento = erros_processamento or []
+    erros_sge_detalhe = erros_sge_detalhe or []
 
     if execucao_id:
         momento = momento or agora_historico()
@@ -207,6 +209,8 @@ def enviar_notificacao_google_chat(
             f"- Atualizados no SGE: {atualizados_sge or 0}\n"
             f"- Erros no SGE: {erros_sge}"
         )
+        for detalhe in erros_sge_detalhe:
+            resumo += f"\n  - {detalhe}"
         if detalhes:
             resumo = f"{resumo}\n\n{detalhes}"
         elif tipo == "SEM_ARQUIVOS":
@@ -1448,11 +1452,12 @@ def _executar_conversao(execucao_id: str):
     logger.info("Atualizando controle no portal SGE para %s documento(s)", len(documentos_para_baixa))
     atualizados_sge = 0
     erros_sge = 0
+    erros_sge_notificacao: list[str] = []
 
     for doc in documentos_para_baixa:
         try:
             local = f"Google Drive / {doc['pasta_destino']}"
-            sucesso = baixar_controle_supabase(
+            sucesso, detalhe_erro = baixar_controle_supabase(
                 empresa_codigo=str(doc["empresa_id"]),
                 codigo_documento=doc["codigo_documento"],
                 competencia=doc["competencia"],
@@ -1468,6 +1473,8 @@ def _executar_conversao(execucao_id: str):
                 atualizados_sge += 1
             else:
                 erros_sge += 1
+                if detalhe_erro:
+                    erros_sge_notificacao.append(detalhe_erro)
         except Exception:
             erros_sge += 1
             logger.exception("Erro ao atualizar controle no SGE: %s", doc["arquivo_nome"])
@@ -1485,6 +1492,8 @@ def _executar_conversao(execucao_id: str):
         notificacao_kwargs["layouts_nao_reconhecidos"] = layouts_invalidos_notificacao
     if erros_processamento_notificacao:
         notificacao_kwargs["erros_processamento"] = erros_processamento_notificacao
+    if erros_sge_notificacao:
+        notificacao_kwargs["erros_sge_detalhe"] = erros_sge_notificacao
 
     possui_alertas = any(
         (

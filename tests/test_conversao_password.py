@@ -637,7 +637,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                     ),
                 ) as remover_senha,
                 patch.object(conversao, "PDFExtractor") as pdf_extractor,
-                patch.object(conversao, "baixar_controle_supabase", return_value=True),
+                patch.object(conversao, "baixar_controle_supabase", return_value=(True, None)),
                 patch.object(conversao, "enviar_notificacao_google_chat"),
             ):
                 conversao.executar_conversao()
@@ -794,7 +794,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 patch.object(conversao, "GoogleDriveAuth", return_value=fake_drive),
                 patch.object(conversao, "carregar_empresas_ativas", return_value={"AMP ENG": (23, "AMP ENG")}),
                 patch.object(conversao, "pdf_possui_senha", return_value=False),
-                patch.object(conversao, "baixar_controle_supabase", return_value=True),
+                patch.object(conversao, "baixar_controle_supabase", return_value=(True, None)),
                 patch.object(conversao, "enviar_notificacao_google_chat"),
             ):
                 conversao.executar_conversao()
@@ -886,7 +886,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 patch.object(conversao, "planilha_lancamento"),
                 patch.object(conversao.shutil, "copy2", side_effect=copy_modelo),
                 patch.object(conversao, "registrar_historico_conversao"),
-                patch.object(conversao, "baixar_controle_supabase", return_value=True),
+                patch.object(conversao, "baixar_controle_supabase", return_value=(True, None)),
                 patch.object(conversao, "enviar_notificacao_google_chat"),
             ):
                 pdf_extractor.return_value.extract.side_effect = [
@@ -916,7 +916,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 patch.object(conversao, "carregar_empresas_ativas", return_value={"CIAL": (123, "CIAL")}),
                 patch.object(conversao, "pdf_possui_senha", return_value=False),
                 patch.object(conversao, "PDFExtractor") as pdf_extractor,
-                patch.object(conversao, "baixar_controle_supabase", return_value=True) as mock_baixa,
+                patch.object(conversao, "baixar_controle_supabase", return_value=(True, None)) as mock_baixa,
                 patch.object(conversao, "enviar_notificacao_google_chat") as notificacao,
             ):
                 conversao.executar_conversao()
@@ -1036,7 +1036,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 patch.object(conversao, "pdf_possui_senha", return_value=False),
                 patch.object(conversao, "PDFExtractor") as pdf_extractor,
                 patch.object(conversao, "dispatch", return_value=pd.DataFrame()),
-                patch.object(conversao, "baixar_controle_supabase", return_value=True) as mock_baixa,
+                patch.object(conversao, "baixar_controle_supabase", return_value=(True, None)) as mock_baixa,
                 patch.object(conversao, "enviar_notificacao_google_chat") as notificacao,
             ):
                 pdf_extractor.return_value.extract.return_value = ["texto extraido"]
@@ -1163,7 +1163,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 patch.object(conversao, "dispatch", return_value=df),
                 patch.object(conversao, "planilha_lancamento"),
                 patch.object(conversao.shutil, "copy2", side_effect=copy_modelo),
-                patch.object(conversao, "baixar_controle_supabase", return_value=True) as mock_sge,
+                patch.object(conversao, "baixar_controle_supabase", return_value=(True, None)) as mock_sge,
                 patch.object(conversao, "enviar_notificacao_google_chat") as notificacao,
             ):
                 pdf_extractor.return_value.extract.return_value = ["texto extraido"]
@@ -1215,7 +1215,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 patch.object(conversao, "dispatch", return_value=df),
                 patch.object(conversao, "planilha_lancamento"),
                 patch.object(conversao.shutil, "copy2", side_effect=copy_modelo),
-                patch.object(conversao, "baixar_controle_supabase", return_value=False),
+                patch.object(conversao, "baixar_controle_supabase", return_value=(False, None)),
                 patch.object(conversao, "enviar_notificacao_google_chat") as notificacao,
             ):
                 pdf_extractor.return_value.extract.return_value = ["texto extraido"]
@@ -1423,7 +1423,7 @@ class ConversaoPasswordTest(unittest.TestCase):
         fake_post.text = "ok"
 
         with patch.object(supabase_api.requests, "post", return_value=fake_post) as mock_post:
-            resultado = supabase_api.baixar_controle_supabase(
+            sucesso, detalhe = supabase_api.baixar_controle_supabase(
                 empresa_codigo="23",
                 codigo_documento="EXTBAN",
                 competencia="2026-05",
@@ -1435,7 +1435,8 @@ class ConversaoPasswordTest(unittest.TestCase):
                 quantidade_arquivos=3,
             )
 
-        self.assertTrue(resultado)
+        self.assertTrue(sucesso)
+        self.assertIsNone(detalhe)
         mock_post.assert_called_once()
         call_args = mock_post.call_args
         self.assertEqual(call_args[0][0], supabase_api.SUPABASE_BAIXA_URL)
@@ -1455,7 +1456,7 @@ class ConversaoPasswordTest(unittest.TestCase):
         fake_response.text = "erro interno"
 
         with patch.object(supabase_api.requests, "post", return_value=fake_response):
-            resultado = supabase_api.baixar_controle_supabase(
+            sucesso, detalhe = supabase_api.baixar_controle_supabase(
                 empresa_codigo="23",
                 codigo_documento="EXTBAN",
                 competencia="2026-05",
@@ -1467,13 +1468,14 @@ class ConversaoPasswordTest(unittest.TestCase):
                 quantidade_arquivos=3,
             )
 
-        self.assertFalse(resultado)
+        self.assertFalse(sucesso)
+        self.assertIsNone(detalhe)
 
     def test_baixar_controle_retorna_false_em_excecao(self):
         with patch.object(
             supabase_api.requests, "post", side_effect=RuntimeError("offline")
         ):
-            resultado = supabase_api.baixar_controle_supabase(
+            sucesso, detalhe = supabase_api.baixar_controle_supabase(
                 empresa_codigo="23",
                 codigo_documento="EXTBAN",
                 competencia="2026-05",
@@ -1485,7 +1487,8 @@ class ConversaoPasswordTest(unittest.TestCase):
                 quantidade_arquivos=3,
             )
 
-        self.assertFalse(resultado)
+        self.assertFalse(sucesso)
+        self.assertIsNone(detalhe)
 
     def test_baixar_controle_envia_status_nao_aplicavel(self):
         fake_post = MagicMock()
@@ -1493,7 +1496,7 @@ class ConversaoPasswordTest(unittest.TestCase):
         fake_post.text = "ok"
 
         with patch.object(supabase_api.requests, "post", return_value=fake_post) as mock_post:
-            resultado = supabase_api.baixar_controle_supabase(
+            sucesso, detalhe = supabase_api.baixar_controle_supabase(
                 empresa_codigo="47",
                 codigo_documento="EXTBAN",
                 competencia="2026-05",
@@ -1506,10 +1509,33 @@ class ConversaoPasswordTest(unittest.TestCase):
                 status="Não Aplicável",
             )
 
-        self.assertTrue(resultado)
+        self.assertTrue(sucesso)
         payload = mock_post.call_args[1]["json"]
         self.assertEqual(payload["status_envio"], "Não Aplicável")
         self.assertEqual(payload["empresa_codigo"], "47")
+
+    def test_baixar_controle_retorna_false_empresa_nao_cadastrada(self):
+        fake_response = MagicMock()
+        fake_response.status_code = 404
+        fake_response.text = '{"error":{"message":"Empresa nao encontrada."}}'
+
+        with patch.object(supabase_api.requests, "post", return_value=fake_response):
+            sucesso, detalhe = supabase_api.baixar_controle_supabase(
+                empresa_codigo="449",
+                codigo_documento="EXTBAN",
+                competencia="2026-05",
+                banco="C6BANK",
+                agencia="1",
+                conta="421987570",
+                nome_arquivo="0526_EXTBAN_C6BANK_SM_METRIKAL_AG 1_CC 421987570.pdf",
+                local_arquivo="Google Drive / EMP/449_METRIKAL/MOV/CONT/26/05/EXT",
+                quantidade_arquivos=1,
+                status="Não Aplicável",
+            )
+
+        self.assertFalse(sucesso)
+        self.assertIn("449", detalhe)
+        self.assertIn("nao esta cadastrada", detalhe)
 
 
 if __name__ == "__main__":
