@@ -843,15 +843,15 @@ class ConversaoPasswordTest(unittest.TestCase):
             with (
                 patch.object(conversao, "GoogleDriveAuth", return_value=fake_drive),
                 patch.object(conversao, "pdf_possui_senha", return_value=False),
-                patch.object(conversao, "enviar_notificacao_google_chat"),
+                patch.object(conversao, "enviar_notificacao_google_chat") as mock_chat,
             ):
                 conversao.executar_conversao()
 
-        self.assertEqual(
-            fake_drive.renamed[0],
-            ("pdf-1", "[NOME INVALIDO] - 0526_EXTBAN_NUBANK_EMPRESA.pdf"),
-        )
-        self.assertIn(("pdf-1", "id-00_INVALIDOS"), fake_drive.moved)
+        self.assertEqual(fake_drive.renamed, [])
+        self.assertEqual(fake_drive.moved, [])
+        chat_kwargs = mock_chat.call_args.kwargs
+        nomes_invalidos = chat_kwargs.get("nomes_invalidos", [])
+        self.assertTrue(any("0526_EXTBAN_NUBANK_EMPRESA.pdf" in n for n in nomes_invalidos))
 
     def test_erro_em_um_pdf_nao_interrompe_o_proximo(self):
         with tempfile.TemporaryDirectory() as temp_dir:

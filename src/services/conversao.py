@@ -1207,16 +1207,9 @@ def _executar_conversao(execucao_id: str):
             try:
                 dados_nome = interpretar_nome_extrato(arquivo_nome)
             except ValueError as erro_nome:
-                nome_final = renomear_e_mover_para_invalidos(
-                    google_drive=google_drive,
-                    arquivo_id=arquivo_id,
-                    arquivo_nome=sanitizar_nome_senha(arquivo_nome),
-                    invalidos_id=invalidos_id,
-                    prefixo=NOME_INVALIDO_PREFIX,
-                    motivo=f"Nome de PDF invalido: {erro_nome}",
+                nomes_invalidos_notificacao.append(
+                    f"{arquivo_nome} - nome fora do padrao: {erro_nome}"
                 )
-                nomes_invalidos_notificacao.append(nome_final)
-                invalidos += 1
                 continue
 
             arquivo_nome = dados_nome.nome_limpo
