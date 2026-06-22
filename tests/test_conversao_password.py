@@ -637,6 +637,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                     ),
                 ) as remover_senha,
                 patch.object(conversao, "PDFExtractor") as pdf_extractor,
+                patch.object(conversao, "baixar_controle_supabase", return_value=True),
                 patch.object(conversao, "enviar_notificacao_google_chat"),
             ):
                 conversao.executar_conversao()
@@ -793,6 +794,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 patch.object(conversao, "GoogleDriveAuth", return_value=fake_drive),
                 patch.object(conversao, "carregar_empresas_ativas", return_value={"AMP ENG": (23, "AMP ENG")}),
                 patch.object(conversao, "pdf_possui_senha", return_value=False),
+                patch.object(conversao, "baixar_controle_supabase", return_value=True),
                 patch.object(conversao, "enviar_notificacao_google_chat"),
             ):
                 conversao.executar_conversao()
@@ -914,6 +916,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 patch.object(conversao, "carregar_empresas_ativas", return_value={"CIAL": (123, "CIAL")}),
                 patch.object(conversao, "pdf_possui_senha", return_value=False),
                 patch.object(conversao, "PDFExtractor") as pdf_extractor,
+                patch.object(conversao, "baixar_controle_supabase", return_value=True) as mock_baixa,
                 patch.object(conversao, "enviar_notificacao_google_chat") as notificacao,
             ):
                 conversao.executar_conversao()
@@ -933,6 +936,8 @@ class ConversaoPasswordTest(unittest.TestCase):
         )
         self.assertEqual(notificacao.call_args.kwargs["status_execucao"], "SUCESSO")
         pdf_extractor.assert_not_called()
+        mock_baixa.assert_called_once()
+        self.assertEqual(mock_baixa.call_args[1]["status"], "Não Aplicável")
 
     def test_sem_movimentacao_sem_empresa_permanece_na_ext(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1031,6 +1036,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 patch.object(conversao, "pdf_possui_senha", return_value=False),
                 patch.object(conversao, "PDFExtractor") as pdf_extractor,
                 patch.object(conversao, "dispatch", return_value=pd.DataFrame()),
+                patch.object(conversao, "baixar_controle_supabase", return_value=True) as mock_baixa,
                 patch.object(conversao, "enviar_notificacao_google_chat") as notificacao,
             ):
                 pdf_extractor.return_value.extract.return_value = ["texto extraido"]
@@ -1049,6 +1055,8 @@ class ConversaoPasswordTest(unittest.TestCase):
             notificacao.call_args.kwargs["pdfs_sem_movimentacao"],
             ["0526_EXTBAN_NORMAL_CIAL_AG 1_CC 1.pdf - EMP/123_CIAL/MOV/CONT/26/05/EXT"],
         )
+        mock_baixa.assert_called_once()
+        self.assertEqual(mock_baixa.call_args[1]["status"], "Não Aplicável")
 
     def test_extrai_competencia_do_nome_do_arquivo(self):
         resultado = conversao.extrair_competencia_nome_arquivo(
@@ -1172,6 +1180,7 @@ class ConversaoPasswordTest(unittest.TestCase):
         self.assertEqual(call_kwargs["quantidade_arquivos"], 3)
         self.assertEqual(call_kwargs["nome_arquivo"], "0526_EXTBAN_C6BANK_CAMARGOS_AG 1_CC 123.pdf")
         self.assertIn("Google Drive /", call_kwargs["local_arquivo"])
+        self.assertEqual(call_kwargs["status"], "Enviado")
 
         notificacao.assert_called_once()
         notificacao_kwargs = notificacao.call_args[1]
@@ -1447,6 +1456,7 @@ class ConversaoPasswordTest(unittest.TestCase):
         self.assertEqual(call_args[1]["json"]["competencia"], "2026-05")
         self.assertEqual(call_args[1]["json"]["codigo_documento"], "EXTBAN")
         self.assertEqual(call_args[1]["json"]["quantidade_arquivos"], 3)
+        self.assertEqual(call_args[1]["json"]["status"], "Enviado")
 
     def test_baixar_controle_retorna_false_em_erro_http(self):
         fake_get = MagicMock()
@@ -1527,6 +1537,37 @@ class ConversaoPasswordTest(unittest.TestCase):
 
         self.assertFalse(resultado)
         mock_post.assert_not_called()
+
+    def test_baixar_controle_envia_status_nao_aplicavel(self):
+        fake_get = MagicMock()
+        fake_get.status_code = 200
+        fake_get.json.return_value = {
+            "data": [{"id_empresa": "uuid-empresa-42"}],
+        }
+
+        fake_post = MagicMock()
+        fake_post.status_code = 200
+        fake_post.text = "ok"
+
+        with (
+            patch.object(supabase_api.requests, "get", return_value=fake_get),
+            patch.object(supabase_api.requests, "post", return_value=fake_post) as mock_post,
+        ):
+            resultado = supabase_api.baixar_controle_supabase(
+                empresa_codigo="23",
+                codigo_documento="EXTBAN",
+                competencia="2026-05",
+                banco="ITAU",
+                agencia="2903",
+                conta="97630-2",
+                nome_arquivo="0526_EXTBAN_ITAU_SM_SEVEN_AG 2903_CC 97630-2.pdf",
+                local_arquivo="Google Drive / EMP/47_SEVEN/MOV/CONT/26/05/EXT",
+                quantidade_arquivos=1,
+                status="Não Aplicável",
+            )
+
+        self.assertTrue(resultado)
+        self.assertEqual(mock_post.call_args[1]["json"]["status"], "Não Aplicável")
 
 
 if __name__ == "__main__":

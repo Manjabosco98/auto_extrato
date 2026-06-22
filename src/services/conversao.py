@@ -996,7 +996,7 @@ def arquivar_pdf_sem_movimentacao(
     arquivo_id: str,
     nome_arquivo: str,
     empresas: dict[str, tuple[object, str]] | None = None,
-) -> str | None:
+) -> dict | None:
     cliente = extrair_cliente_nome_arquivo(nome_arquivo)
     empresa_id, empresa_nome = buscar_empresa_por_cliente(cliente, empresas=empresas)
 
@@ -1040,7 +1040,11 @@ def arquivar_pdf_sem_movimentacao(
         nome_arquivo,
         pasta_destino_historico,
     )
-    return f"{nome_arquivo} - {pasta_destino_historico}"
+    return {
+        "notificacao": f"{nome_arquivo} - {pasta_destino_historico}",
+        "empresa_id": empresa_id,
+        "pasta_destino": pasta_destino_historico,
+    }
 
 
 def _executar_conversao(execucao_id: str):
@@ -1107,6 +1111,7 @@ def _executar_conversao(execucao_id: str):
     layouts_invalidos_notificacao = []
     erros_processamento_notificacao = []
     documentos_convertidos = []
+    documentos_para_baixa = []
 
     for arquivo_drive in arquivos:
         arquivo_id = arquivo_drive["id"]
@@ -1220,7 +1225,7 @@ def _executar_conversao(execucao_id: str):
             arquivo_stem = Path(arquivo_nome).stem
 
             if dados_nome.sem_movimentacao:
-                linha_sem_movimentacao = arquivar_pdf_sem_movimentacao(
+                resultado_sm = arquivar_pdf_sem_movimentacao(
                     google_drive=google_drive,
                     pasta_raiz_id=extratos_id,
                     pasta_emp_id=emp_raiz_id,
@@ -1229,9 +1234,23 @@ def _executar_conversao(execucao_id: str):
                     nome_arquivo=arquivo_nome,
                     empresas=empresas,
                 )
-                if linha_sem_movimentacao:
-                    pdfs_sem_movimentacao_notificacao.append(linha_sem_movimentacao)
+                if resultado_sm:
+                    pdfs_sem_movimentacao_notificacao.append(resultado_sm["notificacao"])
                     sem_movimentacao += 1
+                    documentos_para_baixa.append({
+                        "empresa_id": resultado_sm["empresa_id"],
+                        "mes": dados_nome.mes,
+                        "ano": dados_nome.ano,
+                        "competencia": dados_nome.competencia,
+                        "codigo_documento": dados_nome.codigo_documento,
+                        "banco": dados_nome.banco,
+                        "agencia": dados_nome.agencia,
+                        "conta": dados_nome.conta,
+                        "arquivo_nome": arquivo_nome,
+                        "pasta_destino": resultado_sm["pasta_destino"],
+                        "quantidade_arquivos": 1,
+                        "status": "Não Aplicável",
+                    })
                 else:
                     erros_processamento_notificacao.append(
                         f"{arquivo_nome} - empresa ou pasta nao encontrada; mantido na EXT"
@@ -1272,7 +1291,7 @@ def _executar_conversao(execucao_id: str):
                 continue
 
             if df is None or df.empty:
-                linha_sem_movimentacao = arquivar_pdf_sem_movimentacao(
+                resultado_sm = arquivar_pdf_sem_movimentacao(
                     google_drive=google_drive,
                     pasta_raiz_id=extratos_id,
                     pasta_emp_id=emp_raiz_id,
@@ -1281,9 +1300,23 @@ def _executar_conversao(execucao_id: str):
                     nome_arquivo=arquivo_nome,
                     empresas=empresas,
                 )
-                if linha_sem_movimentacao:
-                    pdfs_sem_movimentacao_notificacao.append(linha_sem_movimentacao)
+                if resultado_sm:
+                    pdfs_sem_movimentacao_notificacao.append(resultado_sm["notificacao"])
                     sem_movimentacao += 1
+                    documentos_para_baixa.append({
+                        "empresa_id": resultado_sm["empresa_id"],
+                        "mes": dados_nome.mes,
+                        "ano": dados_nome.ano,
+                        "competencia": dados_nome.competencia,
+                        "codigo_documento": dados_nome.codigo_documento,
+                        "banco": dados_nome.banco,
+                        "agencia": dados_nome.agencia,
+                        "conta": dados_nome.conta,
+                        "arquivo_nome": arquivo_nome,
+                        "pasta_destino": resultado_sm["pasta_destino"],
+                        "quantidade_arquivos": 1,
+                        "status": "Não Aplicável",
+                    })
                 else:
                     erros_processamento_notificacao.append(
                         f"{arquivo_nome} - empresa ou pasta nao encontrada; mantido na EXT"
@@ -1379,6 +1412,21 @@ def _executar_conversao(execucao_id: str):
                 "momento": momento_conversao,
             })
 
+            documentos_para_baixa.append({
+                "empresa_id": empresa_id,
+                "mes": dados_nome.mes,
+                "ano": dados_nome.ano,
+                "competencia": dados_nome.competencia,
+                "codigo_documento": dados_nome.codigo_documento,
+                "banco": dados_nome.banco,
+                "agencia": dados_nome.agencia,
+                "conta": dados_nome.conta,
+                "arquivo_nome": arquivo_nome,
+                "pasta_destino": pasta_destino_historico,
+                "quantidade_arquivos": 3,
+                "status": "Enviado",
+            })
+
             convertidos += 1
             extratos_notificacao.append(arquivo_stem)
             logger.info("PDF convertido com sucesso: %s", arquivo_nome)
@@ -1397,11 +1445,11 @@ def _executar_conversao(execucao_id: str):
                 dest_excel.unlink(missing_ok=True)
             logger.info("Arquivos temporarios limpos para: %s", arquivo_nome_seguro)
 
-    logger.info("Atualizando controle no portal SGE para %s documento(s)", len(documentos_convertidos))
+    logger.info("Atualizando controle no portal SGE para %s documento(s)", len(documentos_para_baixa))
     atualizados_sge = 0
     erros_sge = 0
 
-    for doc in documentos_convertidos:
+    for doc in documentos_para_baixa:
         try:
             local = f"Google Drive / {doc['pasta_destino']}"
             sucesso = baixar_controle_supabase(
@@ -1413,7 +1461,8 @@ def _executar_conversao(execucao_id: str):
                 conta=doc["conta"],
                 nome_arquivo=doc["arquivo_nome"],
                 local_arquivo=local,
-                quantidade_arquivos=3,
+                quantidade_arquivos=doc["quantidade_arquivos"],
+                status=doc["status"],
             )
             if sucesso:
                 atualizados_sge += 1

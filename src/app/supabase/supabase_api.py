@@ -197,11 +197,12 @@ def baixar_controle_supabase(
     nome_arquivo: str,
     local_arquivo: str,
     quantidade_arquivos: int,
+    status: str = "Enviado",
     *,
     url: str = SUPABASE_BAIXA_URL,
     key: str = SUPABASE_CONTROLE_KEY,
 ) -> bool:
-    """POST /controle/baixa - marca documento como Enviado via nova API SGECONT."""
+    """POST /controle/baixa - marca documento via nova API SGECONT."""
     id_empresa = buscar_id_empresa_supabase(
         empresa_codigo=empresa_codigo,
         competencia=competencia,
@@ -227,6 +228,7 @@ def baixar_controle_supabase(
         "nome_arquivo": nome_arquivo,
         "local_arquivo": local_arquivo,
         "quantidade_arquivos": quantidade_arquivos,
+        "status": status,
     }
 
     headers = {
@@ -236,12 +238,13 @@ def baixar_controle_supabase(
 
     try:
         logger.info(
-            "Baixa no SGECONT: empresa=%s competencia=%s cod_doc=%s banco=%s arquivo=%s",
+            "Baixa no SGECONT: empresa=%s competencia=%s cod_doc=%s banco=%s arquivo=%s status=%s",
             empresa_codigo,
             competencia,
             codigo_documento,
             banco,
             nome_arquivo,
+            status,
         )
         response = requests.post(url, json=payload, headers=headers, timeout=30)
         resposta_texto = (response.text or "")[:500]
