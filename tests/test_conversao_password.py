@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -1448,6 +1449,7 @@ class ConversaoPasswordTest(unittest.TestCase):
         self.assertEqual(call_args[1]["json"]["codigo_documento"], "EXTBAN")
         self.assertEqual(call_args[1]["json"]["quantidade_arquivos"], 3)
         self.assertEqual(call_args[1]["json"]["status_envio"], "Enviado")
+        self.assertEqual(call_args[1]["json"]["data_recebimento"], date.today().isoformat())
         self.assertNotIn("id_empresa", call_args[1]["json"])
 
     def test_baixar_controle_retorna_false_em_erro_http(self):
@@ -1513,6 +1515,7 @@ class ConversaoPasswordTest(unittest.TestCase):
         payload = mock_post.call_args[1]["json"]
         self.assertEqual(payload["status_envio"], "Não Aplicável")
         self.assertEqual(payload["empresa_codigo"], "47")
+        self.assertEqual(payload["data_recebimento"], date.today().isoformat())
 
     def test_baixar_controle_retorna_false_empresa_nao_cadastrada(self):
         fake_response = MagicMock()

@@ -188,7 +188,6 @@ def enviar_notificacao_google_chat(
             nomes_extratos,
             pdfs_sem_movimentacao=pdfs_sem_movimentacao,
             pdfs_nao_legiveis=pdfs_nao_legiveis,
-            atualizados_sge=atualizados_sge,
             momento=momento,
             nomes_invalidos=nomes_invalidos,
             erros_senha=erros_senha,

@@ -1,4 +1,5 @@
 import logging
+from datetime import date
 
 import requests
 
@@ -198,6 +199,7 @@ def baixar_controle_supabase(
     local_arquivo: str,
     quantidade_arquivos: int,
     status: str = "Enviado",
+    data_recebimento: str | None = None,
     *,
     url: str = SUPABASE_BAIXA_URL,
     key: str = SUPABASE_CONTROLE_KEY,
@@ -208,6 +210,8 @@ def baixar_controle_supabase(
     ``detalhe`` contem uma mensagem amigavel quando a empresa nao
     esta cadastrada no SGECONT (HTTP 404).
     """
+    if data_recebimento is None:
+        data_recebimento = date.today().isoformat()
     payload = {
         "empresa_codigo": empresa_codigo,
         "codigo_documento": codigo_documento,
@@ -219,6 +223,7 @@ def baixar_controle_supabase(
         "local_arquivo": local_arquivo,
         "quantidade_arquivos": quantidade_arquivos,
         "status_envio": status,
+        "data_recebimento": data_recebimento,
     }
 
     headers = {
