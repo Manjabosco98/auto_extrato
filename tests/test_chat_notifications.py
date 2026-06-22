@@ -268,7 +268,7 @@ class ChatNotificationsTest(unittest.TestCase):
         kwargs = registrar.call_args.kwargs
         self.assertEqual(kwargs["tipo"], "SEM_ARQUIVOS")
         self.assertIn("Nenhum PDF encontrado na pasta EXT", kwargs["mensagem"])
-        self.assertIn("Status: SUCESSO", kwargs["mensagem"])
+        self.assertIn("Recebimento: EXTRATOS", kwargs["mensagem"])
 
     def test_fallback_local_preserva_pendencia(self):
         with tempfile.TemporaryDirectory() as temp_dir:

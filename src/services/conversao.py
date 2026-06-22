@@ -194,22 +194,17 @@ def enviar_notificacao_google_chat(
             layouts_nao_reconhecidos=layouts_nao_reconhecidos,
             erros_processamento=erros_processamento,
         )
-        status_execucao = status_execucao or "SUCESSO"
         resumo = (
-            f"Execucao: {execucao_id}\n"
-            f"Data/hora: {momento.strftime('%d/%m/%Y %H:%M:%S')}\n"
-            f"Status: {status_execucao}\n\n"
+            f"Recebimento: EXTRATOS\n"
+            f"Data/hora: {momento.strftime('%d/%m/%Y %H:%M:%S')}\n\n"
             "Resumo:\n"
-            f"- Processados: {total_processados}\n"
-            f"- Convertidos: {total_convertidos}\n"
-            f"- Sem movimentacao: {total_sem_movimentacao}\n"
-            f"- Invalidos: {total_invalidos}\n"
-            f"- Desbloqueados: {total_desbloqueados}\n"
-            f"- Atualizados no SGE: {atualizados_sge or 0}\n"
-            f"- Erros no SGE: {erros_sge}"
+            f"Processados: {total_processados}\n"
+            f"Convertidos: {total_convertidos}\n"
+            f"Sem movimentacao: {total_sem_movimentacao}\n"
+            f"Invalidos (ILEGÍVEL): {total_invalidos}\n"
+            f"Desbloqueados: {total_desbloqueados}\n"
+            f"Atualizados no PORTAL SGE: {atualizados_sge or 0}"
         )
-        for detalhe in erros_sge_detalhe:
-            resumo += f"\n  - {detalhe}"
         if detalhes:
             resumo = f"{resumo}\n\n{detalhes}"
         elif tipo == "SEM_ARQUIVOS":
