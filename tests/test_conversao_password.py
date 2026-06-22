@@ -1418,20 +1418,11 @@ class ConversaoPasswordTest(unittest.TestCase):
         self.assertEqual(notificacao.call_args.kwargs["status_execucao"], "FALHA")
 
     def test_baixar_controle_envia_post_para_url_correta(self):
-        fake_get = MagicMock()
-        fake_get.status_code = 200
-        fake_get.json.return_value = {
-            "data": [{"id_empresa": "uuid-empresa-42"}],
-        }
-
         fake_post = MagicMock()
         fake_post.status_code = 200
         fake_post.text = "ok"
 
-        with (
-            patch.object(supabase_api.requests, "get", return_value=fake_get),
-            patch.object(supabase_api.requests, "post", return_value=fake_post) as mock_post,
-        ):
+        with patch.object(supabase_api.requests, "post", return_value=fake_post) as mock_post:
             resultado = supabase_api.baixar_controle_supabase(
                 empresa_codigo="23",
                 codigo_documento="EXTBAN",
@@ -1448,7 +1439,6 @@ class ConversaoPasswordTest(unittest.TestCase):
         mock_post.assert_called_once()
         call_args = mock_post.call_args
         self.assertEqual(call_args[0][0], supabase_api.SUPABASE_BAIXA_URL)
-        self.assertEqual(call_args[1]["json"]["id_empresa"], "uuid-empresa-42")
         self.assertEqual(call_args[1]["json"]["empresa_codigo"], "23")
         self.assertEqual(call_args[1]["json"]["banco"], "C6BANK")
         self.assertEqual(call_args[1]["json"]["agencia"], "1")
@@ -1456,23 +1446,15 @@ class ConversaoPasswordTest(unittest.TestCase):
         self.assertEqual(call_args[1]["json"]["competencia"], "2026-05")
         self.assertEqual(call_args[1]["json"]["codigo_documento"], "EXTBAN")
         self.assertEqual(call_args[1]["json"]["quantidade_arquivos"], 3)
-        self.assertEqual(call_args[1]["json"]["status"], "Enviado")
+        self.assertEqual(call_args[1]["json"]["status_envio"], "Enviado")
+        self.assertNotIn("id_empresa", call_args[1]["json"])
 
     def test_baixar_controle_retorna_false_em_erro_http(self):
-        fake_get = MagicMock()
-        fake_get.status_code = 200
-        fake_get.json.return_value = {
-            "data": [{"id_empresa": "uuid-empresa-42"}],
-        }
-
         fake_response = MagicMock()
         fake_response.status_code = 500
         fake_response.text = "erro interno"
 
-        with (
-            patch.object(supabase_api.requests, "get", return_value=fake_get),
-            patch.object(supabase_api.requests, "post", return_value=fake_response),
-        ):
+        with patch.object(supabase_api.requests, "post", return_value=fake_response):
             resultado = supabase_api.baixar_controle_supabase(
                 empresa_codigo="23",
                 codigo_documento="EXTBAN",
@@ -1488,17 +1470,8 @@ class ConversaoPasswordTest(unittest.TestCase):
         self.assertFalse(resultado)
 
     def test_baixar_controle_retorna_false_em_excecao(self):
-        fake_get = MagicMock()
-        fake_get.status_code = 200
-        fake_get.json.return_value = {
-            "data": [{"id_empresa": "uuid-empresa-42"}],
-        }
-
-        with (
-            patch.object(supabase_api.requests, "get", return_value=fake_get),
-            patch.object(
-                supabase_api.requests, "post", side_effect=RuntimeError("offline")
-            ),
+        with patch.object(
+            supabase_api.requests, "post", side_effect=RuntimeError("offline")
         ):
             resultado = supabase_api.baixar_controle_supabase(
                 empresa_codigo="23",
@@ -1514,47 +1487,14 @@ class ConversaoPasswordTest(unittest.TestCase):
 
         self.assertFalse(resultado)
 
-    def test_baixar_controle_retorna_false_sem_id_empresa(self):
-        fake_get = MagicMock()
-        fake_get.status_code = 200
-        fake_get.json.return_value = {"data": []}
-
-        with (
-            patch.object(supabase_api.requests, "get", return_value=fake_get),
-            patch.object(supabase_api.requests, "post") as mock_post,
-        ):
-            resultado = supabase_api.baixar_controle_supabase(
-                empresa_codigo="999",
-                codigo_documento="EXTBAN",
-                competencia="2026-01",
-                banco="ITAU",
-                agencia="1",
-                conta="123",
-                nome_arquivo="0126_EXTBAN_ITAU.pdf",
-                local_arquivo="Google Drive / XXX",
-                quantidade_arquivos=3,
-            )
-
-        self.assertFalse(resultado)
-        mock_post.assert_not_called()
-
     def test_baixar_controle_envia_status_nao_aplicavel(self):
-        fake_get = MagicMock()
-        fake_get.status_code = 200
-        fake_get.json.return_value = {
-            "data": [{"id_empresa": "uuid-empresa-42"}],
-        }
-
         fake_post = MagicMock()
         fake_post.status_code = 200
         fake_post.text = "ok"
 
-        with (
-            patch.object(supabase_api.requests, "get", return_value=fake_get),
-            patch.object(supabase_api.requests, "post", return_value=fake_post) as mock_post,
-        ):
+        with patch.object(supabase_api.requests, "post", return_value=fake_post) as mock_post:
             resultado = supabase_api.baixar_controle_supabase(
-                empresa_codigo="23",
+                empresa_codigo="47",
                 codigo_documento="EXTBAN",
                 competencia="2026-05",
                 banco="ITAU",
@@ -1567,7 +1507,9 @@ class ConversaoPasswordTest(unittest.TestCase):
             )
 
         self.assertTrue(resultado)
-        self.assertEqual(mock_post.call_args[1]["json"]["status"], "Não Aplicável")
+        payload = mock_post.call_args[1]["json"]
+        self.assertEqual(payload["status_envio"], "Não Aplicável")
+        self.assertEqual(payload["empresa_codigo"], "47")
 
 
 if __name__ == "__main__":

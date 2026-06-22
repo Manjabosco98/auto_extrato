@@ -202,23 +202,8 @@ def baixar_controle_supabase(
     url: str = SUPABASE_BAIXA_URL,
     key: str = SUPABASE_CONTROLE_KEY,
 ) -> bool:
-    """POST /controle/baixa - marca documento via nova API SGECONT."""
-    id_empresa = buscar_id_empresa_supabase(
-        empresa_codigo=empresa_codigo,
-        competencia=competencia,
-        codigo_documento=codigo_documento,
-    )
-
-    if not id_empresa:
-        logger.warning(
-            "Baixa SGECONT ignorada: id_empresa nao encontrado para empresa=%s competencia=%s",
-            empresa_codigo,
-            competencia,
-        )
-        return False
-
+    """POST /controle/baixa - marca documento via API SGECONT."""
     payload = {
-        "id_empresa": id_empresa,
         "empresa_codigo": empresa_codigo,
         "codigo_documento": codigo_documento,
         "competencia": competencia,
@@ -228,7 +213,7 @@ def baixar_controle_supabase(
         "nome_arquivo": nome_arquivo,
         "local_arquivo": local_arquivo,
         "quantidade_arquivos": quantidade_arquivos,
-        "status": status,
+        "status_envio": status,
     }
 
     headers = {
@@ -238,7 +223,7 @@ def baixar_controle_supabase(
 
     try:
         logger.info(
-            "Baixa no SGECONT: empresa=%s competencia=%s cod_doc=%s banco=%s arquivo=%s status=%s",
+            "Baixa no SGECONT: empresa=%s competencia=%s cod_doc=%s banco=%s arquivo=%s status_envio=%s",
             empresa_codigo,
             competencia,
             codigo_documento,
