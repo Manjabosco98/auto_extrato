@@ -16,6 +16,10 @@ SUPABASE_CONTROLE_KEY = (
     "sk_live_9e8b6a71-166e-4a57-ac3e-91b3fac1c3a6"
     "-b24c8d1c-3802-4206-8c36-1a9711ed89bc"
 )
+SUPABASE_BAIXA_URL = (
+    "https://ngsgvitzkdcbrhfvbymu.supabase.co"
+    "/functions/v1/api-documentos/controle/baixa"
+)
 
 
 def buscar_id_empresa_supabase(
@@ -177,6 +181,79 @@ def atualizar_controle_supabase(
     except Exception:
         logger.exception(
             "Erro ao atualizar controle no SGE: empresa=%s arquivo=%s",
+            empresa_codigo,
+            nome_arquivo,
+        )
+        return False
+
+
+def baixar_controle_supabase(
+    empresa_codigo: str,
+    codigo_documento: str,
+    competencia: str,
+    banco: str,
+    agencia: str,
+    conta: str,
+    nome_arquivo: str,
+    local_arquivo: str,
+    quantidade_arquivos: int,
+    *,
+    url: str = SUPABASE_BAIXA_URL,
+    key: str = SUPABASE_CONTROLE_KEY,
+) -> bool:
+    """POST /controle/baixa - marca documento como Enviado via nova API SGECONT."""
+    payload = {
+        "empresa_codigo": empresa_codigo,
+        "codigo_documento": codigo_documento,
+        "competencia": competencia,
+        "banco": banco,
+        "agencia": agencia,
+        "conta": conta,
+        "nome_arquivo": nome_arquivo,
+        "local_arquivo": local_arquivo,
+        "quantidade_arquivos": quantidade_arquivos,
+    }
+
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        logger.info(
+            "Baixa no SGECONT: empresa=%s competencia=%s cod_doc=%s banco=%s arquivo=%s",
+            empresa_codigo,
+            competencia,
+            codigo_documento,
+            banco,
+            nome_arquivo,
+        )
+        response = requests.post(url, json=payload, headers=headers, timeout=30)
+        resposta_texto = (response.text or "")[:500]
+        logger.info(
+            "Resposta SGECONT baixa: status=%s body=%s",
+            response.status_code,
+            resposta_texto,
+        )
+
+        if response.status_code < 200 or response.status_code >= 300:
+            logger.error(
+                "Falha na baixa SGECONT: status=%s body=%s",
+                response.status_code,
+                resposta_texto,
+            )
+            return False
+
+        logger.info(
+            "Baixa SGECONT realizada: empresa=%s competencia=%s arquivo=%s",
+            empresa_codigo,
+            competencia,
+            nome_arquivo,
+        )
+        return True
+    except Exception:
+        logger.exception(
+            "Erro na baixa SGECONT: empresa=%s arquivo=%s",
             empresa_codigo,
             nome_arquivo,
         )

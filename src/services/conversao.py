@@ -25,7 +25,7 @@ from src.app.gdrive.settings import (
     XLSM_MIME_TYPE,
     GOOGLE_OAUTH_TOKEN_SECRET
 )
-from src.app.supabase.supabase_api import atualizar_controle_supabase
+from src.app.supabase.supabase_api import baixar_controle_supabase
 from src.schemas import LayoutNotRecognized, dispatch
 from src.schemas.parsers.pdf_extractor import PDFExtractor
 from src.services.chat_notifications import (
@@ -1371,6 +1371,9 @@ def _executar_conversao(execucao_id: str):
                 "ano": dados_nome.ano,
                 "competencia": dados_nome.competencia,
                 "codigo_documento": dados_nome.codigo_documento,
+                "banco": dados_nome.banco,
+                "agencia": dados_nome.agencia,
+                "conta": dados_nome.conta,
                 "arquivo_nome": arquivo_nome,
                 "pasta_destino": pasta_destino_historico,
                 "momento": momento_conversao,
@@ -1401,14 +1404,16 @@ def _executar_conversao(execucao_id: str):
     for doc in documentos_convertidos:
         try:
             local = f"Google Drive / {doc['pasta_destino']}"
-            sucesso = atualizar_controle_supabase(
+            sucesso = baixar_controle_supabase(
                 empresa_codigo=str(doc["empresa_id"]),
-                competencia=doc["competencia"],
                 codigo_documento=doc["codigo_documento"],
-                data_recebimento=doc["momento"].strftime("%Y-%m-%d"),
-                quantidade_arquivos=3,
+                competencia=doc["competencia"],
+                banco=doc["banco"],
+                agencia=doc["agencia"],
+                conta=doc["conta"],
                 nome_arquivo=doc["arquivo_nome"],
                 local_arquivo=local,
+                quantidade_arquivos=3,
             )
             if sucesso:
                 atualizados_sge += 1

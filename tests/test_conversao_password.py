@@ -884,7 +884,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 patch.object(conversao, "planilha_lancamento"),
                 patch.object(conversao.shutil, "copy2", side_effect=copy_modelo),
                 patch.object(conversao, "registrar_historico_conversao"),
-                patch.object(conversao, "atualizar_controle_supabase", return_value=True),
+                patch.object(conversao, "baixar_controle_supabase", return_value=True),
                 patch.object(conversao, "enviar_notificacao_google_chat"),
             ):
                 pdf_extractor.return_value.extract.side_effect = [
@@ -1155,7 +1155,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 patch.object(conversao, "dispatch", return_value=df),
                 patch.object(conversao, "planilha_lancamento"),
                 patch.object(conversao.shutil, "copy2", side_effect=copy_modelo),
-                patch.object(conversao, "atualizar_controle_supabase", return_value=True) as mock_sge,
+                patch.object(conversao, "baixar_controle_supabase", return_value=True) as mock_sge,
                 patch.object(conversao, "enviar_notificacao_google_chat") as notificacao,
             ):
                 pdf_extractor.return_value.extract.return_value = ["texto extraido"]
@@ -1166,6 +1166,9 @@ class ConversaoPasswordTest(unittest.TestCase):
         self.assertEqual(call_kwargs["empresa_codigo"], "23")
         self.assertEqual(call_kwargs["competencia"], "2026-05")
         self.assertEqual(call_kwargs["codigo_documento"], "EXTBAN")
+        self.assertEqual(call_kwargs["banco"], "C6BANK")
+        self.assertEqual(call_kwargs["agencia"], "1")
+        self.assertEqual(call_kwargs["conta"], "123")
         self.assertEqual(call_kwargs["quantidade_arquivos"], 3)
         self.assertEqual(call_kwargs["nome_arquivo"], "0526_EXTBAN_C6BANK_CAMARGOS_AG 1_CC 123.pdf")
         self.assertIn("Google Drive /", call_kwargs["local_arquivo"])
@@ -1203,7 +1206,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 patch.object(conversao, "dispatch", return_value=df),
                 patch.object(conversao, "planilha_lancamento"),
                 patch.object(conversao.shutil, "copy2", side_effect=copy_modelo),
-                patch.object(conversao, "atualizar_controle_supabase", return_value=False),
+                patch.object(conversao, "baixar_controle_supabase", return_value=False),
                 patch.object(conversao, "enviar_notificacao_google_chat") as notificacao,
             ):
                 pdf_extractor.return_value.extract.return_value = ["texto extraido"]
@@ -1404,6 +1407,74 @@ class ConversaoPasswordTest(unittest.TestCase):
         notificacao.assert_called_once()
         self.assertEqual(notificacao.call_args.kwargs["tipo"], "FALHA")
         self.assertEqual(notificacao.call_args.kwargs["status_execucao"], "FALHA")
+
+    def test_baixar_controle_envia_post_para_url_correta(self):
+        fake_response = MagicMock()
+        fake_response.status_code = 200
+        fake_response.text = "ok"
+
+        with patch.object(supabase_api.requests, "post", return_value=fake_response) as mock_post:
+            resultado = supabase_api.baixar_controle_supabase(
+                empresa_codigo="23",
+                codigo_documento="EXTBAN",
+                competencia="2026-05",
+                banco="C6BANK",
+                agencia="1",
+                conta="123",
+                nome_arquivo="0526_EXTBAN_C6BANK_CAMARGOS_AG 1_CC 123.pdf",
+                local_arquivo="Google Drive / EMP/23_CAMARGOS/MOV/CONT/26/05/EXT",
+                quantidade_arquivos=3,
+            )
+
+        self.assertTrue(resultado)
+        mock_post.assert_called_once()
+        call_args = mock_post.call_args
+        self.assertEqual(call_args[0][0], supabase_api.SUPABASE_BAIXA_URL)
+        self.assertEqual(call_args[1]["json"]["empresa_codigo"], "23")
+        self.assertEqual(call_args[1]["json"]["banco"], "C6BANK")
+        self.assertEqual(call_args[1]["json"]["agencia"], "1")
+        self.assertEqual(call_args[1]["json"]["conta"], "123")
+        self.assertEqual(call_args[1]["json"]["competencia"], "2026-05")
+        self.assertEqual(call_args[1]["json"]["codigo_documento"], "EXTBAN")
+        self.assertEqual(call_args[1]["json"]["quantidade_arquivos"], 3)
+
+    def test_baixar_controle_retorna_false_em_erro_http(self):
+        fake_response = MagicMock()
+        fake_response.status_code = 500
+        fake_response.text = "erro interno"
+
+        with patch.object(supabase_api.requests, "post", return_value=fake_response):
+            resultado = supabase_api.baixar_controle_supabase(
+                empresa_codigo="23",
+                codigo_documento="EXTBAN",
+                competencia="2026-05",
+                banco="C6BANK",
+                agencia="1",
+                conta="123",
+                nome_arquivo="0526_EXTBAN_C6BANK_CAMARGOS_AG 1_CC 123.pdf",
+                local_arquivo="Google Drive / EMP/23_CAMARGOS/MOV/CONT/26/05/EXT",
+                quantidade_arquivos=3,
+            )
+
+        self.assertFalse(resultado)
+
+    def test_baixar_controle_retorna_false_em_excecao(self):
+        with patch.object(
+            supabase_api.requests, "post", side_effect=RuntimeError("offline")
+        ):
+            resultado = supabase_api.baixar_controle_supabase(
+                empresa_codigo="23",
+                codigo_documento="EXTBAN",
+                competencia="2026-05",
+                banco="C6BANK",
+                agencia="1",
+                conta="123",
+                nome_arquivo="0526_EXTBAN_C6BANK_CAMARGOS_AG 1_CC 123.pdf",
+                local_arquivo="Google Drive / EMP/23_CAMARGOS/MOV/CONT/26/05/EXT",
+                quantidade_arquivos=3,
+            )
+
+        self.assertFalse(resultado)
 
 
 if __name__ == "__main__":
