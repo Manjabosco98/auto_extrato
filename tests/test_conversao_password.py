@@ -638,6 +638,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                     ),
                 ) as remover_senha,
                 patch.object(conversao, "PDFExtractor") as pdf_extractor,
+                patch.object(conversao, "buscar_id_empresa_supabase", return_value="uuid-empresa-23"),
                 patch.object(conversao, "baixar_controle_supabase", return_value=(True, None)),
                 patch.object(conversao, "enviar_notificacao_google_chat"),
             ):
@@ -716,6 +717,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 patch.object(conversao, "planilha_lancamento"),
                 patch.object(conversao.shutil, "copy2", side_effect=copy_modelo),
                 patch.object(conversao, "registrar_historico_conversao", side_effect=registrar_historico),
+                patch.object(conversao, "buscar_id_empresa_supabase", return_value="uuid-empresa-23"),
                 patch.object(conversao, "enviar_notificacao_google_chat", side_effect=enviar_notificacao),
             ):
                 pdf_extractor.return_value.extract.return_value = ["texto extraido"]
@@ -747,7 +749,7 @@ class ConversaoPasswordTest(unittest.TestCase):
         for nome, senha, sem_movimentacao in casos:
             with self.subTest(nome=nome):
                 dados = conversao.interpretar_nome_extrato(nome)
-                self.assertEqual(dados.competencia, "2026-05")
+                self.assertEqual(dados.competencia, "05-2026")
                 self.assertEqual(dados.banco, "NUBANK")
                 self.assertEqual(dados.empresa, "AMP ENG")
                 self.assertEqual(dados.senha, senha)
@@ -795,6 +797,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 patch.object(conversao, "GoogleDriveAuth", return_value=fake_drive),
                 patch.object(conversao, "carregar_empresas_ativas", return_value={"AMP ENG": (23, "AMP ENG")}),
                 patch.object(conversao, "pdf_possui_senha", return_value=False),
+                patch.object(conversao, "buscar_id_empresa_supabase", return_value="uuid-empresa-23"),
                 patch.object(conversao, "baixar_controle_supabase", return_value=(True, None)),
                 patch.object(conversao, "enviar_notificacao_google_chat"),
             ):
@@ -887,6 +890,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 patch.object(conversao, "planilha_lancamento"),
                 patch.object(conversao.shutil, "copy2", side_effect=copy_modelo),
                 patch.object(conversao, "registrar_historico_conversao"),
+                patch.object(conversao, "buscar_id_empresa_supabase", return_value="uuid-empresa-23"),
                 patch.object(conversao, "baixar_controle_supabase", return_value=(True, None)),
                 patch.object(conversao, "enviar_notificacao_google_chat"),
             ):
@@ -917,6 +921,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 patch.object(conversao, "carregar_empresas_ativas", return_value={"CIAL": (123, "CIAL")}),
                 patch.object(conversao, "pdf_possui_senha", return_value=False),
                 patch.object(conversao, "PDFExtractor") as pdf_extractor,
+                patch.object(conversao, "buscar_id_empresa_supabase", return_value="uuid-empresa-123"),
                 patch.object(conversao, "baixar_controle_supabase", return_value=(True, None)) as mock_baixa,
                 patch.object(conversao, "enviar_notificacao_google_chat") as notificacao,
             ):
@@ -1037,6 +1042,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 patch.object(conversao, "pdf_possui_senha", return_value=False),
                 patch.object(conversao, "PDFExtractor") as pdf_extractor,
                 patch.object(conversao, "dispatch", return_value=pd.DataFrame()),
+                patch.object(conversao, "buscar_id_empresa_supabase", return_value="uuid-empresa-123"),
                 patch.object(conversao, "baixar_controle_supabase", return_value=(True, None)) as mock_baixa,
                 patch.object(conversao, "enviar_notificacao_google_chat") as notificacao,
             ):
@@ -1063,13 +1069,13 @@ class ConversaoPasswordTest(unittest.TestCase):
         resultado = conversao.extrair_competencia_nome_arquivo(
             "0526_EXTBAN_NUBANK_AMP ENG_99287663-4.pdf"
         )
-        self.assertEqual(resultado, "2026-05")
+        self.assertEqual(resultado, "05-2026")
 
     def test_extrai_competencia_dezembro(self):
         resultado = conversao.extrair_competencia_nome_arquivo(
             "1225_EXTBAN_ITAU_GRB_12345-6.pdf"
         )
-        self.assertEqual(resultado, "2025-12")
+        self.assertEqual(resultado, "12-2025")
 
     def test_extrai_competencia_erro_nome_invalido(self):
         with self.assertRaises(ValueError):
@@ -1164,6 +1170,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 patch.object(conversao, "dispatch", return_value=df),
                 patch.object(conversao, "planilha_lancamento"),
                 patch.object(conversao.shutil, "copy2", side_effect=copy_modelo),
+                patch.object(conversao, "buscar_id_empresa_supabase", return_value="uuid-empresa-23"),
                 patch.object(conversao, "baixar_controle_supabase", return_value=(True, None)) as mock_sge,
                 patch.object(conversao, "enviar_notificacao_google_chat") as notificacao,
             ):
@@ -1173,7 +1180,7 @@ class ConversaoPasswordTest(unittest.TestCase):
         mock_sge.assert_called_once()
         call_kwargs = mock_sge.call_args[1]
         self.assertEqual(call_kwargs["empresa_codigo"], "23")
-        self.assertEqual(call_kwargs["competencia"], "2026-05")
+        self.assertEqual(call_kwargs["competencia"], "05-2026")
         self.assertEqual(call_kwargs["codigo_documento"], "EXTBAN")
         self.assertEqual(call_kwargs["banco"], "C6BANK")
         self.assertEqual(call_kwargs["agencia"], "1")
@@ -1216,6 +1223,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 patch.object(conversao, "dispatch", return_value=df),
                 patch.object(conversao, "planilha_lancamento"),
                 patch.object(conversao.shutil, "copy2", side_effect=copy_modelo),
+                patch.object(conversao, "buscar_id_empresa_supabase", return_value="uuid-empresa-23"),
                 patch.object(conversao, "baixar_controle_supabase", return_value=(False, None)),
                 patch.object(conversao, "enviar_notificacao_google_chat") as notificacao,
             ):
@@ -1236,7 +1244,7 @@ class ConversaoPasswordTest(unittest.TestCase):
         with patch.object(supabase_api.requests, "get", return_value=fake_response):
             resultado = supabase_api.buscar_id_empresa_supabase(
                 empresa_codigo="428",
-                competencia="2026-02",
+                competencia="02-2026",
                 codigo_documento="EXTBAN",
             )
 
@@ -1250,7 +1258,7 @@ class ConversaoPasswordTest(unittest.TestCase):
         with patch.object(supabase_api.requests, "get", return_value=fake_response):
             resultado = supabase_api.buscar_id_empresa_supabase(
                 empresa_codigo="999",
-                competencia="2026-01",
+                competencia="01-2026",
                 codigo_documento="EXTBAN",
             )
 
@@ -1264,7 +1272,7 @@ class ConversaoPasswordTest(unittest.TestCase):
         with patch.object(supabase_api.requests, "get", return_value=fake_response):
             resultado = supabase_api.buscar_id_empresa_supabase(
                 empresa_codigo="428",
-                competencia="2026-02",
+                competencia="02-2026",
                 codigo_documento="EXTBAN",
             )
 
@@ -1276,7 +1284,7 @@ class ConversaoPasswordTest(unittest.TestCase):
         ):
             resultado = supabase_api.buscar_id_empresa_supabase(
                 empresa_codigo="428",
-                competencia="2026-02",
+                competencia="02-2026",
                 codigo_documento="EXTBAN",
             )
 
@@ -1299,7 +1307,7 @@ class ConversaoPasswordTest(unittest.TestCase):
         ):
             resultado = supabase_api.atualizar_controle_supabase(
                 empresa_codigo="428",
-                competencia="2026-02",
+                competencia="02-2026",
                 codigo_documento="EXTBAN",
                 data_recebimento="2026-06-19",
                 quantidade_arquivos=3,
@@ -1323,7 +1331,7 @@ class ConversaoPasswordTest(unittest.TestCase):
         ):
             resultado = supabase_api.atualizar_controle_supabase(
                 empresa_codigo="999",
-                competencia="2026-01",
+                competencia="01-2026",
                 codigo_documento="EXTBAN",
                 data_recebimento="2026-06-19",
                 quantidade_arquivos=3,
@@ -1427,7 +1435,7 @@ class ConversaoPasswordTest(unittest.TestCase):
             sucesso, detalhe = supabase_api.baixar_controle_supabase(
                 empresa_codigo="23",
                 codigo_documento="EXTBAN",
-                competencia="2026-05",
+                competencia="05-2026",
                 banco="C6BANK",
                 agencia="1",
                 conta="123",
@@ -1445,7 +1453,7 @@ class ConversaoPasswordTest(unittest.TestCase):
         self.assertEqual(call_args[1]["json"]["banco"], "C6BANK")
         self.assertEqual(call_args[1]["json"]["agencia"], "1")
         self.assertEqual(call_args[1]["json"]["conta"], "123")
-        self.assertEqual(call_args[1]["json"]["competencia"], "2026-05")
+        self.assertEqual(call_args[1]["json"]["competencia"], "05-2026")
         self.assertEqual(call_args[1]["json"]["codigo_documento"], "EXTBAN")
         self.assertEqual(call_args[1]["json"]["quantidade_arquivos"], 3)
         self.assertEqual(call_args[1]["json"]["status_envio"], "Enviado")
@@ -1461,7 +1469,7 @@ class ConversaoPasswordTest(unittest.TestCase):
             sucesso, detalhe = supabase_api.baixar_controle_supabase(
                 empresa_codigo="23",
                 codigo_documento="EXTBAN",
-                competencia="2026-05",
+                competencia="05-2026",
                 banco="C6BANK",
                 agencia="1",
                 conta="123",
@@ -1480,7 +1488,7 @@ class ConversaoPasswordTest(unittest.TestCase):
             sucesso, detalhe = supabase_api.baixar_controle_supabase(
                 empresa_codigo="23",
                 codigo_documento="EXTBAN",
-                competencia="2026-05",
+                competencia="05-2026",
                 banco="C6BANK",
                 agencia="1",
                 conta="123",
@@ -1501,7 +1509,7 @@ class ConversaoPasswordTest(unittest.TestCase):
             sucesso, detalhe = supabase_api.baixar_controle_supabase(
                 empresa_codigo="47",
                 codigo_documento="EXTBAN",
-                competencia="2026-05",
+                competencia="05-2026",
                 banco="ITAU",
                 agencia="2903",
                 conta="97630-2",
@@ -1526,7 +1534,7 @@ class ConversaoPasswordTest(unittest.TestCase):
             sucesso, detalhe = supabase_api.baixar_controle_supabase(
                 empresa_codigo="449",
                 codigo_documento="EXTBAN",
-                competencia="2026-05",
+                competencia="05-2026",
                 banco="C6BANK",
                 agencia="1",
                 conta="421987570",

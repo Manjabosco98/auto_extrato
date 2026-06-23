@@ -25,7 +25,10 @@ from src.app.gdrive.settings import (
     XLSM_MIME_TYPE,
     GOOGLE_OAUTH_TOKEN_SECRET
 )
-from src.app.supabase.supabase_api import baixar_controle_supabase
+from src.app.supabase.supabase_api import (
+    baixar_controle_supabase,
+    buscar_id_empresa_supabase,
+)
 from src.schemas import LayoutNotRecognized, dispatch
 from src.schemas.parsers.pdf_extractor import PDFExtractor
 from src.services.chat_notifications import (
@@ -361,7 +364,7 @@ def interpretar_nome_extrato(nome_arquivo: str) -> NomeExtrato:
         nome_limpo=nome_limpo,
         mes=mes,
         ano=ano,
-        competencia=f"20{ano}-{mes}",
+        competencia=f"{mes}-20{ano}",
         codigo_documento=codigo_documento.upper(),
         banco=banco.upper(),
         senha=senha,
@@ -527,7 +530,7 @@ def extrair_competencia_nome_arquivo(nome_arquivo: str) -> str:
     if not match:
         raise ValueError(f"Arquivo sem periodo MMAA valido: {nome_arquivo}")
 
-    return f"20{match.group('ano')}-{match.group('mes')}"
+    return f"{match.group('mes')}-20{match.group('ano')}"
 
 
 def extrair_codigo_documento(nome_arquivo: str) -> str:
@@ -1443,6 +1446,19 @@ def _executar_conversao(execucao_id: str):
 
     for doc in documentos_para_baixa:
         try:
+            id_existente = buscar_id_empresa_supabase(
+                empresa_codigo=str(doc["empresa_id"]),
+                competencia=doc["competencia"],
+                codigo_documento=doc["codigo_documento"],
+            )
+            if not id_existente:
+                logger.warning(
+                    "Controle nao cadastrado no SGE: empresa=%s competencia=%s cod_doc=%s — ignorado",
+                    doc["empresa_id"],
+                    doc["competencia"],
+                    doc["codigo_documento"],
+                )
+                continue
             local = f"Google Drive / {doc['pasta_destino']}"
             sucesso, detalhe_erro = baixar_controle_supabase(
                 empresa_codigo=str(doc["empresa_id"]),
