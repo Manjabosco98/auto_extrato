@@ -15,6 +15,10 @@ from src.app.gdrive.settings import (
     GOOGLE_OAUTH_TOKEN_SECRET,
     XLSX_MIME_TYPE,
 )
+from src.app.supabase.supabase_api import (
+    buscar_id_empresa_supabase,
+    baixar_controle_supabase,
+)
 from src.services.conversao import (
     BASE_EMP_ATIVAS,
     GOOGLE_CHAT_SEND_URL,
@@ -44,6 +48,7 @@ HISTORICO_DOCS_HEADERS = (
     "NOME ARQUIVO",
     "PASTA DESTINO",
     "DATA HORA MOVIMENTO",
+    "STATUS SGE",
 )
 
 
@@ -68,11 +73,36 @@ def parse_nome_documento(nome_arquivo: str) -> dict[str, str]:
     if not re.fullmatch(r"\d{4}", periodo):
         raise ValueError(f"Nome do arquivo DOCS sem periodo MMAA valido: {nome_arquivo}")
 
+    codigo = normalizar_codigo(partes[1])
+    banco = ""
+    agencia = ""
+    conta = ""
+    cliente = partes[-1]
+
+    if codigo == "EXTBAN" and len(partes) > 3:
+        banco = partes[2]
+        partes_ag_cc = []
+        partes_resto = []
+        for p in partes[3:]:
+            if p.upper().startswith("AG "):
+                agencia = p[3:].strip()
+                partes_ag_cc.append(p)
+            elif p.upper().startswith("CC "):
+                conta = p[3:].strip()
+                partes_ag_cc.append(p)
+            else:
+                partes_resto.append(p)
+        if partes_resto:
+            cliente = partes_resto[-1]
+
     return {
         "mes": periodo[:2],
         "ano": periodo[-2:],
-        "codigo": normalizar_codigo(partes[1]),
-        "cliente": partes[-1],
+        "codigo": codigo,
+        "cliente": cliente,
+        "banco": banco,
+        "agencia": agencia,
+        "conta": conta,
     }
 
 
@@ -223,6 +253,7 @@ def registrar_historico_docs(
                 registro["nome_arquivo"],
                 registro["pasta_destino"],
                 registro["data_hora_movimento"],
+                registro.get("status_sge", ""),
             ]
         )
 
@@ -251,26 +282,65 @@ def registrar_historico_docs(
 def formatar_mensagem_docs_google_chat(
     nomes_documentos: list[str],
     momento: datetime | None = None,
+    atualizados_sge: int | None = None,
+    empresas_nao_cadastradas_sge: list[str] | None = None,
+    erros_sge: int = 0,
+    erros_sge_detalhe: list[str] | None = None,
 ) -> str:
     momento = momento or agora_historico()
     data = momento.strftime("%d/%m/%y")
     hora = momento.strftime("%H:%M")
-    lista_documentos = "\n".join(nomes_documentos)
-    return (
-        f"Documentos salvos {data} as {hora} e atualizado na Base de Dados:\n\n"
-        f"{lista_documentos}"
-    )
+    blocos = []
+
+    if nomes_documentos:
+        lista_documentos = "\n".join(nomes_documentos)
+        blocos.append(
+            f"Documentos salvos {data} as {hora} e atualizado na Base de Dados:\n\n"
+            f"{lista_documentos}"
+        )
+
+    if atualizados_sge is not None and atualizados_sge > 0:
+        blocos.append(
+            f"Baixa dada no portal SGE: {atualizados_sge} documento(s) atualizado(s)"
+        )
+
+    if erros_sge > 0:
+        blocos.append(f"Erros ao dar baixa no SGE: {erros_sge}")
+
+    if erros_sge_detalhe:
+        lista_detalhes = "\n".join(erros_sge_detalhe)
+        blocos.append(f"Detalhes dos erros SGE:\n\n{lista_detalhes}")
+
+    if empresas_nao_cadastradas_sge:
+        lista = "\n".join(empresas_nao_cadastradas_sge)
+        blocos.append(
+            "Documentos sem baixa no SGE (empresa nao cadastrada):\n\n"
+            f"{lista}"
+        )
+
+    return "\n\n".join(blocos)
 
 
 def enviar_notificacao_docs_google_chat(
     nomes_documentos: list[str],
     momento: datetime | None = None,
+    atualizados_sge: int | None = None,
+    empresas_nao_cadastradas_sge: list[str] | None = None,
+    erros_sge: int = 0,
+    erros_sge_detalhe: list[str] | None = None,
 ) -> bool:
-    if not nomes_documentos:
+    if not nomes_documentos and not empresas_nao_cadastradas_sge:
         logger.info("Notificacao Google Chat DOCS nao enviada: nenhum documento movido")
         return False
 
-    mensagem = formatar_mensagem_docs_google_chat(nomes_documentos, momento=momento)
+    mensagem = formatar_mensagem_docs_google_chat(
+        nomes_documentos,
+        momento=momento,
+        atualizados_sge=atualizados_sge,
+        empresas_nao_cadastradas_sge=empresas_nao_cadastradas_sge,
+        erros_sge=erros_sge,
+        erros_sge_detalhe=erros_sge_detalhe,
+    )
     payload = {
         "space_name": GOOGLE_CHAT_SPACE_NAME,
         "message": mensagem,
@@ -382,6 +452,7 @@ def executar_docs() -> dict[str, int]:
     erros = 0
     registros_historico: list[dict[str, object]] = []
     documentos_notificacao: list[str] = []
+    documentos_para_baixa: list[dict[str, object]] = []
 
     for arquivo in arquivos:
         arquivo_id = arquivo["id"]
@@ -448,13 +519,76 @@ def executar_docs() -> dict[str, int]:
                     "nome_arquivo": arquivo_nome,
                     "pasta_destino": pasta_destino_historico,
                     "data_hora_movimento": momento_movimento.strftime("%Y-%m-%d %H:%M:%S"),
+                    "status_sge": "",
                 }
             )
+            documentos_para_baixa.append({
+                "empresa_id": empresa_id,
+                "competencia": f'{dados_nome["mes"]}-20{dados_nome["ano"]}',
+                "codigo_documento": dados_nome["codigo"],
+                "banco": dados_nome["banco"],
+                "agencia": dados_nome["agencia"],
+                "conta": dados_nome["conta"],
+                "arquivo_nome": arquivo_nome,
+                "pasta_destino": pasta_destino_historico,
+                "indice_historico": len(registros_historico) - 1,
+            })
             documentos_notificacao.append(f"{arquivo_nome} - {pasta_destino_historico}")
             movidos += 1
         except Exception:
             erros += 1
             logger.exception("Erro ao mover documento DOCS: %s", arquivo_nome)
+
+    logger.info("Atualizando controle no portal SGE para %s documento(s)", len(documentos_para_baixa))
+    atualizados_sge = 0
+    erros_sge = 0
+    erros_sge_notificacao: list[str] = []
+    sem_baixa_nao_cadastrada: list[str] = []
+
+    for doc in documentos_para_baixa:
+        try:
+            id_existente = buscar_id_empresa_supabase(
+                empresa_codigo=str(doc["empresa_id"]),
+                competencia=doc["competencia"],
+                codigo_documento=doc["codigo_documento"],
+            )
+            if not id_existente:
+                logger.warning(
+                    "Controle nao cadastrado no SGE: empresa=%s competencia=%s cod_doc=%s — ignorado",
+                    doc["empresa_id"],
+                    doc["competencia"],
+                    doc["codigo_documento"],
+                )
+                sem_baixa_nao_cadastrada.append(
+                    f'{doc["arquivo_nome"]} — competencia {doc["competencia"]}'
+                )
+                registros_historico[doc["indice_historico"]]["status_sge"] = "Nao Cadastrado"
+                continue
+            local = f'Google Drive / {doc["pasta_destino"]}'
+            sucesso, detalhe_erro = baixar_controle_supabase(
+                empresa_codigo=str(doc["empresa_id"]),
+                codigo_documento=doc["codigo_documento"],
+                competencia=doc["competencia"],
+                banco=doc["banco"],
+                agencia=doc["agencia"],
+                conta=doc["conta"],
+                nome_arquivo=doc["arquivo_nome"],
+                local_arquivo=local,
+                quantidade_arquivos=1,
+                status="Enviado",
+            )
+            if sucesso:
+                atualizados_sge += 1
+                registros_historico[doc["indice_historico"]]["status_sge"] = "Baixado"
+            else:
+                erros_sge += 1
+                registros_historico[doc["indice_historico"]]["status_sge"] = "Erro"
+                if detalhe_erro:
+                    erros_sge_notificacao.append(detalhe_erro)
+        except Exception:
+            erros_sge += 1
+            registros_historico[doc["indice_historico"]]["status_sge"] = "Erro"
+            logger.exception("Erro ao atualizar controle no SGE: %s", doc["arquivo_nome"])
 
     registrar_historico_docs(
         google_drive=google_drive,
@@ -462,14 +596,23 @@ def executar_docs() -> dict[str, int]:
         temp_dir=temp_dir,
         registros=registros_historico,
     )
-    enviar_notificacao_docs_google_chat(documentos_notificacao)
+    enviar_notificacao_docs_google_chat(
+        documentos_notificacao,
+        atualizados_sge=atualizados_sge,
+        empresas_nao_cadastradas_sge=sem_baixa_nao_cadastrada,
+        erros_sge=erros_sge,
+        erros_sge_detalhe=erros_sge_notificacao,
+    )
 
     logger.info(
-        "Fluxo DOCS concluido. Processados=%s Movidos=%s Ignorados=%s Erros=%s",
+        "Fluxo DOCS concluido. Processados=%s Movidos=%s Ignorados=%s Erros=%s "
+        "AtualizadosSGE=%s ErrosSGE=%s",
         processados,
         movidos,
         ignorados,
         erros,
+        atualizados_sge,
+        erros_sge,
     )
 
     return {
@@ -477,6 +620,8 @@ def executar_docs() -> dict[str, int]:
         "movidos": movidos,
         "ignorados": ignorados,
         "erros": erros,
+        "atualizados_sge": atualizados_sge,
+        "erros_sge": erros_sge,
     }
 
 

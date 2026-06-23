@@ -127,6 +127,9 @@ class DocsServiceTest(unittest.TestCase):
                 "ano": "26",
                 "codigo": "JURATPAS",
                 "cliente": "BRITO",
+                "banco": "",
+                "agencia": "",
+                "conta": "",
             },
         )
 
@@ -198,11 +201,20 @@ class DocsServiceTest(unittest.TestCase):
                 patch.object(docs, "GOOGLE_DRIVE_EMP_FOLDER_ID", "srvarq-folder"),
                 patch.object(docs, "carregar_empresas_ativas", return_value={"BRITO": (196, "BRITO")}),
                 patch.object(docs, "enviar_notificacao_docs_google_chat") as notificacao,
+                patch.object(docs, "buscar_id_empresa_supabase", return_value="uuid-fake"),
+                patch.object(docs, "baixar_controle_supabase", return_value=(True, None)),
                 patch.object(docs, "agora_historico", return_value=docs.datetime(2026, 6, 16, 12, 30, 5)),
             ):
                 resultado = docs.executar_docs()
 
-        self.assertEqual(resultado, {"processados": 1, "movidos": 1, "ignorados": 0, "erros": 0})
+        self.assertEqual(resultado, {
+            "processados": 1,
+            "movidos": 1,
+            "ignorados": 0,
+            "erros": 0,
+            "atualizados_sge": 1,
+            "erros_sge": 0,
+        })
         self.assertIn(("root-folder", "DOCS"), fake_drive.folders)
         self.assertIn(("srvarq-folder", "EMP"), fake_drive.folders)
         self.assertEqual(
@@ -230,6 +242,7 @@ class DocsServiceTest(unittest.TestCase):
                     "0626_JURATPAS_BRITO.docx",
                     "EMP/196_BRITO/MOV/CONT/26/06/REL",
                     "2026-06-16 12:30:05",
+                    "Baixado",
                 ),
             ],
         )
@@ -237,7 +250,11 @@ class DocsServiceTest(unittest.TestCase):
             [
                 "0626_JURATPAS_BRITO.docx - "
                 "EMP/196_BRITO/MOV/CONT/26/06/REL"
-            ]
+            ],
+            atualizados_sge=1,
+            empresas_nao_cadastradas_sge=[],
+            erros_sge=0,
+            erros_sge_detalhe=[],
         )
 
     def test_executar_docs_ignora_empresa_inexistente(self):
@@ -252,10 +269,23 @@ class DocsServiceTest(unittest.TestCase):
             ):
                 resultado = docs.executar_docs()
 
-        self.assertEqual(resultado, {"processados": 1, "movidos": 0, "ignorados": 1, "erros": 0})
+        self.assertEqual(resultado, {
+            "processados": 1,
+            "movidos": 0,
+            "ignorados": 1,
+            "erros": 0,
+            "atualizados_sge": 0,
+            "erros_sge": 0,
+        })
         self.assertEqual(fake_drive.moved, [])
         self.assertEqual(fake_drive.uploaded, [])
-        notificacao.assert_called_once_with([])
+        notificacao.assert_called_once_with(
+            [],
+            atualizados_sge=0,
+            empresas_nao_cadastradas_sge=[],
+            erros_sge=0,
+            erros_sge_detalhe=[],
+        )
 
     def test_notificacao_docs_google_chat_payload(self):
         class FakeResponse:
@@ -304,6 +334,131 @@ class DocsServiceTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.json(), {"message": "Fluxo DOCS ja esta em execucao"})
+
+    def test_parse_nome_documento_extban_extrai_banco_agencia_conta(self):
+        resultado = docs.parse_nome_documento(
+            "0526_EXTBAN_KAMINO_UP380_AG 1_CC 30513944.xls"
+        )
+
+        self.assertEqual(
+            resultado,
+            {
+                "mes": "05",
+                "ano": "26",
+                "codigo": "EXTBAN",
+                "cliente": "UP380",
+                "banco": "KAMINO",
+                "agencia": "1",
+                "conta": "30513944",
+            },
+        )
+
+    def test_parse_nome_documento_extban_sem_agencia_conta(self):
+        resultado = docs.parse_nome_documento("0526_EXTBAN_ITAU_SMART.xlsx")
+
+        self.assertEqual(
+            resultado,
+            {
+                "mes": "05",
+                "ano": "26",
+                "codigo": "EXTBAN",
+                "cliente": "SMART",
+                "banco": "ITAU",
+                "agencia": "",
+                "conta": "",
+            },
+        )
+
+    def test_parse_nome_documento_nao_extban_campos_vazios(self):
+        resultado = docs.parse_nome_documento("0526_RELCONFIM_KAMINO_UP380.xlsx")
+
+        self.assertEqual(
+            resultado,
+            {
+                "mes": "05",
+                "ano": "26",
+                "codigo": "RELCONFIM",
+                "cliente": "UP380",
+                "banco": "",
+                "agencia": "",
+                "conta": "",
+            },
+        )
+
+    def test_executar_docs_empresa_nao_cadastrada_sge(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_drive = FakeDriveDocs(
+                temp_dir,
+                existing_folders={("id-EMP", "196_BRITO")},
+            )
+
+            with (
+                patch.object(docs, "GoogleDriveAuth", return_value=fake_drive),
+                patch.object(docs, "GOOGLE_DRIVE_FOLDER_ID", "root-folder"),
+                patch.object(docs, "GOOGLE_DRIVE_EMP_FOLDER_ID", "srvarq-folder"),
+                patch.object(docs, "carregar_empresas_ativas", return_value={"BRITO": (196, "BRITO")}),
+                patch.object(docs, "enviar_notificacao_docs_google_chat") as notificacao,
+                patch.object(docs, "buscar_id_empresa_supabase", return_value=None),
+                patch.object(docs, "agora_historico", return_value=docs.datetime(2026, 6, 16, 12, 30, 5)),
+            ):
+                resultado = docs.executar_docs()
+
+        self.assertEqual(resultado["movidos"], 1)
+        self.assertEqual(resultado["atualizados_sge"], 0)
+        self.assertEqual(fake_drive.history_rows[-1][-1], "Nao Cadastrado")
+        notificacao.assert_called_once()
+        call_kwargs = notificacao.call_args[1]
+        self.assertEqual(call_kwargs["empresas_nao_cadastradas_sge"], [
+            "0626_JURATPAS_BRITO.docx — competencia 06-2026"
+        ])
+
+    def test_executar_docs_erro_api_sge(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_drive = FakeDriveDocs(
+                temp_dir,
+                existing_folders={("id-EMP", "196_BRITO")},
+            )
+
+            with (
+                patch.object(docs, "GoogleDriveAuth", return_value=fake_drive),
+                patch.object(docs, "GOOGLE_DRIVE_FOLDER_ID", "root-folder"),
+                patch.object(docs, "GOOGLE_DRIVE_EMP_FOLDER_ID", "srvarq-folder"),
+                patch.object(docs, "carregar_empresas_ativas", return_value={"BRITO": (196, "BRITO")}),
+                patch.object(docs, "enviar_notificacao_docs_google_chat") as notificacao,
+                patch.object(docs, "buscar_id_empresa_supabase", return_value="uuid-fake"),
+                patch.object(docs, "baixar_controle_supabase", return_value=(False, "Empresa 196 nao cadastrada")),
+                patch.object(docs, "agora_historico", return_value=docs.datetime(2026, 6, 16, 12, 30, 5)),
+            ):
+                resultado = docs.executar_docs()
+
+        self.assertEqual(resultado["movidos"], 1)
+        self.assertEqual(resultado["atualizados_sge"], 0)
+        self.assertEqual(resultado["erros_sge"], 1)
+        self.assertEqual(fake_drive.history_rows[-1][-1], "Erro")
+        notificacao.assert_called_once()
+        call_kwargs = notificacao.call_args[1]
+        self.assertEqual(call_kwargs["erros_sge"], 1)
+        self.assertEqual(call_kwargs["erros_sge_detalhe"], ["Empresa 196 nao cadastrada"])
+
+    def test_notificacao_docs_google_chat_com_sge(self):
+        class FakeResponse:
+            status_code = 200
+            text = "ok"
+
+        with patch.object(docs.requests, "post", return_value=FakeResponse()) as post:
+            resultado = docs.enviar_notificacao_docs_google_chat(
+                ["0626_JURATPAS_BRITO.docx - EMP/196_BRITO/MOV/CONT/26/06/REL"],
+                momento=docs.datetime(2026, 6, 16, 12, 30, 0),
+                atualizados_sge=1,
+                empresas_nao_cadastradas_sge=[],
+                erros_sge=0,
+                erros_sge_detalhe=[],
+            )
+
+        self.assertTrue(resultado)
+        call_args = post.call_args
+        mensagem = call_args[1]["json"]["message"]
+        self.assertIn("Baixa dada no portal SGE: 1 documento(s) atualizado(s)", mensagem)
 
 
 if __name__ == "__main__":
