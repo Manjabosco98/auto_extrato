@@ -105,6 +105,8 @@ def formatar_mensagem_google_chat(
     layouts_nao_reconhecidos: list[str] | None = None,
     erros_processamento: list[str] | None = None,
     empresas_nao_cadastradas_sge: list[str] | None = None,
+    erros_sge: int = 0,
+    erros_sge_detalhe: list[str] | None = None,
 ) -> str:
     momento = momento or agora_historico()
     pdfs_sem_movimentacao = pdfs_sem_movimentacao or []
@@ -114,6 +116,7 @@ def formatar_mensagem_google_chat(
     layouts_nao_reconhecidos = layouts_nao_reconhecidos or []
     erros_processamento = erros_processamento or []
     empresas_nao_cadastradas_sge = empresas_nao_cadastradas_sge or []
+    erros_sge_detalhe = erros_sge_detalhe or []
     blocos = []
 
     if nomes_extratos:
@@ -159,6 +162,13 @@ def formatar_mensagem_google_chat(
             "Convertidos sem baixa no SGE (empresa nao cadastrada):\n\n"
             f"{lista}"
         )
+
+    if erros_sge > 0:
+        blocos.append(f"Erros ao dar baixa no SGE: {erros_sge}")
+
+    if erros_sge_detalhe:
+        lista = "\n".join(erros_sge_detalhe)
+        blocos.append(f"Detalhes dos erros SGE:\n\n{lista}")
 
     return "\n\n".join(blocos)
 
@@ -208,6 +218,8 @@ def enviar_notificacao_google_chat(
             layouts_nao_reconhecidos=layouts_nao_reconhecidos,
             erros_processamento=erros_processamento,
             empresas_nao_cadastradas_sge=empresas_nao_cadastradas_sge,
+            erros_sge=erros_sge,
+            erros_sge_detalhe=erros_sge_detalhe,
         )
         resumo = (
             f"Recebimento: EXTRATOS\n"
@@ -218,7 +230,8 @@ def enviar_notificacao_google_chat(
             f"Sem movimentacao: {total_sem_movimentacao}\n"
             f"Invalidos (ILEGÍVEL): {total_invalidos}\n"
             f"Desbloqueados: {total_desbloqueados}\n"
-            f"Atualizados no PORTAL SGE: {atualizados_sge or 0}"
+            f"Atualizados no PORTAL SGE: {atualizados_sge or 0}\n"
+            f"Erros no PORTAL SGE: {erros_sge}"
         )
         if detalhes:
             resumo = f"{resumo}\n\n{detalhes}"
@@ -259,6 +272,8 @@ def enviar_notificacao_google_chat(
         layouts_nao_reconhecidos=layouts_nao_reconhecidos,
         erros_processamento=erros_processamento,
         empresas_nao_cadastradas_sge=empresas_nao_cadastradas_sge,
+        erros_sge=erros_sge,
+        erros_sge_detalhe=erros_sge_detalhe,
     )
     payload = {
         "space_name": GOOGLE_CHAT_SPACE_NAME,
