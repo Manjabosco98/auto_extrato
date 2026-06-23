@@ -23,6 +23,14 @@ SUPABASE_BAIXA_URL = (
 )
 
 
+def _converter_competencia(competencia: str) -> str:
+    """Converte 'MM-YYYY' para 'YYYY-MM' (formato esperado pelo SGE)."""
+    partes = competencia.split("-")
+    if len(partes) == 2 and len(partes[0]) == 2 and len(partes[1]) == 4:
+        return f"{partes[1]}-{partes[0]}"
+    return competencia
+
+
 def buscar_id_empresa_supabase(
     empresa_codigo: str,
     competencia: str,
@@ -34,7 +42,7 @@ def buscar_id_empresa_supabase(
     """GET /controle - busca id_empresa (UUID) pelo codigo da empresa."""
     params = {
         "empresa_codigo": empresa_codigo,
-        "competencia": competencia,
+        "competencia": _converter_competencia(competencia),
         "cod_doc": codigo_documento,
         "limit": 1,
     }
@@ -131,7 +139,7 @@ def atualizar_controle_supabase(
     payload = {
         "id_empresa": id_empresa,
         "empresa_codigo": empresa_codigo,
-        "competencia": competencia,
+        "competencia": _converter_competencia(competencia),
         "codigo_documento": codigo_documento,
         "status_envio": "Enviado",
         "data_recebimento": data_recebimento,
@@ -215,7 +223,7 @@ def baixar_controle_supabase(
     payload = {
         "empresa_codigo": empresa_codigo,
         "codigo_documento": codigo_documento,
-        "competencia": competencia,
+        "competencia": _converter_competencia(competencia),
         "banco": banco,
         "agencia": agencia,
         "conta": conta,

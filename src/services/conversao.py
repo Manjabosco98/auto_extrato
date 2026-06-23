@@ -104,6 +104,7 @@ def formatar_mensagem_google_chat(
     erros_senha: list[str] | None = None,
     layouts_nao_reconhecidos: list[str] | None = None,
     erros_processamento: list[str] | None = None,
+    empresas_nao_cadastradas_sge: list[str] | None = None,
 ) -> str:
     momento = momento or agora_historico()
     pdfs_sem_movimentacao = pdfs_sem_movimentacao or []
@@ -112,6 +113,7 @@ def formatar_mensagem_google_chat(
     erros_senha = erros_senha or []
     layouts_nao_reconhecidos = layouts_nao_reconhecidos or []
     erros_processamento = erros_processamento or []
+    empresas_nao_cadastradas_sge = empresas_nao_cadastradas_sge or []
     blocos = []
 
     if nomes_extratos:
@@ -151,6 +153,13 @@ def formatar_mensagem_google_chat(
             f"Baixa dada no portal SGE: {atualizados_sge} documento(s) atualizado(s)"
         )
 
+    if empresas_nao_cadastradas_sge:
+        lista = "\n".join(empresas_nao_cadastradas_sge)
+        blocos.append(
+            "Convertidos sem baixa no SGE (empresa nao cadastrada):\n\n"
+            f"{lista}"
+        )
+
     return "\n\n".join(blocos)
 
 
@@ -164,6 +173,7 @@ def enviar_notificacao_google_chat(
     erros_senha: list[str] | None = None,
     layouts_nao_reconhecidos: list[str] | None = None,
     erros_processamento: list[str] | None = None,
+    empresas_nao_cadastradas_sge: list[str] | None = None,
     google_drive=None,
     pasta_raiz_id: str | None = None,
     execucao_id: str | None = None,
@@ -184,6 +194,7 @@ def enviar_notificacao_google_chat(
     layouts_nao_reconhecidos = layouts_nao_reconhecidos or []
     erros_processamento = erros_processamento or []
     erros_sge_detalhe = erros_sge_detalhe or []
+    empresas_nao_cadastradas_sge = empresas_nao_cadastradas_sge or []
 
     if execucao_id:
         momento = momento or agora_historico()
@@ -196,6 +207,7 @@ def enviar_notificacao_google_chat(
             erros_senha=erros_senha,
             layouts_nao_reconhecidos=layouts_nao_reconhecidos,
             erros_processamento=erros_processamento,
+            empresas_nao_cadastradas_sge=empresas_nao_cadastradas_sge,
         )
         resumo = (
             f"Recebimento: EXTRATOS\n"
@@ -230,6 +242,7 @@ def enviar_notificacao_google_chat(
             erros_senha,
             layouts_nao_reconhecidos,
             erros_processamento,
+            empresas_nao_cadastradas_sge,
         )
     ):
         logger.info("Notificacao Google Chat nao enviada: nenhum resultado para informar")
@@ -245,6 +258,7 @@ def enviar_notificacao_google_chat(
         erros_senha=erros_senha,
         layouts_nao_reconhecidos=layouts_nao_reconhecidos,
         erros_processamento=erros_processamento,
+        empresas_nao_cadastradas_sge=empresas_nao_cadastradas_sge,
     )
     payload = {
         "space_name": GOOGLE_CHAT_SPACE_NAME,
@@ -1443,6 +1457,7 @@ def _executar_conversao(execucao_id: str):
     atualizados_sge = 0
     erros_sge = 0
     erros_sge_notificacao: list[str] = []
+    sem_baixa_nao_cadastrada: list[str] = []
 
     for doc in documentos_para_baixa:
         try:
@@ -1457,6 +1472,9 @@ def _executar_conversao(execucao_id: str):
                     doc["empresa_id"],
                     doc["competencia"],
                     doc["codigo_documento"],
+                )
+                sem_baixa_nao_cadastrada.append(
+                    f"{doc['arquivo_nome']} — competencia {doc['competencia']}"
                 )
                 continue
             local = f"Google Drive / {doc['pasta_destino']}"
@@ -1497,11 +1515,14 @@ def _executar_conversao(execucao_id: str):
         notificacao_kwargs["erros_processamento"] = erros_processamento_notificacao
     if erros_sge_notificacao:
         notificacao_kwargs["erros_sge_detalhe"] = erros_sge_notificacao
+    if sem_baixa_nao_cadastrada:
+        notificacao_kwargs["empresas_nao_cadastradas_sge"] = sem_baixa_nao_cadastrada
 
     possui_alertas = any(
         (
             invalidos,
             erros_sge,
+            sem_baixa_nao_cadastrada,
             nomes_invalidos_notificacao,
             erros_senha_notificacao,
             layouts_invalidos_notificacao,
