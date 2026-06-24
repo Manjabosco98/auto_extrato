@@ -79,7 +79,7 @@ class GoogleDriveAuth:
             with open(self.token_path, "w", encoding="utf-8") as token:
                 token.write(creds.to_json())
 
-        return build("drive", "v3", credentials=creds)
+        return build("drive", "v3", credentials=creds, cache_discovery=False)
 
     def get_file_info(self, file_id: str):
         return self.service.files().get(

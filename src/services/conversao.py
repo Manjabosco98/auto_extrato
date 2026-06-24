@@ -1,6 +1,7 @@
 import logging
 import re
 import shutil
+import time
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
@@ -1149,6 +1150,7 @@ def _executar_conversao(execucao_id: str):
         arquivo_nome_seguro = sanitizar_nome_senha(arquivo_nome_original)
         arquivo_nome = arquivo_nome_seguro
         processados += 1
+        inicio_pdf = time.perf_counter()
         pdf_local = temp_dir / f"{arquivo_id}.pdf"
         pdf_sem_senha = temp_dir / f"{arquivo_id}_sem_senha.pdf"
         pdf_processamento = pdf_local
@@ -1159,13 +1161,26 @@ def _executar_conversao(execucao_id: str):
 
         try:
             logger.info("Baixando PDF do Google Drive: %s", arquivo_nome_seguro)
+            inicio_download = time.perf_counter()
             google_drive.download(
                 file_id=arquivo_id,
                 destino_local=pdf_local,
             )
+            logger.info(
+                "Download concluido: %s | tempo=%.2fs",
+                arquivo_nome_seguro,
+                time.perf_counter() - inicio_download,
+            )
 
             try:
+                inicio_senha = time.perf_counter()
                 protegido = pdf_possui_senha(pdf_local)
+                logger.info(
+                    "Verificacao de senha concluida: %s | protegido=%s | tempo=%.2fs",
+                    arquivo_nome_seguro,
+                    protegido,
+                    time.perf_counter() - inicio_senha,
+                )
             except Exception:
                 logger.exception("PDF invalido ou corrompido: %s", arquivo_nome_seguro)
                 nome_final = renomear_e_mover_para_invalidos(
@@ -1281,7 +1296,15 @@ def _executar_conversao(execucao_id: str):
                 continue
 
             logger.info("Extraindo conteudo do PDF: %s", arquivo_nome)
-            pdf = PDFExtractor(pdf_processamento).extract()
+            inicio_extracao = time.perf_counter()
+            pdf, total_paginas = PDFExtractor(pdf_processamento).extract()
+            logger.info(
+                "Extracao finalizada: %s | linhas=%s | paginas=%s | tempo=%.2fs",
+                arquivo_nome,
+                len(pdf or []),
+                total_paginas,
+                time.perf_counter() - inicio_extracao,
+            )
 
             if not pdf:
                 nome_nao_legivel = renomear_e_mover_para_invalidos(
@@ -1297,6 +1320,7 @@ def _executar_conversao(execucao_id: str):
                 continue
 
             logger.info("Identificando layout e convertendo PDF em DataFrame: %s", arquivo_nome)
+            inicio_parser = time.perf_counter()
             try:
                 df = dispatch(pdf)
             except LayoutNotRecognized:
@@ -1312,6 +1336,11 @@ def _executar_conversao(execucao_id: str):
                 layouts_invalidos_notificacao.append(nome_final)
                 invalidos += 1
                 continue
+            logger.info(
+                "Parser concluido: %s | tempo=%.2fs",
+                arquivo_nome,
+                time.perf_counter() - inicio_parser,
+            )
 
             if df is None or df.empty:
                 resultado_sm = arquivar_pdf_sem_movimentacao(
@@ -1373,6 +1402,9 @@ def _executar_conversao(execucao_id: str):
             dest_lancamento = temp_dir / dados_nome.nome_lancamento
             dest_excel = temp_dir / f"{arquivo_stem}.xlsx"
 
+            inicio_geracao = time.perf_counter()
+            logger.info("Gerando arquivos finais: %s", arquivo_nome)
+
             logger.info("Copiando modelo de lancamento para: %s", dest_lancamento)
             shutil.copy2(lancamento, dest_lancamento)
 
@@ -1400,6 +1432,11 @@ def _executar_conversao(execucao_id: str):
                 folder_id_destino=pasta_destino_id,
                 type_file=XLSX_MIME_TYPE,
                 name_drive=dest_excel.name,
+            )
+            logger.info(
+                "Arquivos finais gerados e enviados: %s | tempo=%.2fs",
+                arquivo_nome,
+                time.perf_counter() - inicio_geracao,
             )
 
             logger.info("Movendo PDF original para pasta destino EMP: %s", arquivo_nome)
@@ -1452,6 +1489,11 @@ def _executar_conversao(execucao_id: str):
 
             convertidos += 1
             extratos_notificacao.append(arquivo_stem)
+            logger.info(
+                "PDF processado com sucesso: %s | tempo_total=%.2fs",
+                arquivo_nome,
+                time.perf_counter() - inicio_pdf,
+            )
             logger.info("PDF convertido com sucesso: %s", arquivo_nome)
             logger.info("Arquivos enviados para a pasta: %s", pasta_destino_historico)
         except Exception:

@@ -720,7 +720,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 patch.object(conversao, "buscar_id_empresa_supabase", return_value="uuid-empresa-23"),
                 patch.object(conversao, "enviar_notificacao_google_chat", side_effect=enviar_notificacao),
             ):
-                pdf_extractor.return_value.extract.return_value = ["texto extraido"]
+                pdf_extractor.return_value.extract.return_value = (["texto extraido"], 1)
                 conversao.executar_conversao()
 
         self.assertEqual(
@@ -896,7 +896,7 @@ class ConversaoPasswordTest(unittest.TestCase):
             ):
                 pdf_extractor.return_value.extract.side_effect = [
                     RuntimeError("PDF quebrado"),
-                    ["texto extraido"],
+                    (["texto extraido"], 1),
                 ]
                 conversao.executar_conversao()
 
@@ -1001,7 +1001,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 patch.object(conversao, "dispatch") as dispatch,
                 patch.object(conversao, "enviar_notificacao_google_chat") as notificacao,
             ):
-                pdf_extractor.return_value.extract.return_value = []
+                pdf_extractor.return_value.extract.return_value = ([], 0)
                 conversao.executar_conversao()
 
         self.assertEqual(
@@ -1046,7 +1046,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 patch.object(conversao, "baixar_controle_supabase", return_value=(True, None)) as mock_baixa,
                 patch.object(conversao, "enviar_notificacao_google_chat") as notificacao,
             ):
-                pdf_extractor.return_value.extract.return_value = ["texto extraido"]
+                pdf_extractor.return_value.extract.return_value = (["texto extraido"], 1)
                 conversao.executar_conversao()
 
         self.assertEqual(fake_drive.renamed, [])
@@ -1174,7 +1174,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 patch.object(conversao, "baixar_controle_supabase", return_value=(True, None)) as mock_sge,
                 patch.object(conversao, "enviar_notificacao_google_chat") as notificacao,
             ):
-                pdf_extractor.return_value.extract.return_value = ["texto extraido"]
+                pdf_extractor.return_value.extract.return_value = (["texto extraido"], 1)
                 conversao.executar_conversao()
 
         mock_sge.assert_called_once()
@@ -1227,7 +1227,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 patch.object(conversao, "baixar_controle_supabase", return_value=(False, None)),
                 patch.object(conversao, "enviar_notificacao_google_chat") as notificacao,
             ):
-                pdf_extractor.return_value.extract.return_value = ["texto extraido"]
+                pdf_extractor.return_value.extract.return_value = (["texto extraido"], 1)
                 conversao.executar_conversao()
 
         notificacao.assert_called_once()
