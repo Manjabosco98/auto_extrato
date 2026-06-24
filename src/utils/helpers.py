@@ -1,22 +1,38 @@
 import os
 import gc
+import logging
 import shutil
+import psutil
 import pandas as pd
 from copy import copy
 from pathlib import Path
 from openpyxl import load_workbook
 from pypdf import PdfReader, PdfWriter
 
+logger = logging.getLogger(__name__)
+
+
+def log_memoria(etapa: str):
+    processo = psutil.Process(os.getpid())
+    memoria_mb = processo.memory_info().rss / 1024 / 1024
+    logger.info(
+        "Uso de memoria | etapa=%s | memoria=%.2f MB",
+        etapa,
+        memoria_mb,
+    )
+
 def planilha_lancamento(df, destino):
     destino = Path(destino)
     destino_tmp = destino.with_name(f"{destino.stem}_tmp{destino.suffix}")
 
+    log_memoria(f"antes_abrir_modelo_excel_{destino.name}")
     shutil.copy2(destino, destino_tmp)
 
     wb = None
 
     try:
         wb = load_workbook(destino_tmp, keep_vba=True)
+        log_memoria(f"depois_abrir_modelo_excel_{destino.name}")
         ws = wb["Plan1"]
 
         linha_inicial = 2
@@ -45,7 +61,9 @@ def planilha_lancamento(df, destino):
             # DESCRIÇÃO -> coluna F
             ws[f"F{linha_excel}"] = row["DESCRIÇÃO"]
 
+        log_memoria(f"antes_salvar_excel_{destino.name}")
         wb.save(destino_tmp)
+        log_memoria(f"depois_salvar_excel_{destino.name}")
 
     finally:
         if wb is not None:

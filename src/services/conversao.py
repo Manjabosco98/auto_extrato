@@ -1,4 +1,6 @@
+import gc
 import logging
+import os
 import re
 import shutil
 import time
@@ -37,7 +39,7 @@ from src.services.chat_notifications import (
     GOOGLE_CHAT_SPACE_NAME,
     registrar_e_enviar_notificacao,
 )
-from src.utils.helpers import planilha_lancamento, remover_senha_pdf, totalizador
+from src.utils.helpers import log_memoria, planilha_lancamento, remover_senha_pdf, totalizador
 from src.utils.logging_config import setup_logging
 
 
@@ -1126,6 +1128,11 @@ def _executar_conversao(execucao_id: str):
     )
     logger.info("PDFs encontrados na pasta EXT do Google Drive: %s", len(arquivos))
 
+    max_pdfs = int(os.getenv("MAX_PDFS_POR_EXECUCAO", "0"))
+    if max_pdfs > 0:
+        logger.info("Limitando processamento a %s PDFs (MAX_PDFS_POR_EXECUCAO)", max_pdfs)
+        arquivos = arquivos[:max_pdfs]
+
     if not arquivos:
         logger.info("Pasta EXT vazia")
 
@@ -1154,10 +1161,13 @@ def _executar_conversao(execucao_id: str):
         pdf_local = temp_dir / f"{arquivo_id}.pdf"
         pdf_sem_senha = temp_dir / f"{arquivo_id}_sem_senha.pdf"
         pdf_processamento = pdf_local
+        pdf = None
+        df = None
         dest_lancamento = None
         dest_excel = None
 
         logger.info("Processando PDF: %s", arquivo_nome_seguro)
+        log_memoria(f"antes_processar_pdf_{arquivo_nome_seguro}")
 
         try:
             logger.info("Baixando PDF do Google Drive: %s", arquivo_nome_seguro)
@@ -1321,6 +1331,7 @@ def _executar_conversao(execucao_id: str):
 
             logger.info("Identificando layout e convertendo PDF em DataFrame: %s", arquivo_nome)
             inicio_parser = time.perf_counter()
+            log_memoria(f"antes_parser_{arquivo_nome}")
             try:
                 df = dispatch(pdf)
             except LayoutNotRecognized:
@@ -1336,6 +1347,7 @@ def _executar_conversao(execucao_id: str):
                 layouts_invalidos_notificacao.append(nome_final)
                 invalidos += 1
                 continue
+            log_memoria(f"depois_parser_{arquivo_nome}")
             logger.info(
                 "Parser concluido: %s | tempo=%.2fs",
                 arquivo_nome,
@@ -1404,6 +1416,7 @@ def _executar_conversao(execucao_id: str):
 
             inicio_geracao = time.perf_counter()
             logger.info("Gerando arquivos finais: %s", arquivo_nome)
+            log_memoria(f"antes_gerar_excel_{arquivo_nome}")
 
             logger.info("Copiando modelo de lancamento para: %s", dest_lancamento)
             shutil.copy2(lancamento, dest_lancamento)
@@ -1414,7 +1427,9 @@ def _executar_conversao(execucao_id: str):
             logger.info("Gerando planilha totalizada: %s", dest_excel)
             df_totalizado = totalizador(df)
             df_totalizado.to_excel(dest_excel, index=False)
+            del df_totalizado
             momento_conversao = agora_historico()
+            log_memoria(f"depois_gerar_excel_{arquivo_nome}")
 
             logger.info("Enviando XLSM para o Google Drive: %s", dest_lancamento.name)
             enviar_ou_atualizar_arquivo(
@@ -1509,6 +1524,13 @@ def _executar_conversao(execucao_id: str):
             if dest_excel is not None:
                 dest_excel.unlink(missing_ok=True)
             logger.info("Arquivos temporarios limpos para: %s", arquivo_nome_seguro)
+
+            pdf = None
+            df = None
+            dest_lancamento = None
+            dest_excel = None
+            gc.collect()
+            log_memoria(f"apos_gc_collect_{arquivo_nome_seguro}")
 
     logger.info("Atualizando controle no portal SGE para %s documento(s)", len(documentos_para_baixa))
     atualizados_sge = 0
