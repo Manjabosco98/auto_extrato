@@ -1,4 +1,3 @@
-import gc
 import logging
 import os
 import re
@@ -39,7 +38,7 @@ from src.services.chat_notifications import (
     GOOGLE_CHAT_SPACE_NAME,
     registrar_e_enviar_notificacao,
 )
-from src.utils.helpers import log_memoria, planilha_lancamento, remover_senha_pdf, totalizador
+from src.utils.helpers import planilha_lancamento, remover_senha_pdf, totalizador
 from src.utils.logging_config import setup_logging
 
 
@@ -1152,24 +1151,24 @@ def _executar_conversao(execucao_id: str):
     documentos_para_baixa = []
 
     for arquivo_drive in arquivos:
-        arquivo_id = arquivo_drive["id"]
-        arquivo_nome_original = arquivo_drive["name"]
-        arquivo_nome_seguro = sanitizar_nome_senha(arquivo_nome_original)
-        arquivo_nome = arquivo_nome_seguro
-        processados += 1
-        inicio_pdf = time.perf_counter()
-        pdf_local = temp_dir / f"{arquivo_id}.pdf"
-        pdf_sem_senha = temp_dir / f"{arquivo_id}_sem_senha.pdf"
-        pdf_processamento = pdf_local
-        pdf = None
-        df = None
-        dest_lancamento = None
-        dest_excel = None
-
-        logger.info("Processando PDF: %s", arquivo_nome_seguro)
-        log_memoria(f"antes_processar_pdf_{arquivo_nome_seguro}")
-
+        arquivo_nome_seguro = arquivo_drive.get("name", "DESCONHECIDO")
         try:
+            arquivo_id = arquivo_drive["id"]
+            arquivo_nome_original = arquivo_drive["name"]
+            arquivo_nome_seguro = sanitizar_nome_senha(arquivo_nome_original)
+            arquivo_nome = arquivo_nome_seguro
+            processados += 1
+            inicio_pdf = time.perf_counter()
+            pdf_local = temp_dir / f"{arquivo_id}.pdf"
+            pdf_sem_senha = temp_dir / f"{arquivo_id}_sem_senha.pdf"
+            pdf_processamento = pdf_local
+            pdf = None
+            df = None
+            dest_lancamento = None
+            dest_excel = None
+
+            logger.info("Processando PDF: %s", arquivo_nome_seguro)
+
             logger.info("Baixando PDF do Google Drive: %s", arquivo_nome_seguro)
             inicio_download = time.perf_counter()
             google_drive.download(
@@ -1331,7 +1330,6 @@ def _executar_conversao(execucao_id: str):
 
             logger.info("Identificando layout e convertendo PDF em DataFrame: %s", arquivo_nome)
             inicio_parser = time.perf_counter()
-            log_memoria(f"antes_parser_{arquivo_nome}")
             try:
                 df = dispatch(pdf)
             except LayoutNotRecognized:
@@ -1347,7 +1345,6 @@ def _executar_conversao(execucao_id: str):
                 layouts_invalidos_notificacao.append(nome_final)
                 invalidos += 1
                 continue
-            log_memoria(f"depois_parser_{arquivo_nome}")
             logger.info(
                 "Parser concluido: %s | tempo=%.2fs",
                 arquivo_nome,
@@ -1416,7 +1413,6 @@ def _executar_conversao(execucao_id: str):
 
             inicio_geracao = time.perf_counter()
             logger.info("Gerando arquivos finais: %s", arquivo_nome)
-            log_memoria(f"antes_gerar_excel_{arquivo_nome}")
 
             logger.info("Copiando modelo de lancamento para: %s", dest_lancamento)
             shutil.copy2(lancamento, dest_lancamento)
@@ -1429,7 +1425,6 @@ def _executar_conversao(execucao_id: str):
             df_totalizado.to_excel(dest_excel, index=False)
             del df_totalizado
             momento_conversao = agora_historico()
-            log_memoria(f"depois_gerar_excel_{arquivo_nome}")
 
             logger.info("Enviando XLSM para o Google Drive: %s", dest_lancamento.name)
             enviar_ou_atualizar_arquivo(
@@ -1517,20 +1512,21 @@ def _executar_conversao(execucao_id: str):
                 f"{arquivo_nome_seguro} - erro inesperado; mantido na EXT"
             )
         finally:
-            pdf_local.unlink(missing_ok=True)
-            pdf_sem_senha.unlink(missing_ok=True)
-            if dest_lancamento is not None:
-                dest_lancamento.unlink(missing_ok=True)
-            if dest_excel is not None:
-                dest_excel.unlink(missing_ok=True)
-            logger.info("Arquivos temporarios limpos para: %s", arquivo_nome_seguro)
+            try:
+                pdf_local.unlink(missing_ok=True)
+                pdf_sem_senha.unlink(missing_ok=True)
+                if dest_lancamento is not None:
+                    dest_lancamento.unlink(missing_ok=True)
+                if dest_excel is not None:
+                    dest_excel.unlink(missing_ok=True)
+                logger.info("Arquivos temporarios limpos para: %s", arquivo_nome_seguro)
 
-            pdf = None
-            df = None
-            dest_lancamento = None
-            dest_excel = None
-            gc.collect()
-            log_memoria(f"apos_gc_collect_{arquivo_nome_seguro}")
+                pdf = None
+                df = None
+                dest_lancamento = None
+                dest_excel = None
+            except Exception:
+                logger.warning("Erro ao limpar temporarios para %s, ignorando", arquivo_nome_seguro)
 
     logger.info("Atualizando controle no portal SGE para %s documento(s)", len(documentos_para_baixa))
     atualizados_sge = 0

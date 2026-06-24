@@ -4,8 +4,6 @@ from pathlib import Path
 
 import pdfplumber
 
-from src.utils.helpers import log_memoria
-
 logger = logging.getLogger(__name__)
 
 
@@ -23,7 +21,6 @@ class PDFExtractor:
             pdf_path.exists(),
             pdf_path.stat().st_size if pdf_path.exists() else None,
         )
-        log_memoria(f"antes_abrir_pdf_{pdf_path.name}")
 
         if not pdf_path.exists():
             logger.error("Arquivo PDF nao encontrado: %s", self.pdf)
@@ -50,7 +47,6 @@ class PDFExtractor:
             "PDF aberto com sucesso | arquivo=%s | tempo=%.2fs",
             pdf_path.name, tempo_abertura,
         )
-        log_memoria(f"depois_abrir_pdf_{pdf_path.name}")
 
         try:
             total_paginas = len(pdf.pages)
@@ -68,7 +64,6 @@ class PDFExtractor:
 
             for i, page in enumerate(pdf.pages, start=1):
                 inicio_pagina = time.perf_counter()
-                log_memoria(f"antes_extrair_pagina_{i}_{pdf_path.name}")
 
                 logger.info(
                     "Iniciando extracao da pagina %s/%s | arquivo=%s",
@@ -96,7 +91,6 @@ class PDFExtractor:
                     "Pagina extraida com sucesso %s/%s | caracteres=%s | tempo=%.2fs",
                     i, total_paginas, len(page_text), tempo_pagina,
                 )
-                log_memoria(f"depois_extrair_pagina_{i}_{pdf_path.name}")
 
                 if "cid:" in page_text:
                     logger.warning(
@@ -124,7 +118,6 @@ class PDFExtractor:
             "Extracao concluida | arquivo=%s | paginas=%s | caracteres=%s | tempo=%.2fs",
             pdf_path.name, total_paginas, caracteres, tempo_total,
         )
-        log_memoria(f"depois_texto_final_{pdf_path.name}")
 
         if caracteres == 0:
             logger.warning(
