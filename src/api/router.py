@@ -7,6 +7,13 @@ from src.api.endpoints.whats import router as whats_router
 
 
 api_router = APIRouter()
+
+
+@api_router.get("/health")
+async def health_check():
+    return {"status": "ok", "service": "autoextrato"}
+
+
 api_router.include_router(
     conversao_router,
     prefix="/conversao",
