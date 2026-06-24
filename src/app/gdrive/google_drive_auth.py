@@ -1,3 +1,5 @@
+import json
+import os
 import shutil
 import tempfile
 from pathlib import Path
@@ -27,14 +29,32 @@ class GoogleDriveAuth:
         self.token_path = Path(token_path)
         self.token_secret_path = Path(token_secret_path) if token_secret_path else None
 
+        self._setup_credentials_from_env()
         self._preparar_token_gravavel()
 
         self.service = self._service()
 
+    def _setup_credentials_from_env(self):
+        """
+        Suporta montar credenciais via variaveis de ambiente (JSON).
+        Util para Docker onde os arquivos podem nao existir localmente.
+        """
+        credentials_json = os.getenv("GOOGLE_OAUTH_CREDENTIALS_JSON")
+        if credentials_json and not self.credentials_path.exists():
+            self.credentials_path.parent.mkdir(parents=True, exist_ok=True)
+            self.credentials_path.write_text(credentials_json, encoding="utf-8")
+
+        token_json = os.getenv("GOOGLE_OAUTH_TOKEN_JSON")
+        if token_json and not self.token_path.exists():
+            self.token_path.parent.mkdir(parents=True, exist_ok=True)
+            self.token_path.write_text(token_json, encoding="utf-8")
+
     def _preparar_token_gravavel(self):
         """
-        No Render, /etc/secrets é somente leitura.
-        Por isso, copiamos o token original para /tmp antes de autenticar.
+        Suporta multiplos ambientes:
+        - Docker: monta via volumes ou env vars (_setup_credentials_from_env)
+        - Render: /etc/secrets e somente leitura, copia para /tmp
+        - Local: usa arquivos diretamente
         """
 
         if self.token_secret_path and self.token_secret_path.exists():
@@ -49,7 +69,7 @@ class GoogleDriveAuth:
             return
 
         raise FileNotFoundError(
-            f"Token do Google Drive não encontrado. "
+            f"Token do Google Drive nao encontrado. "
             f"token_path={self.token_path} | "
             f"token_secret_path={self.token_secret_path}"
         )

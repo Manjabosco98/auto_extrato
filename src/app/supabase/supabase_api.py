@@ -1,26 +1,23 @@
 import logging
+import os
 from datetime import date
 
 import requests
 
 logger = logging.getLogger(__name__)
 
-SUPABASE_CONTROLE_URL = (
-    "https://ngsgvitzkdcbrhfvbymu.supabase.co"
-    "/functions/v1/api-documentos/controle/sync"
+SUPABASE_BASE_URL = os.getenv(
+    "SUPABASE_BASE_URL",
+    "https://ngsgvitzkdcbrhfvbymu.supabase.co/functions/v1/api-documentos",
 )
-SUPABASE_CONTROLE_GET_URL = (
-    "https://ngsgvitzkdcbrhfvbymu.supabase.co"
-    "/functions/v1/api-documentos/controle"
-)
-SUPABASE_CONTROLE_KEY = (
+SUPABASE_CONTROLE_URL = f"{SUPABASE_BASE_URL}/controle/sync"
+SUPABASE_CONTROLE_GET_URL = f"{SUPABASE_BASE_URL}/controle"
+SUPABASE_CONTROLE_KEY = os.getenv(
+    "SUPABASE_CONTROLE_KEY",
     "sk_live_9e8b6a71-166e-4a57-ac3e-91b3fac1c3a6"
-    "-b24c8d1c-3802-4206-8c36-1a9711ed89bc"
+    "-b24c8d1c-3802-4206-8c36-1a9711ed89bc",
 )
-SUPABASE_BAIXA_URL = (
-    "https://ngsgvitzkdcbrhfvbymu.supabase.co"
-    "/functions/v1/api-documentos/controle/baixa"
-)
+SUPABASE_BAIXA_URL = f"{SUPABASE_BASE_URL}/controle/baixa"
 
 
 def _converter_competencia(competencia: str) -> str:

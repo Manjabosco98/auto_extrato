@@ -1,0 +1,64 @@
+services:
+  autoextrato:
+    build: .
+    container_name: autoextrato
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data:ro
+      - ./credentials:/app/credentials:ro
+      - ./logs:/app/logs
+      - ./temp:/app/temp
+    env_file:
+      - .env
+    environment:
+      - SUPABASE_CONTROLE_KEY=${SUPABASE_CONTROLE_KEY}
+      - SUPABASE_BASE_URL=${SUPABASE_BASE_URL:-https://ngsgvitzkdcbrhfvbymu.supabase.co/functions/v1/api-documentos}
+      - GOOGLE_OAUTH_CREDENTIALS=/app/credentials/api_google_drive_auth.json
+      - GOOGLE_OAUTH_TOKEN=/app/credentials/token_drive.json
+      - GOOGLE_OAUTH_TOKEN_SECRET=/app/credentials/token_drive.json
+      - GOOGLE_DRIVE_FOLDER_ID=${GOOGLE_DRIVE_FOLDER_ID:-1w3AY5xp-hHyQh263jfvhGoUdzH-0Ls0F}
+      - EVOLUTION_BASE_URL=${EVOLUTION_BASE_URL:-https://api-whatsapp-xoor.onrender.com/}
+      - EVOLUTION_API_KEY=${EVOLUTION_API_KEY}
+      - EVOLUTION_INSTANCE_NAME=${EVOLUTION_INSTANCE_NAME:-ExtractPDFs}
+      - WEBHOOK_API_WHATSAPP=${WEBHOOK_API_WHATSAPP:-http://localhost:8000}
+      - GOOGLE_CHAT_SEND_URL=${GOOGLE_CHAT_SEND_URL:-https://google-chat-api.onrender.com/google-chat/send}
+      - GOOGLE_CHAT_SPACE_NAME=${GOOGLE_CHAT_SPACE_NAME:-spaces/AAQAQEHQc-k}
+    networks:
+      - autoextrato-network
+
+  nginx:
+    image: nginx:alpine
+    container_name: autoextrato-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/nginx/autoextrato.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./deploy/nginx/ssl.conf:/etc/nginx/conf.d/ssl.conf:ro
+      - certbot-conf:/etc/letsencrypt:ro
+      - certbot-www:/var/www/certbot:ro
+    depends_on:
+      - autoextrato
+    networks:
+      - autoextrato-network
+
+  certbot:
+    image: certbot/certbot
+    container_name: autoextrato-certbot
+    volumes:
+      - certbot-conf:/etc/letsencrypt
+      - certbot-www:/var/www/certbot
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
+    networks:
+      - autoextrato-network
+
+volumes:
+  certbot-conf:
+  certbot-www:
+
+networks:
+  autoextrato-network:
+    driver: bridge

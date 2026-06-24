@@ -12,5 +12,8 @@ wheels/
 # Runtime logs
 logs/
 
+# Environment variables
+.env
+
 # Credentials
 credentials/

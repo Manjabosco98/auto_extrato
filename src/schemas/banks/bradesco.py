@@ -14,7 +14,7 @@ class Bradesco(BankHandler):
         indice = next((i for i, item in enumerate(pdf) if "Saldos Invest Fácil / Plus" in item), None)
         pdf = pdf[4:indice]
 
-        pdf = [item for item in pdf if not any(texto in item for texto in ["Total ", "Os dados acima têm como base ", "Últimos Lançamento", "Data Lançamento Dcto. Crédito (R$) Débito (R$) Saldo (R$)"])]
+        pdf = [item for item in pdf if not any(texto in item for texto in ["Total ", "Os dados acima têm como base ", "Últimos Lançamento", "Data Lançamento Dcto. Crédito (R$) Débito (R$) Saldo (R$)", "Não há Lançamentos para este tipo de extrato. "])]
 
 
         padrao_movimento = re.compile(
