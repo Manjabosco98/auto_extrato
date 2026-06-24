@@ -19,6 +19,7 @@ services:
       - GOOGLE_OAUTH_TOKEN=/app/credentials/token_drive.json
       - GOOGLE_OAUTH_TOKEN_SECRET=/app/credentials/token_drive.json
       - GOOGLE_DRIVE_FOLDER_ID=${GOOGLE_DRIVE_FOLDER_ID:-1w3AY5xp-hHyQh263jfvhGoUdzH-0Ls0F}
+      - GOOGLE_DRIVE_EMP_FOLDER_ID=${GOOGLE_DRIVE_EMP_FOLDER_ID:-1bS2unf8FGyNIKiVFFtGR5TtqPqI8jdIS}
       - EVOLUTION_BASE_URL=${EVOLUTION_BASE_URL:-https://api-whatsapp-xoor.onrender.com/}
       - EVOLUTION_API_KEY=${EVOLUTION_API_KEY}
       - EVOLUTION_INSTANCE_NAME=${EVOLUTION_INSTANCE_NAME:-ExtractPDFs}
