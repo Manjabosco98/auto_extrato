@@ -8,6 +8,8 @@ import requests
 
 from src.app.gdrive.google_drive_auth import GoogleDriveAuth
 from src.app.gdrive.settings import (
+    GOOGLE_DRIVE_EMP_FOLDER_ID,
+    GOOGLE_DRIVE_EXT_FOLDER_ID,
     GOOGLE_DRIVE_FOLDER_ID,
     GOOGLE_OAUTH_CREDENTIALS,
     GOOGLE_OAUTH_TOKEN,
@@ -125,7 +127,7 @@ def executar_fecfin() -> dict[str, int]:
         token_secret_path=GOOGLE_OAUTH_TOKEN_SECRET,
     )
 
-    extratos_id = GOOGLE_DRIVE_FOLDER_ID
+    extratos_id = GOOGLE_DRIVE_EXT_FOLDER_ID
     lancamento = MODELO_LANCAMENTOS
     temp_dir = Path.cwd() / "temp"
     temp_dir.mkdir(parents=True, exist_ok=True)
@@ -133,7 +135,7 @@ def executar_fecfin() -> dict[str, int]:
 
     emp_raiz_id = resolver_pasta_emp_base(
         google_drive=google_drive,
-        pasta_base_id=extratos_id,
+        pasta_base_id=GOOGLE_DRIVE_EMP_FOLDER_ID,
     )
 
     logger.info("Criando ou recuperando pasta de entrada EXT no Google Drive")

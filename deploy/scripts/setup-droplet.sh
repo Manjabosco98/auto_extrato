@@ -5,8 +5,8 @@
 
 set -e
 
-DOMAIN="api.sgecont.com.br"
-EMAIL="seu-email@exemplo.com"  # Substitua pelo seu email para Let's Encrypt
+DOMAIN="autoextrato.sgecont.com.br"
+EMAIL="auto.sgecont@gmail.com"  # Email usado no Let's Encrypt
 
 echo "=== Atualizando sistema ==="
 apt update && apt upgrade -y
@@ -48,8 +48,8 @@ echo "Proximos passos:"
 echo "1. Copie os arquivos do projeto para /opt/autoextrato/"
 echo "2. Configure o arquivo .env em /opt/autoextrato/"
 echo "3. Copie os arquivos de credenciais para /opt/autoextrato/credentials/"
-echo "4. Execute: cd /opt/autoextrato && docker-compose up -d"
-echo "5. Apos o primeiro start, pare o nginx e rode o certbot:"
-echo "   docker-compose stop nginx"
-echo "   docker-compose run --rm certbot certonly --webroot --webroot-path=/var/www/certbot -d $DOMAIN --email $EMAIL --agree-tos --no-eff-email"
-echo "   docker-compose start nginx"
+echo "4. Suba a aplicacao (build local):"
+echo "   cd /opt/autoextrato && docker-compose up -d --build"
+echo "5. Emita o certificado HTTPS (executa uma unica vez):"
+echo "   ./deploy/scripts/init-letsencrypt.sh"
+echo "6. Valide: https://$DOMAIN/api/health"

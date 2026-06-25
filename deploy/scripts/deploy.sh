@@ -5,12 +5,13 @@
 
 set -e
 
-echo "=== Fazendo pull da imagem mais recente ==="
 cd /opt/autoextrato
-docker-compose pull autoextrato
 
-echo "=== Reiniciando servicos ==="
-docker-compose up -d --force-recreate autoextrato
+echo "=== Atualizando codigo (git pull) ==="
+git pull --ff-only || echo "Aviso: git pull ignorado (repo nao versionado neste diretorio)"
+
+echo "=== Rebuild e restart do servico (build local) ==="
+docker-compose up -d --build autoextrato
 
 echo "=== Limpando imagens antigas ==="
 docker image prune -f

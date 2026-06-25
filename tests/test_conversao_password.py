@@ -1453,7 +1453,7 @@ class ConversaoPasswordTest(unittest.TestCase):
         self.assertEqual(call_args[1]["json"]["banco"], "C6BANK")
         self.assertEqual(call_args[1]["json"]["agencia"], "1")
         self.assertEqual(call_args[1]["json"]["conta"], "123")
-        self.assertEqual(call_args[1]["json"]["competencia"], "05-2026")
+        self.assertEqual(call_args[1]["json"]["competencia"], "2026-05")
         self.assertEqual(call_args[1]["json"]["codigo_documento"], "EXTBAN")
         self.assertEqual(call_args[1]["json"]["quantidade_arquivos"], 3)
         self.assertEqual(call_args[1]["json"]["status_envio"], "Enviado")

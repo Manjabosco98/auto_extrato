@@ -26,47 +26,46 @@ Depois de iniciar o servidor, acesse:
 - Documentacao interativa: `http://127.0.0.1:8000/docs`
 - OpenAPI JSON: `http://127.0.0.1:8000/openapi.json`
 
-## Rota de Conversao
+## Producao
 
-A rota abaixo foi criada para ser chamada pelo botao "executar conversao" da plataforma:
+A API esta implantada no DigitalOcean com HTTPS:
 
-```http
-POST /api/conversao/executar
-```
+- Documentacao: `https://autoextrato.sgecont.com.br/docs`
+- OpenAPI JSON: `https://autoextrato.sgecont.com.br/openapi.json`
 
-URL local completa:
+## Endpoints
 
-```text
-http://127.0.0.1:8000/api/conversao/executar
-```
+| Fluxo | Metodo | URL Producao |
+|-------|--------|--------------|
+| Health | GET | `https://autoextrato.sgecont.com.br/api/health` |
+| Conversao | POST | `https://autoextrato.sgecont.com.br/api/conversao/executar` |
+| Documentos | POST | `https://autoextrato.sgecont.com.br/api/docs/executar` |
+| FECFIN | POST | `https://autoextrato.sgecont.com.br/api/fecfin/executar` |
+| Docs (Swagger) | GET | `https://autoextrato.sgecont.com.br/docs` |
 
-## Exemplo de botao para chamada
-<button onclick="executarConversao()">Executar conversão</button>
+Todas as rotas POST retornam `202` (iniciado) ou `409` (ja em execucao).
+
+## Exemplo de chamada
+
+```html
+<button onclick="executarConversao()">Executar conversao</button>
 
 <script>
 async function executarConversao() {
-  const resposta = await fetch("http://127.0.0.1:8000/api/conversao/executar", {
+  const resposta = await fetch("https://autoextrato.sgecont.com.br/api/conversao/executar", {
     method: "POST"
   });
-
   const dados = await resposta.json();
   alert(dados.message);
 }
 </script>
-
-Quando a conversao e iniciada, a API responde imediatamente:
-
-```json
-{
-  "message": "Conversão iniciada"
-}
 ```
 
-Se ja existir uma conversao em andamento, a API bloqueia uma segunda execucao e retorna status `409`:
+Resposta padrao:
 
 ```json
 {
-  "message": "Conversão já está em execução"
+  "message": "Conversao iniciada"
 }
 ```
 
