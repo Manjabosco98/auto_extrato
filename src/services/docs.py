@@ -532,6 +532,7 @@ def executar_docs() -> dict[str, int]:
                 "arquivo_nome": arquivo_nome,
                 "pasta_destino": pasta_destino_historico,
                 "indice_historico": len(registros_historico) - 1,
+                "data_recebimento": momento_movimento.strftime("%Y-%m-%d"),
             })
             documentos_notificacao.append(f"{arquivo_nome} - {pasta_destino_historico}")
             movidos += 1
@@ -576,6 +577,7 @@ def executar_docs() -> dict[str, int]:
                 local_arquivo=local,
                 quantidade_arquivos=1,
                 status="Enviado",
+                data_recebimento=doc["data_recebimento"],
             )
             if sucesso:
                 atualizados_sge += 1

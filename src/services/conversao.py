@@ -18,6 +18,7 @@ from pypdf import PdfReader
 from src.app.gdrive.google_drive_auth import GoogleDriveAuth
 from src.app.gdrive.settings import (
     GOOGLE_DRIVE_EMP_FOLDER_ID,
+    GOOGLE_DRIVE_EXT_FOLDER_ID,
     GOOGLE_DRIVE_FOLDER_ID,
     GOOGLE_OAUTH_CREDENTIALS,
     GOOGLE_OAUTH_TOKEN,
@@ -1076,6 +1077,7 @@ def arquivar_pdf_sem_movimentacao(
         "notificacao": f"{nome_arquivo} - {pasta_destino_historico}",
         "empresa_id": empresa_id,
         "pasta_destino": pasta_destino_historico,
+        "momento": momento,
     }
 
 
@@ -1093,7 +1095,7 @@ def _executar_conversao(execucao_id: str):
         token_secret_path=GOOGLE_OAUTH_TOKEN_SECRET,
     )
 
-    extratos_id = GOOGLE_DRIVE_FOLDER_ID
+    extratos_id = GOOGLE_DRIVE_EXT_FOLDER_ID
     emp_id = GOOGLE_DRIVE_EMP_FOLDER_ID
     lancamento = MODELO_LANCAMENTOS
     temp_dir = Path.cwd() / "temp"
@@ -1297,6 +1299,7 @@ def _executar_conversao(execucao_id: str):
                         "pasta_destino": resultado_sm["pasta_destino"],
                         "quantidade_arquivos": 1,
                         "status": "Não Aplicável",
+                        "data_recebimento": resultado_sm["momento"].strftime("%Y-%m-%d"),
                     })
                 else:
                     erros_processamento_notificacao.append(
@@ -1377,6 +1380,7 @@ def _executar_conversao(execucao_id: str):
                         "pasta_destino": resultado_sm["pasta_destino"],
                         "quantidade_arquivos": 1,
                         "status": "Não Aplicável",
+                        "data_recebimento": resultado_sm["momento"].strftime("%Y-%m-%d"),
                     })
                 else:
                     erros_processamento_notificacao.append(
@@ -1495,6 +1499,7 @@ def _executar_conversao(execucao_id: str):
                 "pasta_destino": pasta_destino_historico,
                 "quantidade_arquivos": 3,
                 "status": "Enviado",
+                "data_recebimento": momento_conversao.strftime("%Y-%m-%d"),
             })
 
             convertidos += 1
@@ -1564,6 +1569,7 @@ def _executar_conversao(execucao_id: str):
                 local_arquivo=local,
                 quantidade_arquivos=doc["quantidade_arquivos"],
                 status=doc["status"],
+                data_recebimento=doc["data_recebimento"],
             )
             if sucesso:
                 atualizados_sge += 1
