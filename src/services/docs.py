@@ -3,7 +3,6 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-import requests
 from openpyxl import Workbook, load_workbook
 
 from src.app.gdrive.google_drive_auth import GoogleDriveAuth
@@ -19,10 +18,9 @@ from src.app.supabase.supabase_api import (
     buscar_id_empresa_supabase,
     baixar_controle_supabase,
 )
+from src.services.chat_notifications import registrar_e_enviar_notificacao
 from src.services.conversao import (
     BASE_EMP_ATIVAS,
-    GOOGLE_CHAT_SEND_URL,
-    GOOGLE_CHAT_SPACE_NAME,
     agora_historico,
     buscar_empresa_por_cliente,
     carregar_empresas_ativas,
@@ -328,6 +326,9 @@ def enviar_notificacao_docs_google_chat(
     empresas_nao_cadastradas_sge: list[str] | None = None,
     erros_sge: int = 0,
     erros_sge_detalhe: list[str] | None = None,
+    google_drive=None,
+    pasta_raiz_id: str = "",
+    execucao_id: str = "",
 ) -> bool:
     if not nomes_documentos and not empresas_nao_cadastradas_sge:
         logger.info("Notificacao Google Chat DOCS nao enviada: nenhum documento movido")
@@ -341,38 +342,14 @@ def enviar_notificacao_docs_google_chat(
         erros_sge=erros_sge,
         erros_sge_detalhe=erros_sge_detalhe,
     )
-    payload = {
-        "space_name": GOOGLE_CHAT_SPACE_NAME,
-        "message": mensagem,
-    }
 
-    try:
-        logger.info("Enviando notificacao DOCS ao Google Chat com %s documento(s)", len(nomes_documentos))
-        response = requests.post(
-            GOOGLE_CHAT_SEND_URL,
-            json=payload,
-            timeout=30,
-        )
-        resposta_texto = (response.text or "")[:500]
-        logger.info(
-            "Resposta Google Chat DOCS: status=%s body=%s",
-            response.status_code,
-            resposta_texto,
-        )
-
-        if response.status_code < 200 or response.status_code >= 300:
-            logger.error(
-                "Falha ao enviar notificacao DOCS para o Google Chat: status=%s body=%s",
-                response.status_code,
-                resposta_texto,
-            )
-            return False
-
-        logger.info("Notificacao DOCS enviada ao Google Chat com %s documento(s)", len(nomes_documentos))
-        return True
-    except Exception:
-        logger.exception("Erro ao enviar notificacao DOCS para o Google Chat")
-        return False
+    return registrar_e_enviar_notificacao(
+        google_drive=google_drive,
+        pasta_raiz_id=pasta_raiz_id,
+        execucao_id=execucao_id,
+        tipo="DOCS",
+        mensagem=mensagem,
+    )
 
 
 def _mime_type_historico(arquivo: dict) -> bool:
@@ -381,7 +358,8 @@ def _mime_type_historico(arquivo: dict) -> bool:
 
 def executar_docs() -> dict[str, int]:
     setup_logging()
-    logger.info("Iniciando fluxo DOCS")
+    execucao_id = f"DOCS-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    logger.info("Iniciando fluxo DOCS [execucao=%s]", execucao_id)
     logger.info("Autenticando Google Drive")
 
     google_drive = GoogleDriveAuth(
@@ -600,6 +578,9 @@ def executar_docs() -> dict[str, int]:
     )
     enviar_notificacao_docs_google_chat(
         documentos_notificacao,
+        google_drive=google_drive,
+        pasta_raiz_id=raiz_id,
+        execucao_id=execucao_id,
         atualizados_sge=atualizados_sge,
         empresas_nao_cadastradas_sge=sem_baixa_nao_cadastrada,
         erros_sge=erros_sge,

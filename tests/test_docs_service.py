@@ -246,16 +246,19 @@ class DocsServiceTest(unittest.TestCase):
                 ),
             ],
         )
-        notificacao.assert_called_once_with(
-            [
-                "0626_JURATPAS_BRITO.docx - "
-                "EMP/196_BRITO/MOV/CONT/26/06/REL"
-            ],
-            atualizados_sge=1,
-            empresas_nao_cadastradas_sge=[],
-            erros_sge=0,
-            erros_sge_detalhe=[],
+        notificacao.assert_called_once()
+        call_args, call_kwargs = notificacao.call_args
+        self.assertEqual(
+            call_args[0],
+            ["0626_JURATPAS_BRITO.docx - EMP/196_BRITO/MOV/CONT/26/06/REL"],
         )
+        self.assertEqual(call_kwargs["atualizados_sge"], 1)
+        self.assertEqual(call_kwargs["empresas_nao_cadastradas_sge"], [])
+        self.assertEqual(call_kwargs["erros_sge"], 0)
+        self.assertEqual(call_kwargs["erros_sge_detalhe"], [])
+        self.assertIs(call_kwargs["google_drive"], fake_drive)
+        self.assertEqual(call_kwargs["pasta_raiz_id"], "root-folder")
+        self.assertTrue(call_kwargs["execucao_id"].startswith("DOCS-"))
 
     def test_executar_docs_ignora_empresa_inexistente(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -279,38 +282,35 @@ class DocsServiceTest(unittest.TestCase):
         })
         self.assertEqual(fake_drive.moved, [])
         self.assertEqual(fake_drive.uploaded, [])
-        notificacao.assert_called_once_with(
-            [],
-            atualizados_sge=0,
-            empresas_nao_cadastradas_sge=[],
-            erros_sge=0,
-            erros_sge_detalhe=[],
-        )
+        notificacao.assert_called_once()
+        call_args, call_kwargs = notificacao.call_args
+        self.assertEqual(call_args[0], [])
+        self.assertEqual(call_kwargs["atualizados_sge"], 0)
+        self.assertEqual(call_kwargs["empresas_nao_cadastradas_sge"], [])
+        self.assertEqual(call_kwargs["erros_sge"], 0)
+        self.assertEqual(call_kwargs["erros_sge_detalhe"], [])
+        self.assertIs(call_kwargs["google_drive"], fake_drive)
+        self.assertEqual(call_kwargs["pasta_raiz_id"], "root-folder")
+        self.assertTrue(call_kwargs["execucao_id"].startswith("DOCS-"))
 
     def test_notificacao_docs_google_chat_payload(self):
-        class FakeResponse:
-            status_code = 200
-            text = "ok"
-
-        with patch.object(docs.requests, "post", return_value=FakeResponse()) as post:
+        with patch.object(docs, "registrar_e_enviar_notificacao", return_value=True) as mock_registrar:
             resultado = docs.enviar_notificacao_docs_google_chat(
                 ["0626_JURATPAS_BRITO.docx - EMP/196_BRITO/MOV/CONT/26/06/REL"],
                 momento=docs.datetime(2026, 6, 16, 12, 30, 0),
+                google_drive="fake-drive",
+                pasta_raiz_id="root-folder",
+                execucao_id="DOCS-20260616123000",
             )
 
         self.assertTrue(resultado)
-        post.assert_called_once_with(
-            docs.GOOGLE_CHAT_SEND_URL,
-            json={
-                "space_name": "spaces/AAQAQEHQc-k",
-                "message": (
-                    "Documentos salvos 16/06/26 as 12:30 e atualizado na Base de Dados:\n\n"
-                    "0626_JURATPAS_BRITO.docx - "
-                    "EMP/196_BRITO/MOV/CONT/26/06/REL"
-                ),
-            },
-            timeout=30,
-        )
+        mock_registrar.assert_called_once()
+        call_kwargs = mock_registrar.call_args[1]
+        self.assertEqual(call_kwargs["google_drive"], "fake-drive")
+        self.assertEqual(call_kwargs["pasta_raiz_id"], "root-folder")
+        self.assertEqual(call_kwargs["execucao_id"], "DOCS-20260616123000")
+        self.assertEqual(call_kwargs["tipo"], "DOCS")
+        self.assertIn("Documentos salvos", call_kwargs["mensagem"])
 
     def test_rota_docs_executar_responde_202(self):
         app = FastAPI()
@@ -441,11 +441,7 @@ class DocsServiceTest(unittest.TestCase):
         self.assertEqual(call_kwargs["erros_sge_detalhe"], ["Empresa 196 nao cadastrada"])
 
     def test_notificacao_docs_google_chat_com_sge(self):
-        class FakeResponse:
-            status_code = 200
-            text = "ok"
-
-        with patch.object(docs.requests, "post", return_value=FakeResponse()) as post:
+        with patch.object(docs, "registrar_e_enviar_notificacao", return_value=True) as mock_registrar:
             resultado = docs.enviar_notificacao_docs_google_chat(
                 ["0626_JURATPAS_BRITO.docx - EMP/196_BRITO/MOV/CONT/26/06/REL"],
                 momento=docs.datetime(2026, 6, 16, 12, 30, 0),
@@ -453,12 +449,15 @@ class DocsServiceTest(unittest.TestCase):
                 empresas_nao_cadastradas_sge=[],
                 erros_sge=0,
                 erros_sge_detalhe=[],
+                google_drive="fake-drive",
+                pasta_raiz_id="root-folder",
+                execucao_id="DOCS-20260616123000",
             )
 
         self.assertTrue(resultado)
-        call_args = post.call_args
-        mensagem = call_args[1]["json"]["message"]
-        self.assertIn("Baixa dada no portal SGE: 1 documento(s) atualizado(s)", mensagem)
+        mock_registrar.assert_called_once()
+        call_kwargs = mock_registrar.call_args[1]
+        self.assertIn("Baixa dada no portal SGE: 1 documento(s) atualizado(s)", call_kwargs["mensagem"])
 
 
 if __name__ == "__main__":
