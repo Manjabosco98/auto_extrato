@@ -222,6 +222,162 @@ class FecfinMultiBancoTest(unittest.TestCase):
         self.assertEqual(df.iloc[0]["TIPO"], "D")
 
 
+def _criar_excel_midia(dados: list[list], colunas: list[str] | None = None) -> io.BytesIO:
+    """Cria um Excel in-memory com layout Mídia.
+
+    Estrutura real do Excel:
+      - Linha 0: título/cabeçalho vazio (pandas usa como header padrão)
+      - Linha 1: colunas reais (Destinado à, CPF/CNPJ, etc.)
+      - Linha 2+: dados
+
+    O parse() faz: df.columns = df.iloc[0] e depois df = df[1:].
+    """
+    if colunas is None:
+        colunas = ["Destinado à", "CPF/CNPJ", "Descrição", "Data", "Situação", "Valor"]
+    # Linha 0: título vazio; Linha 1: colunas reais; Linhas 2+: dados
+    linha_titulo = [""] * len(colunas)
+    todas_as_linhas = [linha_titulo, colunas] + dados
+    df = pd.DataFrame(todas_as_linhas)
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, header=False, sheet_name="Sheet1")
+    buf.seek(0)
+    return buf
+
+
+class FecfinMidiaTest(unittest.TestCase):
+    def test_matches_detecta_layout_midia(self):
+        buf = _criar_excel_midia([
+            ["PJ", "12.345.678/0001-99", "PIX RECEBIDO", "01/04/2026", "Quitado", "+1.500,00"],
+        ])
+        with pd.ExcelFile(buf) as xls:
+            from src.schemas.fecfin.midia import Midia
+            handler = Midia()
+            self.assertTrue(handler.matches(xls))
+
+    def test_matches_rejeita_layout_diferente(self):
+        buf = _criar_excel_conta_azul([
+            ["2026-04-01", "PIX", "EMPRESA", 1000.00, "Itau"],
+        ])
+        with pd.ExcelFile(buf) as xls:
+            from src.schemas.fecfin.midia import Midia
+            handler = Midia()
+            self.assertFalse(handler.matches(xls))
+
+    def test_parse_midia_um_registro(self):
+        buf = _criar_excel_midia([
+            ["PJ", "12.345.678/0001-99", "PIX RECEBIDO", "01/04/2026", "Quitado", "+1.500,00"],
+        ])
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, "0426_FECFIN_MIDIA")
+
+        self.assertEqual(len(resultados), 1)
+        banco, df = resultados[0]
+        self.assertEqual(banco, "MIDIA")
+        self.assertEqual(len(df), 1)
+        self.assertIn("DATA", df.columns)
+        self.assertIn("DESCRIÇÃO", df.columns)
+        self.assertIn("VALOR", df.columns)
+        self.assertIn("TIPO", df.columns)
+
+    def test_parse_midia_valores_absolutos(self):
+        buf = _criar_excel_midia([
+            ["PF", "111.222.333-44", "PAGAMENTO FORNECEDOR", "02/04/2026", "Quitado", "-250,50"],
+        ])
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, "0426_FECFIN_MIDIA")
+
+        _, df = resultados[0]
+        self.assertEqual(df.iloc[0]["VALOR"], 250.50)
+        self.assertEqual(df.iloc[0]["TIPO"], "D")
+
+    def test_parse_midia_credito_e_debito(self):
+        buf = _criar_excel_midia([
+            ["PJ", "12.345.678/0001-99", "RECEBIMENTO", "01/04/2026", "Quitado", "+1000,00"],
+            ["PF", "111.222.333-44", "TARIFA BANCARIA", "02/04/2026", "Quitado", "-25,90"],
+        ])
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, "0426_FECFIN_MIDIA")
+
+        _, df = resultados[0]
+        self.assertEqual(df.iloc[0]["TIPO"], "C")
+        self.assertEqual(df.iloc[0]["VALOR"], 1000.00)
+        self.assertEqual(df.iloc[1]["TIPO"], "D")
+        self.assertEqual(df.iloc[1]["VALOR"], 25.90)
+
+    def test_parse_midia_descricao_uppercase(self):
+        buf = _criar_excel_midia([
+            ["PJ", "12.345.678/0001-99", "pix recebido", "01/04/2026", "Quitado", "+100,00"],
+        ])
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, "test")
+
+        _, df = resultados[0]
+        self.assertTrue(df.iloc[0]["DESCRIÇÃO"].isupper())
+
+    def test_parse_midia_remove_nan_da_descricao(self):
+        buf = _criar_excel_midia([
+            ["PJ", None, "DESCRICAO", "01/04/2026", "Quitado", "+100,00"],
+        ])
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, "test")
+
+        _, df = resultados[0]
+        self.assertNotIn("nan", df.iloc[0]["DESCRIÇÃO"].lower())
+
+    def test_parse_midia_banco_extraido_do_nome_arquivo(self):
+        buf = _criar_excel_midia([
+            ["PJ", "12.345.678/0001-99", "TESTE", "01/04/2026", "Quitado", "+100,00"],
+        ])
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, "0526_FECFIN_EXEMPLO")
+
+        banco, _ = resultados[0]
+        self.assertEqual(banco, "EXEMPLO")
+
+    def test_parse_midia_banco_geral_fallback(self):
+        buf = _criar_excel_midia([
+            ["PJ", "12.345.678/0001-99", "TESTE", "01/04/2026", "Quitado", "+100,00"],
+        ])
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, "FECFIN")
+
+        banco, _ = resultados[0]
+        self.assertEqual(banco, "GERAL")
+
+    def test_parse_midia_ignora_linhas_sem_data(self):
+        buf = _criar_excel_midia([
+            ["PJ", "12.345.678/0001-99", "PIX", "01/04/2026", "Quitado", "+1000,00"],
+            ["", "", "", "texto invalido", "", ""],
+            ["PF", "111.222.333-44", "TARIFA", "02/04/2026", "Quitado", "-50,00"],
+        ])
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, "0426_FECFIN_MIDIA")
+
+        _, df = resultados[0]
+        self.assertEqual(len(df), 2)
+
+    def test_parse_midia_formatacao_data(self):
+        buf = _criar_excel_midia([
+            ["PJ", "12.345.678/0001-99", "TESTE", "15/04/2026", "Quitado", "+100,00"],
+        ])
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, "test")
+
+        _, df = resultados[0]
+        self.assertEqual(df.iloc[0]["DATA"], "15/04/2026")
+
+    def test_parse_midia_valor_milhar_ponto(self):
+        buf = _criar_excel_midia([
+            ["PJ", "12.345.678/0001-99", "TESTE", "01/04/2026", "Quitado", "+1.500,00"],
+        ])
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, "test")
+
+        _, df = resultados[0]
+        self.assertEqual(df.iloc[0]["VALOR"], 1500.00)
+
+
 class DispatchFecwinTest(unittest.TestCase):
     def test_dispatch_retorna_vaziao_para_excel_nao_fecfin(self):
         buf = _criar_excel_conta_azul(

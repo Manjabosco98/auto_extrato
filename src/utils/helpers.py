@@ -37,11 +37,12 @@ def planilha_lancamento(df, destino):
             celula_valor.value = abs(row["VALOR"])
 
             fonte = copy(celula_valor.font)
+            tipo = str(row["TIPO"]).upper().strip()
 
-            if row["TIPO"] == "D":
-                fonte.color = "FF0000"
+            if tipo == "D":
+                fonte.color = "FFFF0000"  # vermelho
             else:
-                fonte.color = "000000"
+                fonte.color = "FF000000"  # preto
 
             celula_valor.font = fonte
 
@@ -52,7 +53,6 @@ def planilha_lancamento(df, destino):
 
     finally:
         if wb is not None:
-            # Fecha o arquivo interno usado para preservar macros
             if hasattr(wb, "vba_archive") and wb.vba_archive is not None:
                 try:
                     wb.vba_archive.close()
