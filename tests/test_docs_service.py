@@ -201,7 +201,6 @@ class DocsServiceTest(unittest.TestCase):
                 patch.object(docs, "GOOGLE_DRIVE_EMP_FOLDER_ID", "srvarq-folder"),
                 patch.object(docs, "carregar_empresas_ativas", return_value={"BRITO": (196, "BRITO")}),
                 patch.object(docs, "enviar_notificacao_docs_google_chat") as notificacao,
-                patch.object(docs, "buscar_id_empresa_supabase", return_value="uuid-fake"),
                 patch.object(docs, "baixar_controle_supabase", return_value=(True, None)),
                 patch.object(docs, "agora_historico", return_value=docs.datetime(2026, 6, 16, 12, 30, 5)),
             ):
@@ -398,19 +397,19 @@ class DocsServiceTest(unittest.TestCase):
                 patch.object(docs, "GOOGLE_DRIVE_EMP_FOLDER_ID", "srvarq-folder"),
                 patch.object(docs, "carregar_empresas_ativas", return_value={"BRITO": (196, "BRITO")}),
                 patch.object(docs, "enviar_notificacao_docs_google_chat") as notificacao,
-                patch.object(docs, "buscar_id_empresa_supabase", return_value=None),
+                patch.object(docs, "baixar_controle_supabase", return_value=(False, "Empresa 196 nao dada baixa: nao esta cadastrada na plataforma SGECONT")),
                 patch.object(docs, "agora_historico", return_value=docs.datetime(2026, 6, 16, 12, 30, 5)),
             ):
                 resultado = docs.executar_docs()
 
         self.assertEqual(resultado["movidos"], 1)
         self.assertEqual(resultado["atualizados_sge"], 0)
-        self.assertEqual(fake_drive.history_rows[-1][-1], "Nao Cadastrado")
+        self.assertEqual(resultado["erros_sge"], 1)
+        self.assertEqual(fake_drive.history_rows[-1][-1], "Erro")
         notificacao.assert_called_once()
         call_kwargs = notificacao.call_args[1]
-        self.assertEqual(call_kwargs["empresas_nao_cadastradas_sge"], [
-            "0626_JURATPAS_BRITO.docx — competencia 06-2026"
-        ])
+        self.assertEqual(call_kwargs["erros_sge"], 1)
+        self.assertEqual(call_kwargs["erros_sge_detalhe"], ["Empresa 196 nao dada baixa: nao esta cadastrada na plataforma SGECONT"])
 
     def test_executar_docs_erro_api_sge(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -425,7 +424,6 @@ class DocsServiceTest(unittest.TestCase):
                 patch.object(docs, "GOOGLE_DRIVE_EMP_FOLDER_ID", "srvarq-folder"),
                 patch.object(docs, "carregar_empresas_ativas", return_value={"BRITO": (196, "BRITO")}),
                 patch.object(docs, "enviar_notificacao_docs_google_chat") as notificacao,
-                patch.object(docs, "buscar_id_empresa_supabase", return_value="uuid-fake"),
                 patch.object(docs, "baixar_controle_supabase", return_value=(False, "Empresa 196 nao cadastrada")),
                 patch.object(docs, "agora_historico", return_value=docs.datetime(2026, 6, 16, 12, 30, 5)),
             ):

@@ -15,7 +15,6 @@ from src.app.gdrive.settings import (
     XLSX_MIME_TYPE,
 )
 from src.app.supabase.supabase_api import (
-    buscar_id_empresa_supabase,
     baixar_controle_supabase,
 )
 from src.services.chat_notifications import registrar_e_enviar_notificacao
@@ -526,23 +525,6 @@ def executar_docs() -> dict[str, int]:
 
     for doc in documentos_para_baixa:
         try:
-            id_existente = buscar_id_empresa_supabase(
-                empresa_codigo=str(doc["empresa_id"]),
-                competencia=doc["competencia"],
-                codigo_documento=doc["codigo_documento"],
-            )
-            if not id_existente:
-                logger.warning(
-                    "Controle nao cadastrado no SGE: empresa=%s competencia=%s cod_doc=%s — ignorado",
-                    doc["empresa_id"],
-                    doc["competencia"],
-                    doc["codigo_documento"],
-                )
-                sem_baixa_nao_cadastrada.append(
-                    f'{doc["arquivo_nome"]} — competencia {doc["competencia"]}'
-                )
-                registros_historico[doc["indice_historico"]]["status_sge"] = "Nao Cadastrado"
-                continue
             local = f'Google Drive / {doc["pasta_destino"]}'
             sucesso, detalhe_erro = baixar_controle_supabase(
                 empresa_codigo=str(doc["empresa_id"]),
