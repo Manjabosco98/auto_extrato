@@ -316,7 +316,8 @@ def baixar_controle_supabase(
         if response.status_code == 400:
             try:
                 err = response.json()
-                instancias = err.get("details", {}).get("instancias_disponiveis", [])
+                error_obj = err.get("error", err)
+                instancias = error_obj.get("details", {}).get("instancias_disponiveis", [])
                 if instancias:
                     instancia_codigo = _match_instancia(instancias, banco, conta)
                     if instancia_codigo:
