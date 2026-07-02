@@ -415,22 +415,14 @@ class ConversaoPasswordTest(unittest.TestCase):
         )
 
     def test_carrega_empresa_ativa_por_razao_social(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            base_path = Path(temp_dir) / "BaseEmpAtivas.xlsm"
-            workbook = Workbook()
-            worksheet = workbook.active
-            worksheet.title = "EmpAtivas"
-            worksheet.append(["ID", "Razão social", "CNPJ", "Status"])
-            worksheet.append([437, "CAMARGOS", "00.000.000/0001-00", "Ativa"])
-            workbook.save(base_path)
-
-            empresas = conversao.carregar_empresas_ativas(base_path=base_path)
+        empresas = {"CAMARGOS": ("437", "CAMARGOS")}
+        with patch.object(conversao, "carregar_empresas_ativas", return_value=empresas):
             resultado = conversao.buscar_empresa_por_cliente(
                 " camargos ",
                 empresas=empresas,
             )
 
-        self.assertEqual(resultado, (437, "CAMARGOS"))
+        self.assertEqual(resultado, ("437", "CAMARGOS"))
 
     def test_cliente_inexistente_retorna_campos_vazios(self):
         resultado = conversao.buscar_empresa_por_cliente(
@@ -824,6 +816,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 patch.object(conversao, "pdf_possui_senha", return_value=True),
                 patch.object(conversao, "remover_senha_pdf", side_effect=ValueError("Senha invalida")),
                 patch.object(conversao, "enviar_notificacao_google_chat"),
+                patch.object(conversao, "carregar_empresas_ativas", return_value={}),
             ):
                 conversao.executar_conversao()
 
@@ -847,6 +840,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 patch.object(conversao, "GoogleDriveAuth", return_value=fake_drive),
                 patch.object(conversao, "pdf_possui_senha", return_value=False),
                 patch.object(conversao, "enviar_notificacao_google_chat") as mock_chat,
+                patch.object(conversao, "carregar_empresas_ativas", return_value={}),
             ):
                 conversao.executar_conversao()
 
@@ -1000,6 +994,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 patch.object(conversao, "PDFExtractor") as pdf_extractor,
                 patch.object(conversao, "dispatch") as dispatch,
                 patch.object(conversao, "enviar_notificacao_google_chat") as notificacao,
+                patch.object(conversao, "carregar_empresas_ativas", return_value={}),
             ):
                 pdf_extractor.return_value.extract.return_value = ([], 0)
                 conversao.executar_conversao()
@@ -1397,20 +1392,14 @@ class ConversaoPasswordTest(unittest.TestCase):
 
     def test_preparacao_rejeita_modelo_sem_plan1(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            base_path = Path(temp_dir) / "BaseEmpAtivas.xlsm"
             modelo_path = Path(temp_dir) / "Lancamentos_Contabeis.xlsm"
-
-            base = Workbook()
-            base.active.title = "EmpAtivas"
-            base.active.append(["ID", "Razão social"])
-            base.save(base_path)
 
             modelo = Workbook()
             modelo.active.title = "OutraAba"
             modelo.save(modelo_path)
 
             with self.assertRaisesRegex(ValueError, "Plan1"):
-                conversao.validar_preparacao_fluxo(base_path, modelo_path)
+                conversao.validar_preparacao_fluxo(modelo_path)
 
     def test_preparacao_falha_antes_de_autenticar_no_drive(self):
         with (

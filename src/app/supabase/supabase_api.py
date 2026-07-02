@@ -1,10 +1,15 @@
 import logging
 import os
+import time
+import unicodedata
 from datetime import date
 
 import requests
+from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
+
+load_dotenv()
 
 SUPABASE_BASE_URL = os.getenv("SUPABASE_BASE_URL")
 if not SUPABASE_BASE_URL:
@@ -15,6 +20,18 @@ SUPABASE_CONTROLE_KEY = os.getenv("SUPABASE_CONTROLE_KEY")
 if not SUPABASE_CONTROLE_KEY:
     raise ValueError("SUPABASE_CONTROLE_KEY não configurada")
 SUPABASE_BAIXA_URL = f"{SUPABASE_BASE_URL}/controle/baixa"
+SUPABASE_EMPRESAS_URL = os.getenv(
+    "SUPABASE_EMPRESAS_URL",
+    f"{SUPABASE_BASE_URL}/empresas",
+)
+
+_CACHE_EMPRESAS: dict[str, tuple[str, str]] | None = None
+_CACHE_EMPRESAS_TS: float = 0
+_CACHE_EMPRESAS_TTL: int = 300
+
+
+def _normalizar_nome_empresa(valor) -> str:
+    return " ".join(str(valor or "").strip().upper().split())
 
 
 def _converter_competencia(competencia: str) -> str:
@@ -278,3 +295,69 @@ def baixar_controle_supabase(
             nome_arquivo,
         )
         return False, None
+
+
+def limpar_cache_empresas() -> None:
+    """Limpa o cache em memória de empresas ativas."""
+    global _CACHE_EMPRESAS, _CACHE_EMPRESAS_TS
+    _CACHE_EMPRESAS = None
+    _CACHE_EMPRESAS_TS = 0
+
+
+def carregar_empresas_ativas_api(
+    *,
+    empresas_url: str | None = None,
+    empresas_key: str | None = None,
+    ttl: int = _CACHE_EMPRESAS_TTL,
+    _agora: float | None = None,
+) -> dict[str, tuple[str, str]]:
+    """Busca empresas ativas via API SGE, com cache em memória.
+
+    Retorna um dict ``{nome_normalizado: (id_empresa, razao_social)}``
+    contendo apenas empresas com ``ativo=True``.
+    """
+    global _CACHE_EMPRESAS, _CACHE_EMPRESAS_TS
+
+    agora = _agora if _agora is not None else time.time()
+    if _CACHE_EMPRESAS is not None and (agora - _CACHE_EMPRESAS_TS) < ttl:
+        logger.debug("Empresas ativas retornadas do cache (%s registros)", len(_CACHE_EMPRESAS))
+        return _CACHE_EMPRESAS
+
+    url = empresas_url or SUPABASE_EMPRESAS_URL
+    key = empresas_key or SUPABASE_CONTROLE_KEY
+
+    headers = {"Authorization": f"Bearer {key}"}
+    params = {"limit": 300}
+
+    logger.info("Buscando empresas ativas via API: %s", url)
+    response = requests.get(url, headers=headers, params=params, timeout=30)
+    resposta_texto = (response.text or "")[:500]
+    logger.info("Resposta API empresas: status=%s body=%s", response.status_code, resposta_texto)
+
+    if response.status_code < 200 or response.status_code >= 300:
+        logger.error(
+            "Falha ao buscar empresas ativas: status=%s body=%s",
+            response.status_code,
+            resposta_texto,
+        )
+        raise RuntimeError(
+            f"API empresas retornou status {response.status_code}"
+        )
+
+    data = response.json().get("data", [])
+    empresas: dict[str, tuple[str, str]] = {}
+
+    for item in data:
+        if not item.get("ativo"):
+            continue
+        razao_social = (item.get("razao_social") or "").strip()
+        id_empresa = str(item.get("id_empresa") or "").strip()
+        if razao_social and id_empresa:
+            chave = _normalizar_nome_empresa(razao_social)
+            empresas[chave] = (id_empresa, razao_social)
+
+    _CACHE_EMPRESAS = empresas
+    _CACHE_EMPRESAS_TS = agora
+
+    logger.info("Empresas ativas carregadas: %s registros", len(empresas))
+    return empresas

@@ -19,7 +19,6 @@ from src.app.supabase.supabase_api import (
 )
 from src.services.chat_notifications import registrar_e_enviar_notificacao
 from src.services.conversao import (
-    BASE_EMP_ATIVAS,
     agora_historico,
     buscar_empresa_por_cliente,
     carregar_empresas_ativas,
@@ -412,7 +411,7 @@ def executar_docs() -> dict[str, int]:
     finally:
         caminhos_local.unlink(missing_ok=True)
 
-    empresas = carregar_empresas_ativas(BASE_EMP_ATIVAS)
+    empresas = carregar_empresas_ativas()
     arquivos = google_drive.list_children(docs_folder_id)
     arquivos = [
         arquivo

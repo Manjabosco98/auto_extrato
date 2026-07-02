@@ -31,6 +31,7 @@ from src.app.gdrive.settings import (
 from src.app.supabase.supabase_api import (
     baixar_controle_supabase,
     buscar_id_empresa_supabase,
+    carregar_empresas_ativas_api,
 )
 from src.schemas import LayoutNotRecognized, dispatch
 from src.schemas.parsers.pdf_extractor import PDFExtractor
@@ -66,8 +67,6 @@ HISTORICO_HEADERS_SEM_BANCO = ("ID", "EMP", "DATA", "HORA", "NOME ARQUIVO", "PAS
 HISTORICO_HEADERS_COM_HORA_MOVIMENTO = ("ID", "EMP", "DATA", "HORA", "HORA MOVIMENTO", "NOME ARQUIVO", "PASTA DESTINO")
 HISTORICO_HEADERS_SEM_MOVIMENTO = ("ID", "EMP", "DATA", "HORA", "NOME ARQUIVO", "PASTA DESTINO")
 HISTORICO_HEADERS_ANTIGO = ("nome_arquivo", "data_hora_conversao", "pasta_destino")
-BASE_EMP_ATIVAS = Path.cwd() / "data" / "BaseEmpAtivas.xlsm"
-BASE_EMP_ATIVAS_SHEET = "EmpAtivas"
 MODELO_LANCAMENTOS = Path.cwd() / "data" / "Lancamentos_Contabeis.xlsm"
 
 
@@ -624,83 +623,16 @@ def resolver_pasta_emp_base(
     return pasta_emp["id"]
 
 
-def carregar_empresas_ativas(
-    base_path: Path = BASE_EMP_ATIVAS,
-    sheet_name: str = BASE_EMP_ATIVAS_SHEET,
-) -> dict[str, tuple[object, str]]:
-    if not base_path.exists():
-        logger.warning("Base de empresas ativas nao encontrada: %s", base_path)
-        return {}
-
-    workbook = load_workbook(base_path, read_only=True, data_only=True)
-
-    try:
-        if sheet_name not in workbook.sheetnames:
-            logger.warning("Aba %s nao encontrada na base: %s", sheet_name, base_path)
-            return {}
-
-        worksheet = workbook[sheet_name]
-        rows = worksheet.iter_rows(values_only=True)
-        headers = next(rows, None)
-
-        if not headers:
-            logger.warning("Base de empresas ativas sem cabecalho: %s", base_path)
-            return {}
-
-        normalized_headers = [
-            normalizar_cabecalho_base(header)
-            for header in headers
-        ]
-
-        try:
-            id_index = normalized_headers.index("ID")
-            emp_index = normalized_headers.index("RAZÃO SOCIAL")
-        except ValueError:
-            logger.warning("Base de empresas ativas sem colunas ID/Razao social: %s", base_path)
-            return {}
-
-        empresas = {}
-
-        for row in rows:
-            if not row:
-                continue
-
-            empresa = row[emp_index] if emp_index < len(row) else None
-            empresa_normalizada = normalizar_nome_empresa(empresa)
-
-            if not empresa_normalizada:
-                continue
-
-            empresa_id = row[id_index] if id_index < len(row) else ""
-            empresas[empresa_normalizada] = (empresa_id or "", str(empresa).strip())
-
-        return empresas
-    finally:
-        workbook.close()
+def carregar_empresas_ativas() -> dict[str, tuple[str, str]]:
+    """Carrega empresas ativas via API SGE (com cache em memória)."""
+    return carregar_empresas_ativas_api()
 
 
 def validar_preparacao_fluxo(
-    base_path: Path = BASE_EMP_ATIVAS,
     modelo_path: Path = MODELO_LANCAMENTOS,
 ) -> None:
-    if not base_path.exists():
-        raise FileNotFoundError(f"Base de empresas ativas nao encontrada: {base_path}")
     if not modelo_path.exists():
         raise FileNotFoundError(f"Modelo de lancamentos nao encontrado: {modelo_path}")
-
-    base_workbook = load_workbook(base_path, read_only=True, data_only=True)
-    try:
-        if BASE_EMP_ATIVAS_SHEET not in base_workbook.sheetnames:
-            raise ValueError(f"Aba {BASE_EMP_ATIVAS_SHEET} nao encontrada em {base_path}")
-        headers = next(
-            base_workbook[BASE_EMP_ATIVAS_SHEET].iter_rows(values_only=True),
-            None,
-        )
-        normalized_headers = [normalizar_cabecalho_base(header) for header in (headers or [])]
-        if "ID" not in normalized_headers or "RAZÃO SOCIAL" not in normalized_headers:
-            raise ValueError("Base de empresas ativas sem colunas ID/Razao social")
-    finally:
-        base_workbook.close()
 
     modelo_workbook = load_workbook(modelo_path, read_only=True, data_only=False)
     try:
@@ -756,7 +688,7 @@ def buscar_empresa_por_cliente(
     empresa = empresas.get(cliente_normalizado)
 
     if not empresa:
-        logger.warning("Cliente nao encontrado na BaseEmpAtivas: %s", cliente)
+        logger.warning("Cliente nao encontrado nas empresas ativas: %s", cliente)
         return "", ""
 
     return empresa
