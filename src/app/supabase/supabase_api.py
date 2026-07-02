@@ -360,7 +360,7 @@ def carregar_empresas_ativas_api(
             if nome:
                 chave_nome = _normalizar_nome_empresa(nome)
                 if chave_nome not in empresas:
-                    empresas[chave_nome] = (id_empresa, razao_social)
+                    empresas[chave_nome] = (id_empresa, nome)
 
     _CACHE_EMPRESAS = empresas
     _CACHE_EMPRESAS_TS = agora
