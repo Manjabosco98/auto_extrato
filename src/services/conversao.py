@@ -586,6 +586,10 @@ def nome_pasta_empresa(empresa_id, empresa_nome: str) -> str:
     if not empresa_id_normalizado or not empresa_nome_normalizado:
         raise ValueError("ID/EMP ausente para resolver pasta da empresa")
 
+    # Zero-pad IDs de 1 digito (ex: 3 -> 03, 7 -> 07)
+    if empresa_id_normalizado.isdigit() and len(empresa_id_normalizado) == 1:
+        empresa_id_normalizado = empresa_id_normalizado.zfill(2)
+
     return f"{empresa_id_normalizado}_{empresa_nome_normalizado}"
 
 
