@@ -351,10 +351,16 @@ def carregar_empresas_ativas_api(
         if not item.get("ativo"):
             continue
         razao_social = (item.get("razao_social") or "").strip()
+        nome = (item.get("nome") or "").strip()
         id_empresa = str(item.get("id_empresa") or "").strip()
         if razao_social and id_empresa:
-            chave = _normalizar_nome_empresa(razao_social)
-            empresas[chave] = (id_empresa, razao_social)
+            chave_razao = _normalizar_nome_empresa(razao_social)
+            empresas[chave_razao] = (id_empresa, razao_social)
+            # Indexar tambem pelo nome curto (usado nos nomes de arquivo)
+            if nome:
+                chave_nome = _normalizar_nome_empresa(nome)
+                if chave_nome not in empresas:
+                    empresas[chave_nome] = (id_empresa, razao_social)
 
     _CACHE_EMPRESAS = empresas
     _CACHE_EMPRESAS_TS = agora
