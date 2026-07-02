@@ -426,5 +426,117 @@ class FecfinEndpointTest(unittest.TestCase):
         self.assertEqual(response.json(), {"message": "Fluxo FECFIN ja esta em execucao"})
 
 
+def _criar_excel_geral(dados: list[list], colunas: list[str] | None = None) -> io.BytesIO:
+    """Cria um Excel in-memory com layout Geral (header na linha 4)."""
+    if colunas is None:
+        colunas = [
+            "Data Competência", "Cliente / Fornecedor / Funcionario",
+            "Conta", "Descrição", "Banco", "Forma de Pagamento",
+            "Parc", "Valor", "Data Pagamento | Recebimento",
+            "NF", "Pedido", "CONC", "Entrada | Saida",
+        ]
+    num_colunas = len(colunas)
+    padding = [[""] * num_colunas for _ in range(4)]
+    todas_as_linhas = padding + [colunas] + dados
+    df = pd.DataFrame(todas_as_linhas)
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, header=False, sheet_name="Sheet1")
+    buf.seek(0)
+    return buf
+
+
+class FecfinGeralTest(unittest.TestCase):
+    def test_matches_detecta_geral(self):
+        buf = _criar_excel_geral([
+            ["2026-05-06", "CLIENTE A", "Cliente Final", "DESC", "Caixa",
+             "Pix", "01", 1000.0, "2026-05-06", 1234.0, 5678, True, "Entrada"],
+        ])
+        with pd.ExcelFile(buf) as xls:
+            from src.schemas.fecfin.geral import Geral
+            handler = Geral()
+            self.assertTrue(handler.matches(xls))
+
+    def test_parse_geral_um_banco(self):
+        buf = _criar_excel_geral([
+            ["2026-05-06", "CLIENTE A", "Cliente Final", "PIX", "Caixa",
+             "Pix", "01", 1000.0, "2026-05-06", 1234.0, 5678, True, "Entrada"],
+            ["2026-05-07", "CLIENTE B", "Revenda", "TARIFA", "Caixa",
+             "TED", "02", -250.0, "2026-05-07", 1235.0, 5679, True, "Saida"],
+        ])
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, "0526_FECFIN_TESTE")
+
+        self.assertEqual(len(resultados), 1)
+        banco, df = resultados[0]
+        self.assertEqual(banco, "Caixa")
+        self.assertEqual(len(df), 2)
+        self.assertIn("DESCRIÇÃO", df.columns)
+        self.assertIn("VALOR", df.columns)
+        self.assertIn("TIPO", df.columns)
+        self.assertEqual(df.iloc[0]["TIPO"], "C")
+        self.assertEqual(df.iloc[1]["TIPO"], "D")
+        self.assertEqual(df.iloc[0]["VALOR"], 1000.0)
+        self.assertEqual(df.iloc[1]["VALOR"], 250.0)
+
+    def test_parse_geral_dois_bancos(self):
+        buf = _criar_excel_geral([
+            ["2026-05-06", "CLIENTE A", "Conta", "PIX", "Banco A",
+             "Pix", "01", 1000.0, "2026-05-06", 1234.0, 5678, True, "Entrada"],
+            ["2026-05-07", "CLIENTE B", "Conta", "TED", "Banco B",
+             "TED", "02", 500.0, "2026-05-07", 1235.0, 5679, True, "Saida"],
+        ])
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, "0526_FECFIN_TESTE")
+
+        self.assertEqual(len(resultados), 2)
+        bancos = {banco for banco, _ in resultados}
+        self.assertEqual(bancos, {"Banco A", "Banco B"})
+
+    def test_parse_geral_descricao_uppercase(self):
+        buf = _criar_excel_geral([
+            ["2026-05-06", "cliente a", "conta", "pix", "Banco",
+             "Pix", "01", 100.0, "2026-05-06", 1234.0, 5678, True, "Entrada"],
+        ])
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, "test")
+
+        _, df = resultados[0]
+        self.assertTrue(df.iloc[0]["DESCRIÇÃO"].isupper())
+
+    def test_parse_geral_remove_nan_da_descricao(self):
+        buf = _criar_excel_geral([
+            ["2026-05-06", "CLIENTE", "Conta", None, "Banco",
+             "Pix", "", 100.0, "2026-05-06", None, None, True, "Entrada"],
+        ])
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, "test")
+
+        _, df = resultados[0]
+        self.assertNotIn("nan", df.iloc[0]["DESCRIÇÃO"].lower())
+
+    def test_parse_geral_nf_na_descricao(self):
+        buf = _criar_excel_geral([
+            ["2026-05-06", "CLIENTE", "Conta", "VENDA", "Banco",
+             "Pix", "01", 100.0, "2026-05-06", 1234.0, 5678, True, "Entrada"],
+        ])
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, "test")
+
+        _, df = resultados[0]
+        self.assertIn("NF 1234", df.iloc[0]["DESCRIÇÃO"])
+
+    def test_parse_geral_data_formatada(self):
+        buf = _criar_excel_geral([
+            ["2026-05-06", "CLIENTE", "Conta", "DESC", "Banco",
+             "Pix", "01", 100.0, "2026-05-15", 1234.0, 5678, True, "Entrada"],
+        ])
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, "test")
+
+        _, df = resultados[0]
+        self.assertEqual(df.iloc[0]["DATA"], "15/05/2026")
+
+
 if __name__ == "__main__":
     unittest.main()
