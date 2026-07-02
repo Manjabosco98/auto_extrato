@@ -5,6 +5,7 @@ import pandas as pd
 from copy import copy
 from pathlib import Path
 from openpyxl import load_workbook
+from datetime import datetime, date
 from pypdf import PdfReader, PdfWriter
 
 logger = logging.getLogger(__name__)
@@ -117,3 +118,71 @@ def remover_senha_pdf(caminho_pdf: str, senha: str, caminho_saida: str | None = 
         writer.write(arquivo_saida)
 
     return caminho_saida
+
+def normalizar_parc(valor):
+    if pd.isna(valor):
+        return ""
+
+    # Quando o Excel transformou 01/02 em data
+    if isinstance(valor, (pd.Timestamp, datetime, date)):
+        return f"{valor.day:02}/{valor.month:02}"
+
+    # Quando vem número 1.0, 2.0 etc.
+    if isinstance(valor, float) and valor.is_integer():
+        return str(int(valor))
+
+    return str(valor).strip()
+
+def corrigir_xls_html_para_xlsx(
+    caminho_xls: str | Path,
+    caminho_xlsx: str | Path | None = None,
+    deletar_original: bool = True
+) -> Path:
+    """
+    Converte um arquivo .xls/.html que na verdade é HTML para .xlsx válido.
+
+    Se deletar_original=True, remove o arquivo original somente depois
+    que o .xlsx for criado com sucesso.
+
+    Retorna:
+        Path do arquivo .xlsx gerado.
+    """
+
+    caminho_xls = Path(caminho_xls)
+
+    if not caminho_xls.exists():
+        raise FileNotFoundError(f"Arquivo não encontrado: {caminho_xls}")
+
+    if caminho_xlsx is None:
+        caminho_xlsx = caminho_xls.with_suffix(".xlsx")
+    else:
+        caminho_xlsx = Path(caminho_xlsx)
+
+        # Se passou apenas o nome do arquivo, salva na mesma pasta do .xls
+        if not caminho_xlsx.is_absolute():
+            caminho_xlsx = caminho_xls.parent / caminho_xlsx
+
+    # Lê tabelas HTML dentro do arquivo .xls
+    tabelas = pd.read_html(caminho_xls)
+
+    if not tabelas:
+        raise ValueError(f"Nenhuma tabela HTML encontrada em: {caminho_xls}")
+
+    df = tabelas[0]
+
+    # Remove linhas e colunas totalmente vazias
+    df = df.dropna(how="all").dropna(axis=1, how="all")
+
+    # Garante que a pasta de destino exista
+    caminho_xlsx.parent.mkdir(parents=True, exist_ok=True)
+
+    # Salva como .xlsx real
+    with pd.ExcelWriter(caminho_xlsx, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Planilha1")
+
+    # Só apaga o original se o .xlsx realmente foi criado
+    if deletar_original and caminho_xlsx.exists() and caminho_xlsx.stat().st_size > 0:
+        caminho_xls.unlink()
+
+    return caminho_xlsx
+
