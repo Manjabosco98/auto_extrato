@@ -538,5 +538,108 @@ class FecfinGeralTest(unittest.TestCase):
         self.assertEqual(df.iloc[0]["DATA"], "15/05/2026")
 
 
+def _criar_excel_up380(dados: list[list], colunas: list[str] | None = None) -> io.BytesIO:
+    """Cria um Excel in-memory com layout UP380/Kamino."""
+    if colunas is None:
+        colunas = ["Unnamed: 0", "Classificação", "Descrição", "Valor (R$)", "Unnamed: 4", "Unnamed: 5"]
+    df = pd.DataFrame(dados, columns=colunas)
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Sheet1")
+    buf.seek(0)
+    return buf
+
+
+class FecfinUp380Test(unittest.TestCase):
+    def test_matches_detecta_up380(self):
+        buf = _criar_excel_up380([
+            ["01/05/2026", "Saldo inicial", "Saldo inicial", "5.849,23", None, None],
+            [None, "Tarifas Bancárias", "Tarifa Pix", "-050", None, None],
+        ])
+        with pd.ExcelFile(buf) as xls:
+            from src.schemas.fecfin.up380 import Up380
+            handler = Up380()
+            self.assertTrue(handler.matches(xls))
+
+    def test_parse_up380_um_banco(self):
+        buf = _criar_excel_up380([
+            ["01/05/2026", "Saldo inicial", "Saldo inicial", "5.849,23", None, None],
+            [None, "Tarifas Bancárias", "Tarifa Pix", "-050", None, None],
+            [None, "Pró-Labore", "Referente ao pró-labore", "-5.000,00", None, None],
+            [None, "Receita", "Recebimento cliente", "29.040", None, None],
+        ])
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, "0526_FECFIN_KAMINO_UP380")
+
+        self.assertEqual(len(resultados), 1)
+        banco, df = resultados[0]
+        self.assertEqual(banco, "KAMINO")
+        self.assertEqual(len(df), 3)
+        self.assertIn("DESCRIÇÃO", df.columns)
+        self.assertIn("VALOR", df.columns)
+        self.assertIn("TIPO", df.columns)
+        self.assertEqual(df.iloc[0]["TIPO"], "D")
+        self.assertEqual(df.iloc[0]["VALOR"], 50.0)
+        self.assertEqual(df.iloc[1]["TIPO"], "D")
+        self.assertEqual(df.iloc[1]["VALOR"], 5000.0)
+        self.assertEqual(df.iloc[2]["TIPO"], "C")
+        self.assertEqual(df.iloc[2]["VALOR"], 29040.0)
+
+    def test_parse_up380_filtro_saldo(self):
+        buf = _criar_excel_up380([
+            ["01/05/2026", "Saldo inicial", "Saldo inicial", "5.849,23", None, None],
+            [None, "Tarifas Bancárias", "Tarifa Pix", "-050", None, None],
+        ])
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, "test")
+
+        _, df = resultados[0]
+        self.assertEqual(len(df), 1)
+        self.assertNotIn("Saldo", df.iloc[0]["DESCRIÇÃO"])
+
+    def test_parse_up380_filtro_linhas(self):
+        buf = _criar_excel_up380([
+            ["01/05/2026", "Tarifas Bancárias", "Tarifa Pix", "-050", None, None],
+            ["106 linhas", "106 linhas", "106 linhas", "106 linhas", None, None],
+        ])
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, "test")
+
+        _, df = resultados[0]
+        self.assertEqual(len(df), 1)
+
+    def test_parse_up380_valor_br(self):
+        buf = _criar_excel_up380([
+            ["01/05/2026", "Tarifas Bancárias", "Tarifa Pix", "-050", None, None],
+            [None, "Receita", "Recebimento", "1.234,56", None, None],
+        ])
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, "test")
+
+        _, df = resultados[0]
+        self.assertEqual(df.iloc[0]["VALOR"], 50.0)
+        self.assertEqual(df.iloc[1]["VALOR"], 1234.56)
+
+    def test_parse_up380_banco_extraido_do_stem(self):
+        buf = _criar_excel_up380([
+            ["01/05/2026", "Receita", "Recebimento", "100,00", None, None],
+        ])
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, "0526_FECFIN_BANCOX_TESTE")
+
+        banco, _ = resultados[0]
+        self.assertEqual(banco, "BANCOX")
+
+    def test_parse_up380_descricao_uppercase(self):
+        buf = _criar_excel_up380([
+            ["01/05/2026", "Tarifas Bancárias", "tarifa pix enviada", "-050", None, None],
+        ])
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, "test")
+
+        _, df = resultados[0]
+        self.assertTrue(df.iloc[0]["DESCRIÇÃO"].isupper())
+
+
 if __name__ == "__main__":
     unittest.main()
