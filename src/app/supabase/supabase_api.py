@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import time
 import unicodedata
 from datetime import date
@@ -207,6 +208,36 @@ def atualizar_controle_supabase(
         return False
 
 
+def _match_instancia(instancias: list[dict], banco: str, conta: str) -> str | None:
+    """Encontra o instancia_codigo que bate com banco e conta.
+
+    Cada instancia tem: {"codigo": "7-12656925", "descricao": "EXTBAN-BANCO INTER - A:0001-9 - C: 1265692-5"}
+    """
+    banco_upper = banco.upper().strip()
+    conta_clean = conta.replace("-", "").replace(" ", "").strip()
+
+    for inst in instancias:
+        codigo = str(inst.get("codigo", "")).strip()
+        desc = str(inst.get("descricao", "")).upper()
+
+        # Verificar se o banco esta na descricao
+        if banco_upper not in desc:
+            continue
+
+        # Se temos conta, verificar se bate
+        if conta_clean:
+            if "C:" in desc:
+                desc_conta = desc.split("C:")[-1].strip()
+                desc_conta_clean = re.sub(r"[^0-9]", "", desc_conta)
+                if desc_conta_clean and desc_conta_clean == conta_clean:
+                    return codigo
+        else:
+            # Sem conta, retornar primeira instancia deste banco
+            return codigo
+
+    return None
+
+
 def baixar_controle_supabase(
     empresa_codigo: str,
     codigo_documento: str,
@@ -267,6 +298,31 @@ def baixar_controle_supabase(
             response.status_code,
             resposta_texto,
         )
+
+        # Se 400 e tem instancias_disponiveis, tentar com instancia_codigo
+        if response.status_code == 400:
+            try:
+                err = response.json()
+                instancias = err.get("details", {}).get("instancias_disponiveis", [])
+                if instancias:
+                    instancia_codigo = _match_instancia(instancias, banco, conta)
+                    if instancia_codigo:
+                        payload["instancia_codigo"] = instancia_codigo
+                        logger.info(
+                            "Retry com instancia_codigo=%s para empresa=%s banco=%s",
+                            instancia_codigo,
+                            empresa_codigo,
+                            banco,
+                        )
+                        response = requests.post(url, json=payload, headers=headers, timeout=30)
+                        resposta_texto = (response.text or "")[:500]
+                        logger.info(
+                            "Resposta SGECONT baixa retry: status=%s body=%s",
+                            response.status_code,
+                            resposta_texto,
+                        )
+            except Exception:
+                pass
 
         if response.status_code == 404:
             detalhe = f"Empresa {empresa_codigo} nao dada baixa: nao esta cadastrada na plataforma SGECONT"
