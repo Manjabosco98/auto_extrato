@@ -216,12 +216,25 @@ def _match_instancia(instancias: list[dict], banco: str, conta: str) -> str | No
     banco_upper = banco.upper().strip()
     conta_clean = conta.replace("-", "").replace(" ", "").strip()
 
+    # Normalizar banco (remover acentos)
+    import unicodedata
+    banco_norm = "".join(
+        c for c in unicodedata.normalize("NFKD", banco_upper)
+        if not unicodedata.combining(c)
+    )
+
     for inst in instancias:
         codigo = str(inst.get("codigo", "")).strip()
         desc = str(inst.get("descricao", "")).upper()
 
-        # Verificar se o banco esta na descricao
-        if banco_upper not in desc:
+        # Normalizar descricao (remover acentos)
+        desc_norm = "".join(
+            c for c in unicodedata.normalize("NFKD", desc)
+            if not unicodedata.combining(c)
+        )
+
+        # Verificar se o banco esta na descricao (com ou sem acento)
+        if banco_norm not in desc_norm and banco_upper not in desc:
             continue
 
         # Se temos conta, verificar se bate

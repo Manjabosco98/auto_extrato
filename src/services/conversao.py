@@ -516,10 +516,16 @@ def extrair_banco_nome_arquivo(nome_arquivo: str) -> str:
 
     tokens = descricao.split()
 
-    while tokens and re.fullmatch(r"[\d./-]+", tokens[-1]):
-        tokens.pop()
+    # Remover tokens que contenham digitos (numeros de conta, codigos, etc)
+    # O nome do banco e a primeira palavra que nao contem apenas digitos
+    resultado = []
+    for token in tokens:
+        # Se o token contem apenas digitos, tracos, pontos ou barras, pular
+        if re.fullmatch(r"[\d./\-]+", token):
+            break
+        resultado.append(token)
 
-    return " ".join(tokens).strip().upper()
+    return " ".join(resultado).strip().upper()
 
 
 def extrair_periodo_nome_arquivo(nome_arquivo: str) -> tuple[str, str]:
