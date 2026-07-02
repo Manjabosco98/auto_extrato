@@ -1,6 +1,11 @@
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+
+load_dotenv()
+
 BASE_DIR = Path.cwd()
 
 GOOGLE_OAUTH_CREDENTIALS = Path(
