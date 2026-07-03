@@ -282,10 +282,12 @@ def formatar_mensagem_docs_google_chat(
     empresas_nao_cadastradas_sge: list[str] | None = None,
     erros_sge: int = 0,
     erros_sge_detalhe: list[str] | None = None,
+    pendencias: list[str] | None = None,
 ) -> str:
     momento = momento or agora_historico()
     data = momento.strftime("%d/%m/%y")
     hora = momento.strftime("%H:%M")
+    pendencias = pendencias or []
     blocos = []
 
     if nomes_documentos:
@@ -293,6 +295,13 @@ def formatar_mensagem_docs_google_chat(
         blocos.append(
             f"Documentos salvos {data} as {hora} e atualizado na Base de Dados:\n\n"
             f"{lista_documentos}"
+        )
+
+    if pendencias:
+        lista_pendencias = "\n".join(pendencias)
+        blocos.append(
+            "Documentos pendentes em DOCS (nao movidos) - revisar:\n\n"
+            f"{lista_pendencias}"
         )
 
     if atualizados_sge is not None and atualizados_sge > 0:
@@ -324,12 +333,14 @@ def enviar_notificacao_docs_google_chat(
     empresas_nao_cadastradas_sge: list[str] | None = None,
     erros_sge: int = 0,
     erros_sge_detalhe: list[str] | None = None,
+    pendencias: list[str] | None = None,
     google_drive=None,
     pasta_raiz_id: str = "",
     execucao_id: str = "",
 ) -> bool:
-    if not nomes_documentos and not empresas_nao_cadastradas_sge:
-        logger.info("Notificacao Google Chat DOCS nao enviada: nenhum documento movido")
+    pendencias = pendencias or []
+    if not nomes_documentos and not empresas_nao_cadastradas_sge and not pendencias:
+        logger.info("Notificacao Google Chat DOCS nao enviada: nenhum documento movido nem pendencia")
         return False
 
     mensagem = formatar_mensagem_docs_google_chat(
@@ -339,6 +350,7 @@ def enviar_notificacao_docs_google_chat(
         empresas_nao_cadastradas_sge=empresas_nao_cadastradas_sge,
         erros_sge=erros_sge,
         erros_sge_detalhe=erros_sge_detalhe,
+        pendencias=pendencias,
     )
 
     return registrar_e_enviar_notificacao(
@@ -375,12 +387,17 @@ def _processar_item_docs(
     registros_historico: list[dict[str, object]],
     documentos_para_baixa: list[dict[str, object]],
     documentos_notificacao: list[str],
+    pendencias_notificacao: list[str],
 ) -> str:
     """Processa um arquivo OU pasta DOCS.
 
     Identifica o codigo pelo nome (MMAA_CODIGO_CLIENTE), resolve o destino na
     planilha de caminhos, move para a pasta da empresa e prepara a baixa no SGE.
     Para pastas, a quantidade de arquivos e a contagem de itens dentro dela.
+
+    Quando o item nao pode ser tratado (nome fora do padrao, codigo nao
+    cadastrado, empresa nao encontrada ou erro), registra o motivo em
+    ``pendencias_notificacao`` para aparecer na notificacao do Chat.
 
     Retorna 'movido', 'ignorado' ou 'erro'.
     """
@@ -391,12 +408,16 @@ def _processar_item_docs(
         dados_nome = parse_nome_documento(nome)
     except ValueError as erro:
         logger.warning("%s", erro)
+        pendencias_notificacao.append(f"{nome} - nome fora do padrao MMAA_CODIGO_CLIENTE")
         return "ignorado"
 
     codigo = dados_nome["codigo"]
     destino_template = caminhos.get(codigo)
     if not destino_template:
         logger.warning("Codigo DOCS nao encontrado em %s: %s", DOCS_CAMINHO_NAME, codigo)
+        pendencias_notificacao.append(
+            f"{nome} - codigo '{codigo}' nao cadastrado em {DOCS_CAMINHO_NAME}"
+        )
         return "ignorado"
 
     empresa_id, empresa_nome = buscar_empresa_por_cliente(dados_nome["cliente"], empresas=empresas)
@@ -405,6 +426,9 @@ def _processar_item_docs(
             "Empresa DOCS nao encontrada para cliente %s. Mantido em DOCS: %s",
             dados_nome["cliente"],
             nome,
+        )
+        pendencias_notificacao.append(
+            f"{nome} - empresa/cliente '{dados_nome['cliente']}' nao encontrada"
         )
         return "ignorado"
 
@@ -463,6 +487,7 @@ def _processar_item_docs(
         return "movido"
     except Exception:
         logger.exception("Erro ao mover documento DOCS: %s", nome)
+        pendencias_notificacao.append(f"{nome} - erro ao mover/processar")
         return "erro"
 
 
@@ -546,6 +571,7 @@ def executar_docs() -> dict[str, int]:
     registros_historico: list[dict[str, object]] = []
     documentos_notificacao: list[str] = []
     documentos_para_baixa: list[dict[str, object]] = []
+    pendencias_notificacao: list[str] = []
 
     itens = [(a, False) for a in arquivos] + [(p, True) for p in pastas]
     for item, is_pasta in itens:
@@ -560,6 +586,7 @@ def executar_docs() -> dict[str, int]:
             registros_historico=registros_historico,
             documentos_para_baixa=documentos_para_baixa,
             documentos_notificacao=documentos_notificacao,
+            pendencias_notificacao=pendencias_notificacao,
         )
         if resultado == "movido":
             movidos += 1
@@ -618,15 +645,17 @@ def executar_docs() -> dict[str, int]:
         empresas_nao_cadastradas_sge=sem_baixa_nao_cadastrada,
         erros_sge=erros_sge,
         erros_sge_detalhe=erros_sge_notificacao,
+        pendencias=pendencias_notificacao,
     )
 
     logger.info(
         "Fluxo DOCS concluido. Processados=%s Movidos=%s Ignorados=%s Erros=%s "
-        "AtualizadosSGE=%s ErrosSGE=%s",
+        "Pendencias=%s AtualizadosSGE=%s ErrosSGE=%s",
         processados,
         movidos,
         ignorados,
         erros,
+        len(pendencias_notificacao),
         atualizados_sge,
         erros_sge,
     )
@@ -636,6 +665,7 @@ def executar_docs() -> dict[str, int]:
         "movidos": movidos,
         "ignorados": ignorados,
         "erros": erros,
+        "pendencias": len(pendencias_notificacao),
         "atualizados_sge": atualizados_sge,
         "erros_sge": erros_sge,
     }

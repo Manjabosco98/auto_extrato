@@ -218,6 +218,7 @@ class DocsServiceTest(unittest.TestCase):
             "movidos": 1,
             "ignorados": 0,
             "erros": 0,
+            "pendencias": 0,
             "atualizados_sge": 1,
             "erros_sge": 0,
         })
@@ -283,6 +284,7 @@ class DocsServiceTest(unittest.TestCase):
             "movidos": 0,
             "ignorados": 1,
             "erros": 0,
+            "pendencias": 1,
             "atualizados_sge": 0,
             "erros_sge": 0,
         })
@@ -317,6 +319,25 @@ class DocsServiceTest(unittest.TestCase):
         self.assertEqual(call_kwargs["execucao_id"], "DOCS-20260616123000")
         self.assertEqual(call_kwargs["tipo"], "DOCS")
         self.assertIn("Documentos salvos", call_kwargs["mensagem"])
+
+    def test_notificacao_docs_inclui_bloco_de_pendencias(self):
+        with patch.object(docs, "registrar_e_enviar_notificacao", return_value=True) as mock_registrar:
+            resultado = docs.enviar_notificacao_docs_google_chat(
+                [],
+                pendencias=[
+                    "0626_COMPSN_DISLEY.pdf - codigo 'COMPSN' nao cadastrado em DOCS E CAMINHO.xlsx",
+                ],
+                momento=docs.datetime(2026, 6, 16, 12, 30, 0),
+                google_drive="fake-drive",
+                pasta_raiz_id="root-folder",
+                execucao_id="DOCS-20260616123000",
+            )
+
+        # envia mesmo sem documentos movidos, so com pendencias
+        self.assertTrue(resultado)
+        mensagem = mock_registrar.call_args[1]["mensagem"]
+        self.assertIn("Documentos pendentes em DOCS (nao movidos)", mensagem)
+        self.assertIn("COMPSN", mensagem)
 
     def test_conta_arquivos_pasta_ignora_subpastas_e_desktop_ini(self):
         fake = FakeDriveDocs.__new__(FakeDriveDocs)
