@@ -339,6 +339,26 @@ def _detalhe_instancia_indeterminada(
     )
 
 
+def _detalhe_400_baixa(
+    response, empresa_codigo: str, banco: str, conta: str, nome_arquivo: str
+) -> str:
+    """Mensagem para 400 remanescente (ex.: exige instancia sem nenhuma cadastrada)."""
+    corpo = _corpo_json(response)
+    mensagem = ""
+    if isinstance(corpo, dict):
+        erro = corpo.get("error", corpo)
+        if isinstance(erro, dict):
+            mensagem = str(erro.get("message") or "")
+    if "instancia" in mensagem.lower() and not _instancias_disponiveis(response):
+        return (
+            f"{nome_arquivo}: documento exige instancia no SGE (empresa {empresa_codigo}), "
+            f"mas nenhuma cadastrada para banco={banco or '-'} conta={conta or '-'}"
+        )
+    if mensagem:
+        return f"{nome_arquivo} (empresa {empresa_codigo}): {mensagem}"
+    return f"{nome_arquivo}: falha 400 na baixa SGE (empresa {empresa_codigo})"
+
+
 def _detalhe_409_baixa(
     response, empresa_codigo: str, banco: str, conta: str, nome_arquivo: str
 ) -> str:
@@ -453,6 +473,13 @@ def baixar_controle_supabase(
 
         if response.status_code == 409:
             detalhe = _detalhe_409_baixa(
+                response, empresa_codigo, banco, conta, nome_arquivo
+            )
+            logger.warning(detalhe)
+            return False, detalhe
+
+        if response.status_code == 400:
+            detalhe = _detalhe_400_baixa(
                 response, empresa_codigo, banco, conta, nome_arquivo
             )
             logger.warning(detalhe)

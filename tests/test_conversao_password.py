@@ -1598,6 +1598,33 @@ class ConversaoPasswordTest(unittest.TestCase):
         self.assertIn("ambigua", detalhe)
         self.assertIn("98313-2", detalhe)
 
+    def test_baixar_controle_400_exige_instancia_sem_cadastradas(self):
+        fake_response = MagicMock()
+        fake_response.status_code = 400
+        fake_response.json.return_value = {
+            "error": {
+                "message": "Este documento exige instancia. Informe 'instancia_codigo' ou 'instancia_id' valido.",
+                "details": {"instancias_disponiveis": []},
+            }
+        }
+
+        with patch.object(supabase_api.requests, "post", return_value=fake_response):
+            sucesso, detalhe = supabase_api.baixar_controle_supabase(
+                empresa_codigo="218",
+                codigo_documento="FATCART",
+                competencia="06-2026",
+                banco="",
+                agencia="",
+                conta="",
+                nome_arquivo="0626_FATCART_SICREDI_TXC ALTAMIRA.pdf",
+                local_arquivo="Google Drive",
+                quantidade_arquivos=1,
+            )
+
+        self.assertFalse(sucesso)
+        self.assertIsNotNone(detalhe)
+        self.assertIn("nenhuma cadastrada", detalhe)
+
     def test_baixar_controle_400_sem_match_de_instancia(self):
         fake_response = MagicMock()
         fake_response.status_code = 400
