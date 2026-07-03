@@ -52,6 +52,12 @@ from src.services.conversao import normalizar_id_empresa
 HISTORICO_nome = "HISTORICO_CONVERSOES.xlsx"
 SGE_PAGE_SIZE = 500
 
+# Status do SGE que representam um documento efetivamente baixado.
+# "Não Aplicável" é o status dos extratos SEM MOVIMENTAÇÃO (arquivos [SEM MOV]),
+# que são baixa válida — o validador antigo só reconhecia "Enviado" e por isso
+# marcava esses como "Não Baixados" (falso-positivo).
+STATUS_BAIXADO = {"Enviado", "Não Aplicável"}
+
 
 # ── helpers ────────────────────────────────────────────────────────────
 def carregar_mapa_empresas() -> dict[str, str]:
@@ -345,7 +351,7 @@ def main() -> None:
                 nome_sge = str(reg.get("nome_arquivo", "")).strip()
                 status_sge = str(reg.get("status_envio", "")).strip()
                 stem_sge = Path(nome_sge).stem if nome_sge else ""
-                if status_sge == "Enviado" and stem_sge and arquivo_hist_stem and stem_sge == arquivo_hist_stem:
+                if status_sge in STATUS_BAIXADO and stem_sge and arquivo_hist_stem and stem_sge == arquivo_hist_stem:
                     melhor_match = reg
                     break
 
@@ -354,7 +360,7 @@ def main() -> None:
                 for reg in registros_sge:
                     nome_sge = str(reg.get("nome_arquivo", "")).upper().strip()
                     status_sge = str(reg.get("status_envio", "")).strip()
-                    if (status_sge == "Enviado" and nome_sge
+                    if (status_sge in STATUS_BAIXADO and nome_sge
                             and banco_upper in nome_sge
                             and competencia_mmaa in nome_sge):
                         melhor_match = reg
@@ -365,7 +371,7 @@ def main() -> None:
                 for reg in registros_sge:
                     nome_sge = str(reg.get("nome_arquivo", "")).upper().strip()
                     status_sge = str(reg.get("status_envio", "")).strip()
-                    if status_sge == "Enviado" and nome_sge and banco_upper in nome_sge:
+                    if status_sge in STATUS_BAIXADO and nome_sge and banco_upper in nome_sge:
                         melhor_match = reg
                         break
 
@@ -374,7 +380,7 @@ def main() -> None:
                 arq_sge = melhor_match.get("nome_arquivo", "")
                 receb_sge = melhor_match.get("data_recebimento", "")
 
-                if status_sge == "Enviado" and arq_sge:
+                if status_sge in STATUS_BAIXADO and arq_sge:
                     resultados.append({
                         "empresa_id": id_sge,
                         "empresa_nome": nome_hist,
@@ -386,9 +392,9 @@ def main() -> None:
                         "status_sge": status_sge,
                         "arquivo_sge": arq_sge,
                         "recebimento_sge": receb_sge,
-                        "detalhe": "Conferido",
+                        "detalhe": "Conferido" if status_sge == "Enviado" else "Conferido (sem movimentacao)",
                     })
-                elif status_sge == "Enviado" and not arq_sge:
+                elif status_sge in STATUS_BAIXADO and not arq_sge:
                     resultados.append({
                         "empresa_id": id_sge,
                         "empresa_nome": nome_hist,
@@ -430,7 +436,7 @@ def main() -> None:
                     "status_sge": status_sge,
                     "arquivo_sge": "",
                     "recebimento_sge": "",
-                    "detalhe": f"Nenhum registro Enviado no SGE ({len(registros_sge)} registros)",
+                    "detalhe": f"Nenhum registro baixado (Enviado/Não Aplicável) no SGE ({len(registros_sge)} registros)",
                 })
 
         # 5. Gerar relatório

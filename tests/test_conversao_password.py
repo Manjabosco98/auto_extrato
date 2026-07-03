@@ -1739,6 +1739,23 @@ class ConversaoPasswordTest(unittest.TestCase):
         instancias = [{"codigo": "1", "descricao": "EXTBAN-BANCO SICREDI - A:024-7 - C: 85951-4"}]
         self.assertIsNone(supabase_api._match_instancia(instancias, "SICREDI", "90147-4"))
 
+    def test_match_instancia_insensivel_a_espaco_c6bank(self):
+        # Nome do arquivo gera banco "C6BANK"; SGE grava "BANCO C6 BANK" (com espaco).
+        instancias = [{"codigo": "3", "descricao": "EXTBAN-BANCO C6 BANK - A:1 - C: 33831035-5"}]
+        self.assertEqual(supabase_api._match_instancia(instancias, "C6BANK", ""), "3")
+
+    def test_match_instancia_alias_bb_para_banco_do_brasil(self):
+        # Nome do arquivo gera banco "BB"; SGE grava "BANCO DO BRASIL".
+        instancias = [
+            {"codigo": "3", "descricao": "EXTBAN-BANCO DO BRASIL - A:5902-1 - C: 24550-X"},
+            {"codigo": "3", "descricao": "EXTBAN-BANCO ITAU UNIBANCO - A:430-8 - C: 99298-3"},
+        ]
+        self.assertEqual(supabase_api._match_instancia(instancias, "BB", ""), "3")
+
+    def test_chave_banco_remove_espaco_e_acento(self):
+        self.assertEqual(supabase_api._chave_banco("C6 BANK"), "C6BANK")
+        self.assertEqual(supabase_api._chave_banco("Banco C6 Bank"), "BANCOC6BANK")
+
 
 if __name__ == "__main__":
     unittest.main()

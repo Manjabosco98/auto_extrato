@@ -208,28 +208,43 @@ def atualizar_controle_supabase(
         return False
 
 
+# Aliases de banco: forma derivada do nome do arquivo -> forma gravada no SGE.
+# A comparacao usa a chave alfanumerica (sem espacos/acentos), entao "BB" vira
+# "BANCODOBRASIL" para casar com a descricao "EXTBAN-BANCO DO BRASIL".
+_ALIAS_BANCO = {
+    "BB": "BANCODOBRASIL",
+}
+
+
+def _chave_banco(texto: str) -> str:
+    """Chave de comparacao de banco: maiuscula, sem acento e sem nao-alfanumerico.
+
+    Torna o match insensivel a espacos e pontuacao, resolvendo casos como
+    "C6BANK" (nome do arquivo) x "BANCO C6 BANK" (descricao da instancia).
+    """
+    sem_acento = "".join(
+        c for c in unicodedata.normalize("NFKD", str(texto).upper())
+        if not unicodedata.combining(c)
+    )
+    return re.sub(r"[^A-Z0-9]", "", sem_acento)
+
+
 def _match_instancia(instancias: list[dict], banco: str, conta: str) -> str | None:
     """Encontra o instancia_codigo que bate com banco e conta.
 
     Cada instancia tem: {"codigo": "7-12656925", "descricao": "EXTBAN-BANCO INTER - A:0001-9 - C: 1265692-5"}
     """
-    banco_upper = banco.upper().strip()
     # Normaliza conta ignorando zeros a esquerda (o SGE grava contas com
     # padding, ex.: '0099460-5' para o mesmo '99460-5').
     conta_clean = conta.replace("-", "").replace(" ", "").strip().lstrip("0")
 
-    # Sem banco nao ha como casar instancia (ex.: documentos que nao sao
-    # extrato bancario). Retornar None evita casar uma instancia arbitraria,
-    # ja que "" e substring de qualquer descricao.
-    if not banco_upper:
+    # Chave alfanumerica do banco (+ alias). Sem banco nao ha como casar
+    # instancia (ex.: documentos que nao sao extrato bancario); retornar None
+    # evita casar uma instancia arbitraria.
+    banco_key = _chave_banco(banco)
+    banco_key = _ALIAS_BANCO.get(banco_key, banco_key)
+    if not banco_key:
         return None
-
-    # Normalizar banco (remover acentos)
-    import unicodedata
-    banco_norm = "".join(
-        c for c in unicodedata.normalize("NFKD", banco_upper)
-        if not unicodedata.combining(c)
-    )
 
     # Fallback so para instancia do banco SEM conta na descricao (ex.: "KAMINO",
     # "BTG PACTUAL"). Se a instancia tem uma conta DIFERENTE, nao serve como
@@ -239,14 +254,8 @@ def _match_instancia(instancias: list[dict], banco: str, conta: str) -> str | No
         codigo = str(inst.get("codigo", "")).strip()
         desc = str(inst.get("descricao", "")).upper()
 
-        # Normalizar descricao (remover acentos)
-        desc_norm = "".join(
-            c for c in unicodedata.normalize("NFKD", desc)
-            if not unicodedata.combining(c)
-        )
-
-        # Verificar se o banco esta na descricao (com ou sem acento)
-        if banco_norm not in desc_norm and banco_upper not in desc:
+        # Verificar se o banco esta na descricao (insensivel a espaco/acento)
+        if banco_key not in _chave_banco(desc):
             continue
 
         # Sem conta no arquivo, retornar primeira instancia deste banco.
