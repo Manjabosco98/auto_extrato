@@ -214,7 +214,9 @@ def _match_instancia(instancias: list[dict], banco: str, conta: str) -> str | No
     Cada instancia tem: {"codigo": "7-12656925", "descricao": "EXTBAN-BANCO INTER - A:0001-9 - C: 1265692-5"}
     """
     banco_upper = banco.upper().strip()
-    conta_clean = conta.replace("-", "").replace(" ", "").strip()
+    # Normaliza conta ignorando zeros a esquerda (o SGE grava contas com
+    # padding, ex.: '0099460-5' para o mesmo '99460-5').
+    conta_clean = conta.replace("-", "").replace(" ", "").strip().lstrip("0")
 
     # Sem banco nao ha como casar instancia (ex.: documentos que nao sao
     # extrato bancario). Retornar None evita casar uma instancia arbitraria,
@@ -229,6 +231,7 @@ def _match_instancia(instancias: list[dict], banco: str, conta: str) -> str | No
         if not unicodedata.combining(c)
     )
 
+    fallback_banco = None
     for inst in instancias:
         codigo = str(inst.get("codigo", "")).strip()
         desc = str(inst.get("descricao", "")).upper()
@@ -243,18 +246,24 @@ def _match_instancia(instancias: list[dict], banco: str, conta: str) -> str | No
         if banco_norm not in desc_norm and banco_upper not in desc:
             continue
 
-        # Se temos conta, verificar se bate
-        if conta_clean:
-            if "C:" in desc:
-                desc_conta = desc.split("C:")[-1].strip()
-                desc_conta_clean = re.sub(r"[^0-9]", "", desc_conta)
-                if desc_conta_clean and desc_conta_clean == conta_clean:
-                    return codigo
-        else:
-            # Sem conta, retornar primeira instancia deste banco
+        # Primeira instancia do banco: guardada como fallback.
+        if fallback_banco is None:
+            fallback_banco = codigo
+
+        # Sem conta, retornar primeira instancia deste banco.
+        if not conta_clean:
             return codigo
 
-    return None
+        # Com conta, casar (ignorando zeros a esquerda) contra o trecho apos "C:".
+        if "C:" in desc:
+            desc_conta_clean = re.sub(r"[^0-9]", "", desc.split("C:")[-1]).lstrip("0")
+            if desc_conta_clean and desc_conta_clean == conta_clean:
+                return codigo
+
+    # Conta informada mas sem match exato: usa a primeira instancia do banco.
+    # O endpoint corrigido desambigua por banco+conta (ou responde 409), entao
+    # nao ha risco de baixar na instancia errada.
+    return fallback_banco
 
 
 def _detalhe_404_baixa(response, empresa_codigo: str, nome_arquivo: str) -> str:

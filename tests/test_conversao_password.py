@@ -1634,6 +1634,26 @@ class ConversaoPasswordTest(unittest.TestCase):
         instancias = [{"codigo": "3", "descricao": "EXTBAN-BANCO ITAU - C: 98313-2"}]
         self.assertIsNone(supabase_api._match_instancia(instancias, "", ""))
 
+    def test_match_instancia_conta_com_zeros_a_esquerda(self):
+        instancias = [
+            {"codigo": "10", "descricao": "EXTBAN-BANCO PRUDENTIAL - A:10 - C: 20885"},
+            {"codigo": "3", "descricao": "EXTBAN-BANCO ITAU UNIBANCO - A:9053 - C: 0099460-5"},
+        ]
+        # arquivo tem conta 99460-5 -> '994605'; SGE grava '0099460-5' -> '00994605'
+        self.assertEqual(supabase_api._match_instancia(instancias, "ITAU", "99460-5"), "3")
+
+    def test_match_instancia_fallback_por_banco_sem_conta_na_descricao(self):
+        instancias = [
+            {"codigo": "1", "descricao": "EXTBAN-BANCO ITAU - C: 97497-6"},
+            {"codigo": "2", "descricao": "EXTBAN-BANCO KAMINO"},
+        ]
+        # KAMINO nao tem conta na descricao; deve cair no fallback por banco.
+        self.assertEqual(supabase_api._match_instancia(instancias, "KAMINO", "30513944"), "2")
+
+    def test_match_instancia_sem_banco_correspondente_retorna_none(self):
+        instancias = [{"codigo": "1", "descricao": "EXTBAN-BANCO SICREDI - C: 85951-4"}]
+        self.assertIsNone(supabase_api._match_instancia(instancias, "SANTANDER", "1300034706"))
+
 
 if __name__ == "__main__":
     unittest.main()
