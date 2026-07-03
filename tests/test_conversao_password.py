@@ -1565,6 +1565,75 @@ class ConversaoPasswordTest(unittest.TestCase):
         self.assertIn("registro de controle nao encontrado", detalhe)
         self.assertNotIn("nao esta cadastrada", detalhe)
 
+    def test_baixar_controle_retorna_false_instancia_ambigua_409(self):
+        fake_response = MagicMock()
+        fake_response.status_code = 409
+        fake_response.json.return_value = {
+            "error": {
+                "message": "instancia_codigo ambiguo",
+                "details": {
+                    "instancia_codigo": "3",
+                    "candidatos": [
+                        {"codigo": "3", "descricao": "EXTBAN-BANCO ITAU - C: 98313-2"},
+                        {"codigo": "3", "descricao": "EXTBAN-BANCO ITAU - C: 87192-3"},
+                    ],
+                },
+            }
+        }
+
+        with patch.object(supabase_api.requests, "post", return_value=fake_response):
+            sucesso, detalhe = supabase_api.baixar_controle_supabase(
+                empresa_codigo="22",
+                codigo_documento="EXTBAN",
+                competencia="06-2026",
+                banco="ITAU",
+                agencia="",
+                conta="",
+                nome_arquivo="0526_EXTBAN ITAU_SILVA.pdf",
+                local_arquivo="Google Drive",
+                quantidade_arquivos=1,
+            )
+
+        self.assertFalse(sucesso)
+        self.assertIn("ambigua", detalhe)
+        self.assertIn("98313-2", detalhe)
+
+    def test_baixar_controle_400_sem_match_de_instancia(self):
+        fake_response = MagicMock()
+        fake_response.status_code = 400
+        fake_response.json.return_value = {
+            "error": {
+                "message": "Este documento exige instancia.",
+                "details": {
+                    "instancias_disponiveis": [
+                        {"codigo": "3", "descricao": "EXTBAN-BANCO SICOOB - C: 16440-2"},
+                    ],
+                },
+            }
+        }
+
+        with patch.object(supabase_api.requests, "post", return_value=fake_response) as mock_post:
+            sucesso, detalhe = supabase_api.baixar_controle_supabase(
+                empresa_codigo="22",
+                codigo_documento="EXTBAN",
+                competencia="06-2026",
+                banco="ITAU",  # nao casa com a unica candidata (SICOOB) -> sem retry
+                agencia="",
+                conta="",
+                nome_arquivo="0526_EXTBAN ITAU_SILVA.pdf",
+                local_arquivo="Google Drive",
+                quantidade_arquivos=1,
+            )
+
+        self.assertFalse(sucesso)
+        self.assertIn("exige instancia", detalhe)
+        # nao deve ter refeito o POST (sem match -> sem retry)
+        self.assertEqual(mock_post.call_count, 1)
+
+    def test_match_instancia_banco_vazio_retorna_none(self):
+        instancias = [{"codigo": "3", "descricao": "EXTBAN-BANCO ITAU - C: 98313-2"}]
+        self.assertIsNone(supabase_api._match_instancia(instancias, "", ""))
+
 
 if __name__ == "__main__":
     unittest.main()

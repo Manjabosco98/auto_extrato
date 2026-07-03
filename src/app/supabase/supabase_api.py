@@ -216,6 +216,12 @@ def _match_instancia(instancias: list[dict], banco: str, conta: str) -> str | No
     banco_upper = banco.upper().strip()
     conta_clean = conta.replace("-", "").replace(" ", "").strip()
 
+    # Sem banco nao ha como casar instancia (ex.: documentos que nao sao
+    # extrato bancario). Retornar None evita casar uma instancia arbitraria,
+    # ja que "" e substring de qualquer descricao.
+    if not banco_upper:
+        return None
+
     # Normalizar banco (remover acentos)
     import unicodedata
     banco_norm = "".join(
@@ -284,6 +290,62 @@ def _detalhe_404_baixa(response, empresa_codigo: str, nome_arquivo: str) -> str:
     )
 
 
+def _corpo_json(response):
+    try:
+        return response.json()
+    except Exception:
+        return None
+
+
+def _instancias_disponiveis(response) -> list[dict]:
+    """Extrai instancias_disponiveis do 400 'documento exige instancia'."""
+    corpo = _corpo_json(response)
+    if not isinstance(corpo, dict):
+        return []
+    detalhes = corpo.get("error", corpo)
+    detalhes = detalhes.get("details", {}) if isinstance(detalhes, dict) else {}
+    lista = detalhes.get("instancias_disponiveis", []) if isinstance(detalhes, dict) else []
+    return lista if isinstance(lista, list) else []
+
+
+def _descrever_candidatas(itens: list[dict], limite: int = 5) -> str:
+    partes = [
+        str(c.get("descricao") or c.get("codigo") or "").strip()
+        for c in itens[:limite]
+        if isinstance(c, dict)
+    ]
+    return "; ".join(p for p in partes if p)
+
+
+def _detalhe_instancia_indeterminada(
+    empresa_codigo: str, banco: str, conta: str, nome_arquivo: str, instancias: list[dict]
+) -> str:
+    return (
+        f"{nome_arquivo}: documento exige instancia no SGE (empresa {empresa_codigo}), "
+        f"mas nao foi possivel determinar por banco={banco or '-'} conta={conta or '-'}. "
+        f"Candidatas: {_descrever_candidatas(instancias) or 'nenhuma'}"
+    )
+
+
+def _detalhe_409_baixa(
+    response, empresa_codigo: str, banco: str, conta: str, nome_arquivo: str
+) -> str:
+    """Mensagem para o 409 'instancia_codigo ambiguo' do endpoint corrigido."""
+    corpo = _corpo_json(response)
+    candidatos = []
+    if isinstance(corpo, dict):
+        detalhes = corpo.get("error", corpo)
+        detalhes = detalhes.get("details", {}) if isinstance(detalhes, dict) else {}
+        if isinstance(detalhes, dict):
+            candidatos = detalhes.get("candidatos", []) or []
+    return (
+        f"{nome_arquivo}: instancia ambigua no SGE (empresa {empresa_codigo}, "
+        f"banco={banco or '-'} conta={conta or '-'}). "
+        f"Candidatas: {_descrever_candidatas(candidatos) or 'nao informadas'}. "
+        "Informe conta/instancia para desambiguar."
+    )
+
+
 def baixar_controle_supabase(
     empresa_codigo: str,
     codigo_documento: str,
@@ -345,34 +407,42 @@ def baixar_controle_supabase(
             resposta_texto,
         )
 
-        # Se 400 e tem instancias_disponiveis, tentar com instancia_codigo
+        # 400: documento exige instancia -> desambiguar por banco+conta e refazer.
         if response.status_code == 400:
-            try:
-                err = response.json()
-                error_obj = err.get("error", err)
-                instancias = error_obj.get("details", {}).get("instancias_disponiveis", [])
-                if instancias:
-                    instancia_codigo = _match_instancia(instancias, banco, conta)
-                    if instancia_codigo:
-                        payload["instancia_codigo"] = instancia_codigo
-                        logger.info(
-                            "Retry com instancia_codigo=%s para empresa=%s banco=%s",
-                            instancia_codigo,
-                            empresa_codigo,
-                            banco,
-                        )
-                        response = requests.post(url, json=payload, headers=headers, timeout=30)
-                        resposta_texto = (response.text or "")[:500]
-                        logger.info(
-                            "Resposta SGECONT baixa retry: status=%s body=%s",
-                            response.status_code,
-                            resposta_texto,
-                        )
-            except Exception:
-                pass
+            instancias = _instancias_disponiveis(response)
+            if instancias:
+                instancia_codigo = _match_instancia(instancias, banco, conta)
+                if instancia_codigo:
+                    payload["instancia_codigo"] = instancia_codigo
+                    logger.info(
+                        "Retry com instancia_codigo=%s para empresa=%s banco=%s",
+                        instancia_codigo,
+                        empresa_codigo,
+                        banco,
+                    )
+                    response = requests.post(url, json=payload, headers=headers, timeout=30)
+                    resposta_texto = (response.text or "")[:500]
+                    logger.info(
+                        "Resposta SGECONT baixa retry: status=%s body=%s",
+                        response.status_code,
+                        resposta_texto,
+                    )
+                else:
+                    detalhe = _detalhe_instancia_indeterminada(
+                        empresa_codigo, banco, conta, nome_arquivo, instancias
+                    )
+                    logger.warning(detalhe)
+                    return False, detalhe
 
         if response.status_code == 404:
             detalhe = _detalhe_404_baixa(response, empresa_codigo, nome_arquivo)
+            logger.warning(detalhe)
+            return False, detalhe
+
+        if response.status_code == 409:
+            detalhe = _detalhe_409_baixa(
+                response, empresa_codigo, banco, conta, nome_arquivo
+            )
             logger.warning(detalhe)
             return False, detalhe
 
