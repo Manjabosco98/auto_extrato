@@ -71,7 +71,7 @@ def consultar_sge(empresa_codigo, competencia):
     params = {
         "empresa_codigo": empresa_codigo,
         "competencia": _converter_competencia(competencia),
-        "cod_doc": "EXTBAN",
+        "codigo_documento": "EXTBAN",
         "limit": 500,
     }
     try:

@@ -55,7 +55,7 @@ def buscar_id_empresa_supabase(
     params = {
         "empresa_codigo": empresa_codigo,
         "competencia": _converter_competencia(competencia),
-        "cod_doc": codigo_documento,
+        "codigo_documento": codigo_documento,
         "limit": 1,
     }
     headers = {
@@ -251,6 +251,39 @@ def _match_instancia(instancias: list[dict], banco: str, conta: str) -> str | No
     return None
 
 
+def _detalhe_404_baixa(response, empresa_codigo: str, nome_arquivo: str) -> str:
+    """Constroi mensagem amigavel para os diferentes 404 da baixa SGE.
+
+    A API SGE retorna 404 em tres cenarios distintos:
+    - empresa/documento nao encontrado -> {"error": {"message": ...}}
+    - registro de controle inexistente -> {"action": "not_found", "message": ...}
+
+    Sem esse tratamento todo 404 era rotulado como "empresa nao cadastrada",
+    o que mascarava o caso mais comum (registro/instancia inexistente).
+    """
+    try:
+        corpo = response.json()
+    except Exception:
+        corpo = None
+
+    if isinstance(corpo, dict):
+        if corpo.get("action") == "not_found":
+            return (
+                f"{nome_arquivo}: registro de controle nao encontrado no SGE "
+                f"(empresa {empresa_codigo}); verifique competencia/instancia"
+            )
+
+        erro = corpo.get("error")
+        mensagem = erro.get("message") if isinstance(erro, dict) else None
+        if mensagem:
+            return f"Empresa {empresa_codigo}: {mensagem}"
+
+    return (
+        f"Empresa {empresa_codigo} nao dada baixa: "
+        "nao esta cadastrada na plataforma SGECONT"
+    )
+
+
 def baixar_controle_supabase(
     empresa_codigo: str,
     codigo_documento: str,
@@ -339,7 +372,7 @@ def baixar_controle_supabase(
                 pass
 
         if response.status_code == 404:
-            detalhe = f"Empresa {empresa_codigo} nao dada baixa: nao esta cadastrada na plataforma SGECONT"
+            detalhe = _detalhe_404_baixa(response, empresa_codigo, nome_arquivo)
             logger.warning(detalhe)
             return False, detalhe
 

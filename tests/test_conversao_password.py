@@ -1514,10 +1514,11 @@ class ConversaoPasswordTest(unittest.TestCase):
         self.assertEqual(payload["empresa_codigo"], "47")
         self.assertEqual(payload["data_recebimento"], date.today().isoformat())
 
-    def test_baixar_controle_retorna_false_empresa_nao_cadastrada(self):
+    def test_baixar_controle_retorna_false_empresa_nao_encontrada(self):
         fake_response = MagicMock()
         fake_response.status_code = 404
         fake_response.text = '{"error":{"message":"Empresa nao encontrada."}}'
+        fake_response.json.return_value = {"error": {"message": "Empresa nao encontrada."}}
 
         with patch.object(supabase_api.requests, "post", return_value=fake_response):
             sucesso, detalhe = supabase_api.baixar_controle_supabase(
@@ -1535,7 +1536,34 @@ class ConversaoPasswordTest(unittest.TestCase):
 
         self.assertFalse(sucesso)
         self.assertIn("449", detalhe)
-        self.assertIn("nao esta cadastrada", detalhe)
+        self.assertIn("nao encontrada", detalhe.lower())
+
+    def test_baixar_controle_retorna_false_registro_nao_encontrado(self):
+        fake_response = MagicMock()
+        fake_response.status_code = 404
+        fake_response.json.return_value = {
+            "action": "not_found",
+            "message": "Nenhum registro encontrado.",
+            "registros_encontrados": [],
+        }
+
+        with patch.object(supabase_api.requests, "post", return_value=fake_response):
+            sucesso, detalhe = supabase_api.baixar_controle_supabase(
+                empresa_codigo="449",
+                codigo_documento="EXTBAN",
+                competencia="05-2026",
+                banco="C6BANK",
+                agencia="1",
+                conta="421987570",
+                nome_arquivo="0526_EXTBAN_C6BANK_SM_METRIKAL_AG 1_CC 421987570.pdf",
+                local_arquivo="Google Drive / EMP/449_METRIKAL/MOV/CONT/26/05/EXT",
+                quantidade_arquivos=1,
+                status="Não Aplicável",
+            )
+
+        self.assertFalse(sucesso)
+        self.assertIn("registro de controle nao encontrado", detalhe)
+        self.assertNotIn("nao esta cadastrada", detalhe)
 
 
 if __name__ == "__main__":
