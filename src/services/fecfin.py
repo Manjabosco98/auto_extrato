@@ -1,4 +1,5 @@
 import logging
+import re
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -18,13 +19,23 @@ from src.app.gdrive.settings import (
     XLS_MIME_TYPE,
     XLSX_MIME_TYPE,
 )
+from src.app.supabase.supabase_api import baixar_controle_supabase
 from src.schemas.fecfin.registry import dispatch_fecwin
 from src.services.conversao import (
     GOOGLE_CHAT_SEND_URL,
     GOOGLE_CHAT_SPACE_NAME,
     MODELO_LANCAMENTOS,
     agora_historico,
+    buscar_empresa_por_cliente,
+    carregar_empresas_ativas,
+    nome_pasta_empresa,
     resolver_pasta_emp_base,
+)
+from src.services.docs import (
+    DOCS_CAMINHO_NAME,
+    carregar_caminhos_docs,
+    montar_destino_docs,
+    resolver_pasta_destino_docs,
 )
 from src.utils.helpers import planilha_lancamento
 from src.utils.logging_config import setup_logging
@@ -32,14 +43,61 @@ from src.utils.logging_config import setup_logging
 
 logger = logging.getLogger(__name__)
 
+# Codigo do documento FECFIN no controle SGE. Nao exige instancia
+# (ExigeInstancia=Nao em DOCS E CAMINHO.xlsx), logo a baixa e uma
+# por empresa+competencia, sem banco/agencia/conta.
+FECFIN_CODIGO = "FECFIN"
+
+
+def parse_nome_fecfin(nome_arquivo: str) -> tuple[str, str, str]:
+    """De 'MMAA_FECFIN_..._CLIENTE' retorna (mes, ano, cliente).
+
+    O cliente e o ultimo segmento do nome (apos os '_').
+    """
+    partes = [p.strip() for p in Path(nome_arquivo).stem.split("_") if p.strip()]
+    if len(partes) < 3:
+        raise ValueError(
+            f"Nome FECFIN fora do padrao MMAA_FECFIN_CLIENTE: {nome_arquivo}"
+        )
+    periodo = re.fullmatch(r"(\d{2})(\d{2})", partes[0])
+    if not periodo:
+        raise ValueError(f"Nome FECFIN sem periodo MMAA valido: {nome_arquivo}")
+    return periodo.group(1), periodo.group(2), partes[-1]
+
+
+def _carregar_destino_fecfin(google_drive, raiz_id: str, temp_dir: Path) -> str | None:
+    """Le o template de destino do codigo FECFIN em DOCS E CAMINHO.xlsx."""
+    arquivo = (
+        google_drive.find_file_by_name(
+            folder_id=raiz_id, name=DOCS_CAMINHO_NAME, mime_type=XLSX_MIME_TYPE
+        )
+        or google_drive.find_file_by_name(folder_id=raiz_id, name=DOCS_CAMINHO_NAME)
+    )
+    if not arquivo:
+        return None
+
+    local = temp_dir / DOCS_CAMINHO_NAME
+    try:
+        google_drive.download(file_id=arquivo["id"], destino_local=local)
+        caminhos = carregar_caminhos_docs(local)
+    finally:
+        local.unlink(missing_ok=True)
+    return caminhos.get(FECFIN_CODIGO)
+
 
 def formatar_mensagem_fecfin_google_chat(
     arquivos_processados: list[str],
     arquivos_nao_reconhecidos: list[str] | None = None,
+    empresas_nao_encontradas: list[str] | None = None,
+    atualizados_sge: int = 0,
+    erros_sge: int = 0,
+    erros_sge_detalhe: list[str] | None = None,
     momento: datetime | None = None,
 ) -> str:
     momento = momento or agora_historico()
     arquivos_nao_reconhecidos = arquivos_nao_reconhecidos or []
+    empresas_nao_encontradas = empresas_nao_encontradas or []
+    erros_sge_detalhe = erros_sge_detalhe or []
     blocos = []
 
     data = momento.strftime("%d/%m/%y")
@@ -47,16 +105,24 @@ def formatar_mensagem_fecfin_google_chat(
 
     if arquivos_processados:
         lista = "\n".join(arquivos_processados)
-        blocos.append(
-            f"FECFIN processados {data} as {hora}:\n\n{lista}"
-        )
+        blocos.append(f"FECFIN processados {data} as {hora} e salvos na pasta da empresa:\n\n{lista}")
+
+    if atualizados_sge > 0:
+        blocos.append(f"Baixa dada no portal SGE: {atualizados_sge} documento(s) FECFIN")
+
+    if empresas_nao_encontradas:
+        lista = "\n".join(empresas_nao_encontradas)
+        blocos.append(f"FECFIN sem empresa correspondente (mantidos na EXT):\n\n{lista}")
 
     if arquivos_nao_reconhecidos:
         lista = "\n".join(arquivos_nao_reconhecidos)
-        blocos.append(
-            "Arquivos FECFIN sem layout reconhecido:\n\n"
-            f"{lista}"
-        )
+        blocos.append(f"Arquivos FECFIN sem layout reconhecido:\n\n{lista}")
+
+    if erros_sge > 0:
+        blocos.append(f"Erros ao dar baixa no SGE: {erros_sge}")
+
+    if erros_sge_detalhe:
+        blocos.append("Detalhes dos erros SGE:\n\n" + "\n".join(erros_sge_detalhe))
 
     return "\n\n".join(blocos)
 
@@ -64,52 +130,49 @@ def formatar_mensagem_fecfin_google_chat(
 def enviar_notificacao_fecfin_google_chat(
     arquivos_processados: list[str],
     arquivos_nao_reconhecidos: list[str] | None = None,
+    empresas_nao_encontradas: list[str] | None = None,
+    atualizados_sge: int = 0,
+    erros_sge: int = 0,
+    erros_sge_detalhe: list[str] | None = None,
     momento: datetime | None = None,
 ) -> bool:
-    if not arquivos_processados and not arquivos_nao_reconhecidos:
-        logger.info("Notificacao Google Chat FECFIN nao enviada: nenhum arquivo processado")
+    if not any(
+        (arquivos_processados, arquivos_nao_reconhecidos, empresas_nao_encontradas)
+    ):
+        logger.info("Notificacao Google Chat FECFIN nao enviada: nada a informar")
         return False
 
     mensagem = formatar_mensagem_fecfin_google_chat(
         arquivos_processados,
         arquivos_nao_reconhecidos=arquivos_nao_reconhecidos,
+        empresas_nao_encontradas=empresas_nao_encontradas,
+        atualizados_sge=atualizados_sge,
+        erros_sge=erros_sge,
+        erros_sge_detalhe=erros_sge_detalhe,
         momento=momento,
     )
 
-    payload = {
-        "space_name": GOOGLE_CHAT_SPACE_NAME,
-        "message": mensagem,
-    }
+    payload = {"space_name": GOOGLE_CHAT_SPACE_NAME, "message": mensagem}
 
     try:
         logger.info(
             "Enviando notificacao FECFIN ao Google Chat com %s arquivo(s)",
             len(arquivos_processados),
         )
-        response = requests.post(
-            GOOGLE_CHAT_SEND_URL,
-            json=payload,
-            timeout=30,
-        )
+        response = requests.post(GOOGLE_CHAT_SEND_URL, json=payload, timeout=30)
         resposta_texto = (response.text or "")[:500]
         logger.info(
             "Resposta Google Chat FECFIN: status=%s body=%s",
             response.status_code,
             resposta_texto,
         )
-
         if response.status_code < 200 or response.status_code >= 300:
             logger.error(
-                "Falha ao enviar notificacao FECFIN para o Google Chat: status=%s body=%s",
+                "Falha ao enviar notificacao FECFIN: status=%s body=%s",
                 response.status_code,
                 resposta_texto,
             )
             return False
-
-        logger.info(
-            "Notificacao FECFIN enviada ao Google Chat com %s arquivo(s)",
-            len(arquivos_processados),
-        )
         return True
     except Exception:
         logger.exception("Erro ao enviar notificacao FECFIN para o Google Chat")
@@ -127,6 +190,7 @@ def executar_fecfin() -> dict[str, int]:
         token_secret_path=GOOGLE_OAUTH_TOKEN_SECRET,
     )
 
+    raiz_id = GOOGLE_DRIVE_FOLDER_ID
     extratos_id = GOOGLE_DRIVE_EXT_FOLDER_ID
     lancamento = MODELO_LANCAMENTOS
     temp_dir = Path.cwd() / "temp"
@@ -138,7 +202,6 @@ def executar_fecfin() -> dict[str, int]:
         pasta_base_id=GOOGLE_DRIVE_EMP_FOLDER_ID,
     )
 
-    logger.info("Criando ou recuperando pasta de entrada EXT no Google Drive")
     pasta_entrada_ext = google_drive.get_or_create_folder(
         folder_id_pai=extratos_id,
         name_folder="EXT",
@@ -146,100 +209,168 @@ def executar_fecfin() -> dict[str, int]:
     entrada_ext_id = pasta_entrada_ext["id"]
     logger.info("Pasta de entrada EXT do Google Drive: %s", entrada_ext_id)
 
+    empresas = carregar_empresas_ativas()
+    destino_template = _carregar_destino_fecfin(google_drive, raiz_id, temp_dir)
+    if not destino_template:
+        logger.error(
+            "Template de destino FECFIN nao encontrado em %s; abortando",
+            DOCS_CAMINHO_NAME,
+        )
+        return {"processados": 0, "movidos": 0, "lancamentos": 0, "erros": 1, "atualizados_sge": 0}
+
     logger.info("Listando Excel FECFIN da pasta EXT do Google Drive")
-    arquivos_excel_todos = google_drive.list_children(entrada_ext_id)
+    arquivos_todos = google_drive.list_children(entrada_ext_id)
     arquivos_fecfin = [
-        a for a in arquivos_excel_todos
+        a
+        for a in arquivos_todos
         if a.get("mimeType") in (XLSX_MIME_TYPE, XLS_MIME_TYPE)
         and a.get("mimeType") != GoogleDriveAuth.FOLDER_MIME_TYPE
         and "FECFIN" in a.get("name", "").upper()
+        and not a.get("name", "").upper().startswith("[LANC]")
     ]
     logger.info("Arquivos FECFIN encontrados na pasta EXT: %s", len(arquivos_fecfin))
 
     processados = 0
+    movidos = 0
     lancamentos_gerados = 0
     erros = 0
-    arquivos_lancamento_notificacao: list[str] = []
-    arquivos_nao_reconhecidos_notificacao: list[str] = []
+    atualizados_sge = 0
+    erros_sge = 0
+    arquivos_notificacao: list[str] = []
+    nao_reconhecidos_notificacao: list[str] = []
+    empresas_nao_encontradas: list[str] = []
+    erros_sge_detalhe: list[str] = []
 
     for arquivo_fecfin in arquivos_fecfin:
         fecfin_id = arquivo_fecfin["id"]
         fecfin_nome = arquivo_fecfin["name"]
         fecfin_stem = Path(fecfin_nome).stem
         fecfin_local = temp_dir / fecfin_nome
+        lancs_locais: list[Path] = []
         processados += 1
-
         logger.info("Processando arquivo FECFIN: %s", fecfin_nome)
 
         try:
-            google_drive.download(
-                file_id=fecfin_id,
-                destino_local=fecfin_local,
-            )
+            try:
+                mes, ano, cliente = parse_nome_fecfin(fecfin_nome)
+            except ValueError as erro_nome:
+                nao_reconhecidos_notificacao.append(f"{fecfin_nome} - {erro_nome}")
+                continue
+
+            empresa_id, empresa_nome = buscar_empresa_por_cliente(cliente, empresas=empresas)
+            if not empresa_id or not empresa_nome:
+                logger.warning(
+                    "Empresa FECFIN nao encontrada para cliente %s. Mantido na EXT: %s",
+                    cliente,
+                    fecfin_nome,
+                )
+                empresas_nao_encontradas.append(f"{fecfin_nome} - cliente {cliente}")
+                continue
+
+            google_drive.download(file_id=fecfin_id, destino_local=fecfin_local)
 
             with pd.ExcelFile(fecfin_local) as xls:
                 resultados = dispatch_fecwin(xls, fecfin_stem)
 
             if not resultados:
                 logger.warning("Layout FECFIN nao reconhecido: %s", fecfin_nome)
-                arquivos_nao_reconhecidos_notificacao.append(fecfin_nome)
+                nao_reconhecidos_notificacao.append(fecfin_nome)
                 continue
 
+            empresa_chave = nome_pasta_empresa(empresa_id, empresa_nome)
+            destino_partes = montar_destino_docs(
+                destino_template=destino_template,
+                empresa_chave=empresa_chave,
+                ano=ano,
+                mes=mes,
+            )
+            pasta_destino_id, pasta_destino_historico = resolver_pasta_destino_docs(
+                google_drive=google_drive,
+                emp_folder_id=emp_raiz_id,
+                destino_partes=destino_partes,
+            )
+
+            # Gerar e enviar os lancamentos [LANC] por banco
             for banco_nome, df_banco in resultados:
                 if df_banco is None or df_banco.empty:
-                    logger.warning(
-                        "FECFIN %s — banco %s sem dados, ignorado",
-                        fecfin_nome,
-                        banco_nome,
-                    )
+                    logger.warning("FECFIN %s - banco %s sem dados", fecfin_nome, banco_nome)
                     continue
-
                 nome_lanc = f"[LANC] {fecfin_stem}_{banco_nome}.xlsm"
                 destino_lanc = temp_dir / nome_lanc
-
-                logger.info("Copiando modelo de lancamento para: %s", nome_lanc)
+                lancs_locais.append(destino_lanc)
                 shutil.copy2(lancamento, destino_lanc)
-
-                logger.info("Preenchendo planilha de lancamento: %s", nome_lanc)
                 planilha_lancamento(df_banco, destino_lanc)
-
-                logger.info(
-                    "Enviando XLSM FECFIN para o Google Drive: %s", nome_lanc
-                )
                 google_drive.upload(
                     caminho_local=destino_lanc,
-                    folder_id_destino=entrada_ext_id,
+                    folder_id_destino=pasta_destino_id,
                     type_file=XLSM_MIME_TYPE,
                     name_drive=nome_lanc,
                 )
-
                 lancamentos_gerados += 1
-                arquivos_lancamento_notificacao.append(nome_lanc)
-                destino_lanc.unlink(missing_ok=True)
+                logger.info("Lancamento FECFIN enviado: %s -> %s", nome_lanc, pasta_destino_historico)
+
+            # Mover o FECFIN original para a pasta da empresa
+            google_drive.move_file(file_id=fecfin_id, folder_id_destino=pasta_destino_id)
+            movidos += 1
+            momento = agora_historico()
+            arquivos_notificacao.append(f"{fecfin_nome} - {pasta_destino_historico}")
+
+            # Baixa FECFIN (sem instancia)
+            quantidade = 1 + len(lancs_locais)
+            sucesso, detalhe = baixar_controle_supabase(
+                empresa_codigo=str(empresa_id),
+                codigo_documento=FECFIN_CODIGO,
+                competencia=f"{mes}-20{ano}",
+                banco="",
+                agencia="",
+                conta="",
+                nome_arquivo=fecfin_nome,
+                local_arquivo=f"Google Drive / {pasta_destino_historico}",
+                quantidade_arquivos=quantidade,
+                status="Enviado",
+                data_recebimento=momento.strftime("%Y-%m-%d"),
+            )
+            if sucesso:
+                atualizados_sge += 1
+            else:
+                erros_sge += 1
+                if detalhe:
+                    erros_sge_detalhe.append(detalhe)
 
         except Exception:
             erros += 1
             logger.exception("Erro ao processar arquivo FECFIN: %s", fecfin_nome)
-            arquivos_nao_reconhecidos_notificacao.append(
-                f"{fecfin_nome} - erro de processamento"
-            )
+            nao_reconhecidos_notificacao.append(f"{fecfin_nome} - erro de processamento")
         finally:
             fecfin_local.unlink(missing_ok=True)
+            for lanc in lancs_locais:
+                lanc.unlink(missing_ok=True)
 
     logger.info(
-        "Fluxo FECFIN concluido. Processados=%s Lancamentos=%s Erros=%s",
+        "Fluxo FECFIN concluido. Processados=%s Movidos=%s Lancamentos=%s "
+        "AtualizadosSGE=%s ErrosSGE=%s Erros=%s",
         processados,
+        movidos,
         lancamentos_gerados,
+        atualizados_sge,
+        erros_sge,
         erros,
     )
 
     enviar_notificacao_fecfin_google_chat(
-        arquivos_lancamento_notificacao,
-        arquivos_nao_reconhecidos=arquivos_nao_reconhecidos_notificacao,
+        arquivos_notificacao,
+        arquivos_nao_reconhecidos=nao_reconhecidos_notificacao,
+        empresas_nao_encontradas=empresas_nao_encontradas,
+        atualizados_sge=atualizados_sge,
+        erros_sge=erros_sge,
+        erros_sge_detalhe=erros_sge_detalhe,
     )
 
     return {
         "processados": processados,
+        "movidos": movidos,
         "lancamentos": lancamentos_gerados,
         "erros": erros,
+        "atualizados_sge": atualizados_sge,
+        "erros_sge": erros_sge,
     }

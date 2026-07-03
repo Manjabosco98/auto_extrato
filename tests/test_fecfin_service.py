@@ -2,7 +2,7 @@ import io
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 from fastapi import FastAPI
@@ -639,6 +639,74 @@ class FecfinUp380Test(unittest.TestCase):
 
         _, df = resultados[0]
         self.assertTrue(df.iloc[0]["DESCRIÇÃO"].isupper())
+
+
+class ParseNomeFecfinTest(unittest.TestCase):
+    def test_parse_extrai_competencia_e_cliente(self):
+        from src.services.fecfin import parse_nome_fecfin
+
+        mes, ano, cliente = parse_nome_fecfin("0626_FECFIN_DAFF.xlsx")
+        self.assertEqual((mes, ano, cliente), ("06", "26", "DAFF"))
+
+    def test_parse_usa_ultimo_segmento_como_cliente(self):
+        from src.services.fecfin import parse_nome_fecfin
+
+        _, _, cliente = parse_nome_fecfin("0526_FECFIN_ALGO_COLEGIO WR.xlsx")
+        self.assertEqual(cliente, "COLEGIO WR")
+
+    def test_parse_rejeita_periodo_invalido(self):
+        from src.services.fecfin import parse_nome_fecfin
+
+        with self.assertRaises(ValueError):
+            parse_nome_fecfin("FECFIN_TESTE.xlsx")
+
+
+class ExecutarFecfinBaixaTest(unittest.TestCase):
+    def test_baixa_fecfin_sem_instancia(self):
+        from src.services import fecfin as fecfin_service
+        from openpyxl import Workbook
+
+        df = pd.DataFrame(
+            [["01/06/2026", "PIX", 100.0, "C"]],
+            columns=["DATA", "DESCRIÇÃO", "VALOR", "TIPO"],
+        )
+
+        drive = MagicMock()
+        drive.get_or_create_folder.return_value = {"id": "ext"}
+        drive.list_children.return_value = [
+            {"id": "f1", "name": "0626_FECFIN_DAFF.xlsx", "mimeType": fecfin_service.XLSX_MIME_TYPE}
+        ]
+
+        def _download(file_id, destino_local):
+            Workbook().save(destino_local)
+            return str(destino_local)
+
+        drive.download.side_effect = _download
+
+        with patch.object(fecfin_service, "GoogleDriveAuth", return_value=drive), \
+             patch.object(fecfin_service, "resolver_pasta_emp_base", return_value="emp"), \
+             patch.object(fecfin_service, "carregar_empresas_ativas", return_value={"DAFF": ("114", "DAFF LTDA")}), \
+             patch.object(fecfin_service, "buscar_empresa_por_cliente", return_value=("114", "DAFF LTDA")), \
+             patch.object(fecfin_service, "_carregar_destino_fecfin", return_value="SRVARQ\\EMP\\{EMPRESA}\\MOV\\CONT\\{ANO}\\{MES}\\EXT"), \
+             patch.object(fecfin_service, "nome_pasta_empresa", return_value="114_DAFF LTDA"), \
+             patch.object(fecfin_service, "montar_destino_docs", return_value=["114_DAFF LTDA", "MOV", "CONT", "26", "06", "EXT"]), \
+             patch.object(fecfin_service, "resolver_pasta_destino_docs", return_value=("dest", "EMP/114_DAFF LTDA/MOV/CONT/26/06/EXT")), \
+             patch.object(fecfin_service, "dispatch_fecwin", return_value=[("ITAU", df)]), \
+             patch.object(fecfin_service.shutil, "copy2"), \
+             patch.object(fecfin_service, "planilha_lancamento"), \
+             patch.object(fecfin_service, "baixar_controle_supabase", return_value=(True, None)) as mock_baixa, \
+             patch.object(fecfin_service, "enviar_notificacao_fecfin_google_chat"):
+            resultado = fecfin_service.executar_fecfin()
+
+        self.assertEqual(resultado["atualizados_sge"], 1)
+        self.assertEqual(resultado["movidos"], 1)
+        drive.move_file.assert_called_once()
+        kwargs = mock_baixa.call_args.kwargs
+        self.assertEqual(kwargs["codigo_documento"], "FECFIN")
+        self.assertEqual(kwargs["competencia"], "06-2026")
+        self.assertEqual(kwargs["empresa_codigo"], "114")
+        self.assertEqual(kwargs["banco"], "")
+        self.assertEqual(kwargs["conta"], "")
 
 
 if __name__ == "__main__":
