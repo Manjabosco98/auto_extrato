@@ -937,7 +937,7 @@ class ConversaoPasswordTest(unittest.TestCase):
         self.assertEqual(notificacao.call_args.kwargs["status_execucao"], "SUCESSO")
         pdf_extractor.assert_not_called()
         mock_baixa.assert_called_once()
-        self.assertEqual(mock_baixa.call_args[1]["status"], "Não Aplicável")
+        self.assertEqual(mock_baixa.call_args[1]["status"], "Enviado")
 
     def test_sem_movimentacao_sem_empresa_permanece_na_ext(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1110,7 +1110,7 @@ class ConversaoPasswordTest(unittest.TestCase):
             ["0526_EXTBAN_NORMAL_CIAL_AG 1_CC 1.pdf - EMP/123_CIAL/MOV/CONT/26/05/EXT"],
         )
         mock_baixa.assert_called_once()
-        self.assertEqual(mock_baixa.call_args[1]["status"], "Não Aplicável")
+        self.assertEqual(mock_baixa.call_args[1]["status"], "Enviado")
 
     def test_extrai_competencia_do_nome_do_arquivo(self):
         resultado = conversao.extrair_competencia_nome_arquivo(

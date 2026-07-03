@@ -1256,7 +1256,7 @@ def _executar_conversao(execucao_id: str):
                         "arquivo_nome": arquivo_nome,
                         "pasta_destino": resultado_sm["pasta_destino"],
                         "quantidade_arquivos": 1,
-                        "status": "Não Aplicável",
+                        "status": "Enviado",
                         "data_recebimento": resultado_sm["momento"].strftime("%Y-%m-%d"),
                     })
                 else:
@@ -1353,7 +1353,7 @@ def _executar_conversao(execucao_id: str):
                         "arquivo_nome": arquivo_nome,
                         "pasta_destino": resultado_sm["pasta_destino"],
                         "quantidade_arquivos": 1,
-                        "status": "Não Aplicável",
+                        "status": "Enviado",
                         "data_recebimento": resultado_sm["momento"].strftime("%Y-%m-%d"),
                     })
                 else:

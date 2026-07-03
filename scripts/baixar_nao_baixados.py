@@ -4,9 +4,11 @@ Dá baixa no SGE para registros "Não Baixados" da validação.
 Lê o relatório validacao_historico_sge.xlsx (aba "Não Baixados"), re-deriva
 banco/agência/conta a partir do NOME DO ARQUIVO (a coluna "Banco" do histórico
 vem poluída: "INTER SM", "LANCBAN", conta embutida), detecta extratos SEM
-MOVIMENTAÇÃO ([SEM MOV]/SM -> status "Não Aplicável") e chama o cliente de
-produção `baixar_controle_supabase`, que trata o 400 (exige instância) fazendo
+MOVIMENTAÇÃO ([SEM MOV]/SM -> quantidade 1, pois só há o PDF) e chama o cliente
+de produção `baixar_controle_supabase`, que trata o 400 (exige instância) fazendo
 o match por banco+conta e reporta 404/409 de forma amigável.
+
+Todas as baixas usam status "Enviado" (inclusive SEM MOVIMENTAÇÃO).
 
 Uso:
     python scripts/baixar_nao_baixados.py            # DRY-RUN (nao escreve nada)
@@ -43,7 +45,7 @@ def banco_do_arquivo(nome_arquivo: str) -> str:
 
 
 def eh_sem_movimentacao(nome_arquivo: str, banco_hist: str) -> bool:
-    """Detecta extrato SEM MOVIMENTAÇÃO (baixa com status 'Não Aplicável')."""
+    """Detecta extrato SEM MOVIMENTAÇÃO (só o PDF -> quantidade 1 na baixa)."""
     alvo = f"{nome_arquivo} {banco_hist}".upper()
     if "[SEM MOV]" in alvo:
         return True
@@ -148,7 +150,7 @@ def montar_plano(df: pd.DataFrame) -> list[dict]:
                 "conta": conta,
                 "arquivo": arquivo,
                 "sem_movimentacao": sem_mov,
-                "status": "Não Aplicável" if sem_mov else "Enviado",
+                "status": "Enviado",
                 "quantidade_arquivos": 1 if sem_mov else 3,
                 "data_recebimento": data_receb,
             }
