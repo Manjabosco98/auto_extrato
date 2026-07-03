@@ -34,6 +34,7 @@ from src.app.supabase.supabase_api import (
     carregar_empresas_ativas_api,
 )
 from src.schemas import LayoutNotRecognized, dispatch
+from src.schemas.parsers.ia_extractor import extrair_extrato_ia
 from src.schemas.parsers.pdf_extractor import PDFExtractor
 from src.services.chat_notifications import (
     GOOGLE_CHAT_SEND_URL,
@@ -100,6 +101,7 @@ def formatar_mensagem_google_chat(
     nomes_extratos: list[str],
     pdfs_sem_movimentacao: list[str] | None = None,
     pdfs_nao_legiveis: list[str] | None = None,
+    convertidos_ia: list[str] | None = None,
     atualizados_sge: int | None = None,
     momento: datetime | None = None,
     nomes_invalidos: list[str] | None = None,
@@ -113,6 +115,7 @@ def formatar_mensagem_google_chat(
     momento = momento or agora_historico()
     pdfs_sem_movimentacao = pdfs_sem_movimentacao or []
     pdfs_nao_legiveis = pdfs_nao_legiveis or []
+    convertidos_ia = convertidos_ia or []
     nomes_invalidos = nomes_invalidos or []
     erros_senha = erros_senha or []
     layouts_nao_reconhecidos = layouts_nao_reconhecidos or []
@@ -135,6 +138,13 @@ def formatar_mensagem_google_chat(
         blocos.append(
             "PDFs sem movimentacao salvos na pasta da empresa:\n\n"
             f"{lista_sem_movimentacao}"
+        )
+
+    if convertidos_ia:
+        lista_convertidos_ia = "\n".join(convertidos_ia)
+        blocos.append(
+            "Convertidos via IA (Gemini) — revisar manualmente:\n\n"
+            f"{lista_convertidos_ia}"
         )
 
     if pdfs_nao_legiveis:
@@ -179,6 +189,7 @@ def enviar_notificacao_google_chat(
     nomes_extratos: list[str],
     pdfs_sem_movimentacao: list[str] | None = None,
     pdfs_nao_legiveis: list[str] | None = None,
+    convertidos_ia: list[str] | None = None,
     atualizados_sge: int | None = None,
     momento: datetime | None = None,
     nomes_invalidos: list[str] | None = None,
@@ -201,6 +212,7 @@ def enviar_notificacao_google_chat(
 ) -> bool:
     pdfs_sem_movimentacao = pdfs_sem_movimentacao or []
     pdfs_nao_legiveis = pdfs_nao_legiveis or []
+    convertidos_ia = convertidos_ia or []
     nomes_invalidos = nomes_invalidos or []
     erros_senha = erros_senha or []
     layouts_nao_reconhecidos = layouts_nao_reconhecidos or []
@@ -214,6 +226,7 @@ def enviar_notificacao_google_chat(
             nomes_extratos,
             pdfs_sem_movimentacao=pdfs_sem_movimentacao,
             pdfs_nao_legiveis=pdfs_nao_legiveis,
+            convertidos_ia=convertidos_ia,
             momento=momento,
             nomes_invalidos=nomes_invalidos,
             erros_senha=erros_senha,
@@ -253,6 +266,7 @@ def enviar_notificacao_google_chat(
             nomes_extratos,
             pdfs_sem_movimentacao,
             pdfs_nao_legiveis,
+            convertidos_ia,
             nomes_invalidos,
             erros_senha,
             layouts_nao_reconhecidos,
@@ -267,6 +281,7 @@ def enviar_notificacao_google_chat(
         nomes_extratos,
         pdfs_sem_movimentacao=pdfs_sem_movimentacao,
         pdfs_nao_legiveis=pdfs_nao_legiveis,
+        convertidos_ia=convertidos_ia,
         atualizados_sge=atualizados_sge,
         momento=momento,
         nomes_invalidos=nomes_invalidos,
@@ -1086,6 +1101,7 @@ def _executar_conversao(execucao_id: str):
     sem_movimentacao = 0
     extratos_notificacao = []
     pdfs_sem_movimentacao_notificacao = []
+    convertidos_ia_notificacao = []
     pdfs_nao_legiveis_notificacao = []
     nomes_invalidos_notificacao = []
     erros_senha_notificacao = []
@@ -1260,41 +1276,57 @@ def _executar_conversao(execucao_id: str):
                 time.perf_counter() - inicio_extracao,
             )
 
-            if not pdf:
-                nome_nao_legivel = renomear_e_mover_para_invalidos(
-                    google_drive=google_drive,
-                    arquivo_id=arquivo_id,
-                    arquivo_nome=arquivo_nome,
-                    invalidos_id=invalidos_id,
-                    prefixo=NAO_LEGIVEL_PREFIX,
-                    motivo="PDF sem texto extraivel, nao legivel ou possivelmente imagem",
-                )
-                pdfs_nao_legiveis_notificacao.append(nome_nao_legivel)
-                invalidos += 1
-                continue
+            df = None
 
-            logger.info("Identificando layout e convertendo PDF em DataFrame: %s", arquivo_nome)
-            inicio_parser = time.perf_counter()
-            try:
-                df = dispatch(pdf)
-            except LayoutNotRecognized:
-                logger.exception("Layout nao reconhecido. Movendo para invalidos: %s", arquivo_nome)
-                nome_final = renomear_e_mover_para_invalidos(
-                    google_drive=google_drive,
-                    arquivo_id=arquivo_id,
-                    arquivo_nome=arquivo_nome,
-                    invalidos_id=invalidos_id,
-                    prefixo=LAYOUT_INVALIDO_PREFIX,
-                    motivo="Layout bancario nao reconhecido",
+            if not pdf:
+                logger.info(
+                    "PDF sem texto extraivel; tentando fallback via IA (Gemini): %s",
+                    arquivo_nome,
                 )
-                layouts_invalidos_notificacao.append(nome_final)
-                invalidos += 1
-                continue
-            logger.info(
-                "Parser concluido: %s | tempo=%.2fs",
-                arquivo_nome,
-                time.perf_counter() - inicio_parser,
-            )
+                df = extrair_extrato_ia(pdf_processamento)
+                if df is None:
+                    nome_nao_legivel = renomear_e_mover_para_invalidos(
+                        google_drive=google_drive,
+                        arquivo_id=arquivo_id,
+                        arquivo_nome=arquivo_nome,
+                        invalidos_id=invalidos_id,
+                        prefixo=NAO_LEGIVEL_PREFIX,
+                        motivo="PDF sem texto extraivel e nao convertido via IA",
+                    )
+                    pdfs_nao_legiveis_notificacao.append(nome_nao_legivel)
+                    invalidos += 1
+                    continue
+                convertidos_ia_notificacao.append(arquivo_stem)
+            else:
+                logger.info("Identificando layout e convertendo PDF em DataFrame: %s", arquivo_nome)
+                inicio_parser = time.perf_counter()
+                try:
+                    df = dispatch(pdf)
+                except LayoutNotRecognized:
+                    logger.warning(
+                        "Layout nao reconhecido; tentando fallback via IA (Gemini): %s",
+                        arquivo_nome,
+                    )
+                    df = extrair_extrato_ia(pdf_processamento)
+                    if df is None:
+                        logger.exception("Layout nao reconhecido e nao convertido via IA: %s", arquivo_nome)
+                        nome_final = renomear_e_mover_para_invalidos(
+                            google_drive=google_drive,
+                            arquivo_id=arquivo_id,
+                            arquivo_nome=arquivo_nome,
+                            invalidos_id=invalidos_id,
+                            prefixo=LAYOUT_INVALIDO_PREFIX,
+                            motivo="Layout bancario nao reconhecido",
+                        )
+                        layouts_invalidos_notificacao.append(nome_final)
+                        invalidos += 1
+                        continue
+                    convertidos_ia_notificacao.append(arquivo_stem)
+                logger.info(
+                    "Parser concluido: %s | tempo=%.2fs",
+                    arquivo_nome,
+                    time.perf_counter() - inicio_parser,
+                )
 
             if df is None or df.empty:
                 resultado_sm = arquivar_pdf_sem_movimentacao(
@@ -1528,6 +1560,8 @@ def _executar_conversao(execucao_id: str):
         "pdfs_nao_legiveis": pdfs_nao_legiveis_notificacao,
         "atualizados_sge": atualizados_sge,
     }
+    if convertidos_ia_notificacao:
+        notificacao_kwargs["convertidos_ia"] = convertidos_ia_notificacao
     if nomes_invalidos_notificacao:
         notificacao_kwargs["nomes_invalidos"] = nomes_invalidos_notificacao
     if erros_senha_notificacao:

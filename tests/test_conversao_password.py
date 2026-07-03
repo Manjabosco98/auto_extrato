@@ -993,6 +993,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 patch.object(conversao, "pdf_possui_senha", return_value=False),
                 patch.object(conversao, "PDFExtractor") as pdf_extractor,
                 patch.object(conversao, "dispatch") as dispatch,
+                patch.object(conversao, "extrair_extrato_ia", return_value=None) as extrair_ia,
                 patch.object(conversao, "enviar_notificacao_google_chat") as notificacao,
                 patch.object(conversao, "carregar_empresas_ativas", return_value={}),
             ):
@@ -1015,7 +1016,58 @@ class ConversaoPasswordTest(unittest.TestCase):
             notificacao.call_args.kwargs["pdfs_nao_legiveis"],
             ["[NAO LEGIVEL] - 0526_EXTBAN_IMAGEM_CIAL_AG 1_CC 1.pdf"],
         )
+        extrair_ia.assert_called_once()
         dispatch.assert_not_called()
+
+    def test_pdf_ilegivel_convertido_via_ia_vai_para_empresa(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_drive = FakeDrive(
+                temp_dir,
+                root_pdfs=[
+                    {
+                        "id": "pdf-imagem",
+                        "name": "0526_EXTBAN_SICOOB_CIAL_AG 1_CC 1.pdf",
+                        "mimeType": "application/pdf",
+                    }
+                ],
+                existing_folders={("id-EMP", "123_CIAL")},
+            )
+
+            def copy_modelo(origem, destino):
+                Path(destino).write_bytes(b"modelo")
+
+            df_ia = pd.DataFrame(
+                [{"DATA": "01/05/2026", "DESCRIÇÃO": "PIX RECEBIDO", "VALOR": 10.0, "TIPO": "C"}]
+            )
+
+            with (
+                patch.object(conversao, "GoogleDriveAuth", return_value=fake_drive),
+                patch.object(conversao, "carregar_empresas_ativas", return_value={"CIAL": (123, "CIAL")}),
+                patch.object(conversao, "pdf_possui_senha", return_value=False),
+                patch.object(conversao, "PDFExtractor") as pdf_extractor,
+                patch.object(conversao, "dispatch") as dispatch,
+                patch.object(conversao, "extrair_extrato_ia", return_value=df_ia) as extrair_ia,
+                patch.object(conversao, "planilha_lancamento"),
+                patch.object(conversao.shutil, "copy2", side_effect=copy_modelo),
+                patch.object(conversao, "registrar_historico_conversao"),
+                patch.object(conversao, "buscar_id_empresa_supabase", return_value="uuid-empresa-123"),
+                patch.object(conversao, "baixar_controle_supabase", return_value=(True, None)),
+                patch.object(conversao, "enviar_notificacao_google_chat") as notificacao,
+            ):
+                pdf_extractor.return_value.extract.return_value = ([], 0)
+                conversao.executar_conversao()
+
+        extrair_ia.assert_called_once()
+        dispatch.assert_not_called()
+        self.assertEqual(fake_drive.renamed, [])
+        self.assertIn(("pdf-imagem", "id-EXT"), fake_drive.moved)
+        self.assertNotIn(("pdf-imagem", "id-00_INVALIDOS"), fake_drive.moved)
+        notificacao.assert_called_once()
+        self.assertEqual(
+            notificacao.call_args.kwargs["convertidos_ia"],
+            ["0526_EXTBAN_SICOOB_CIAL_AG 1_CC 1"],
+        )
+        self.assertEqual(notificacao.call_args.kwargs.get("pdfs_nao_legiveis"), [])
 
     def test_dataframe_vazio_move_para_pasta_empresa_sem_renomear(self):
         with tempfile.TemporaryDirectory() as temp_dir:
