@@ -1654,6 +1654,12 @@ class ConversaoPasswordTest(unittest.TestCase):
         instancias = [{"codigo": "1", "descricao": "EXTBAN-BANCO SICREDI - C: 85951-4"}]
         self.assertIsNone(supabase_api._match_instancia(instancias, "SANTANDER", "1300034706"))
 
+    def test_match_instancia_nao_fallback_quando_conta_diferente(self):
+        # Mesmo banco, mas a unica instancia tem conta DIFERENTE do arquivo.
+        # Nao deve casar (evita baixar na conta errada do mesmo banco).
+        instancias = [{"codigo": "1", "descricao": "EXTBAN-BANCO SICREDI - A:024-7 - C: 85951-4"}]
+        self.assertIsNone(supabase_api._match_instancia(instancias, "SICREDI", "90147-4"))
+
 
 if __name__ == "__main__":
     unittest.main()
