@@ -12,14 +12,18 @@ from src.services import docs
 
 
 class FakeDriveDocs:
-    def __init__(self, temp_dir, existing_folders=None):
+    def __init__(self, temp_dir, existing_folders=None, children=None, folder_children=None, caminhos_rows=None):
         self.temp_dir = Path(temp_dir)
-        self.children = [
+        self.children = children if children is not None else [
             {
                 "id": "doc-1",
                 "name": "0626_JURATPAS_BRITO.docx",
                 "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             }
+        ]
+        self.folder_children = folder_children or {}
+        self._caminhos_rows = caminhos_rows or [
+            ["JURATPAS", "SRVARQ/EMP/{EMPRESA}/MOV/CONT/{ANO}/{MES}/REL"]
         ]
         self.folders = []
         self.moved = []
@@ -35,7 +39,8 @@ class FakeDriveDocs:
         workbook = Workbook()
         worksheet = workbook.active
         worksheet.append(["Codigo", "destino_final"])
-        worksheet.append(["JURATPAS", "SRVARQ/EMP/{EMPRESA}/MOV/CONT/{ANO}/{MES}/REL"])
+        for row in self._caminhos_rows:
+            worksheet.append(row)
         workbook.save(caminho)
         return caminho.read_bytes()
 
@@ -80,6 +85,8 @@ class FakeDriveDocs:
     def list_children(self, folder_id):
         if folder_id == "id-DOCS":
             return self.children
+        if folder_id in self.folder_children:
+            return self.folder_children[folder_id]
 
         return []
 
@@ -310,6 +317,65 @@ class DocsServiceTest(unittest.TestCase):
         self.assertEqual(call_kwargs["execucao_id"], "DOCS-20260616123000")
         self.assertEqual(call_kwargs["tipo"], "DOCS")
         self.assertIn("Documentos salvos", call_kwargs["mensagem"])
+
+    def test_conta_arquivos_pasta_ignora_subpastas_e_desktop_ini(self):
+        fake = FakeDriveDocs.__new__(FakeDriveDocs)
+        fake.folder_children = {
+            "pasta-x": [
+                {"id": "a", "name": "nota1.pdf", "mimeType": "application/pdf"},
+                {"id": "b", "name": "nota2.pdf", "mimeType": "application/pdf"},
+                {"id": "c", "name": "desktop.ini", "mimeType": "application/octet-stream"},
+                {"id": "d", "name": "sub", "mimeType": docs.GoogleDriveAuth.FOLDER_MIME_TYPE},
+            ]
+        }
+        self.assertEqual(docs._contar_arquivos_pasta(fake, "pasta-x"), 2)
+
+    def test_executar_docs_processa_pasta_conta_arquivos_e_baixa(self):
+        folder_mime = docs.GoogleDriveAuth.FOLDER_MIME_TYPE
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_drive = FakeDriveDocs(
+                temp_dir,
+                existing_folders={("id-EMP", "156_CEMAF OPE")},
+                children=[
+                    {"id": "pasta-1", "name": "0626_NFSENT_CEMAF OPE", "mimeType": folder_mime}
+                ],
+                folder_children={
+                    "pasta-1": [
+                        {"id": "n1", "name": "nota1.pdf", "mimeType": "application/pdf"},
+                        {"id": "n2", "name": "nota2.pdf", "mimeType": "application/pdf"},
+                        {"id": "n3", "name": "nota3.pdf", "mimeType": "application/pdf"},
+                    ]
+                },
+                caminhos_rows=[
+                    ["NFSENT", "SRVARQ/EMP/{EMPRESA}/MOV/CONT/{ANO}/{MES}/REL/NFSENT"]
+                ],
+            )
+
+            with (
+                patch.object(docs, "GoogleDriveAuth") as mock_auth,
+                patch.object(docs, "GOOGLE_DRIVE_FOLDER_ID", "root-folder"),
+                patch.object(docs, "GOOGLE_DRIVE_EMP_FOLDER_ID", "srvarq-folder"),
+                patch.object(docs, "carregar_empresas_ativas", return_value={"CEMAF OPE": (156, "CEMAF OPE")}),
+                patch.object(docs, "enviar_notificacao_docs_google_chat"),
+                patch.object(docs, "baixar_controle_supabase", return_value=(True, None)) as mock_baixa,
+                patch.object(docs, "agora_historico", return_value=docs.datetime(2026, 6, 26, 8, 40, 0)),
+            ):
+                # preserva o FOLDER_MIME_TYPE real para o filtro de subpastas funcionar
+                mock_auth.return_value = fake_drive
+                mock_auth.FOLDER_MIME_TYPE = folder_mime
+                resultado = docs.executar_docs()
+
+        self.assertEqual(resultado["movidos"], 1)
+        self.assertEqual(resultado["atualizados_sge"], 1)
+        # a pasta inteira foi movida para o destino do codigo NFSENT
+        self.assertEqual(fake_drive.moved, [("pasta-1", "id-NFSENT")])
+        # baixa: codigo NFSENT, sem instancia, e Arquivos = 3 (itens dentro da pasta)
+        kwargs = mock_baixa.call_args.kwargs
+        self.assertEqual(kwargs["codigo_documento"], "NFSENT")
+        self.assertEqual(kwargs["competencia"], "06-2026")
+        self.assertEqual(kwargs["empresa_codigo"], "156")
+        self.assertEqual(kwargs["quantidade_arquivos"], 3)
+        self.assertEqual(kwargs["status"], "Enviado")
 
     def test_rota_docs_executar_responde_202(self):
         app = FastAPI()

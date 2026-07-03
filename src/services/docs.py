@@ -354,6 +354,118 @@ def _mime_type_historico(arquivo: dict) -> bool:
     return arquivo.get("name") == HISTORICO_DOCS
 
 
+def _contar_arquivos_pasta(google_drive: GoogleDriveAuth, pasta_id: str) -> int:
+    """Conta arquivos (nao-pastas) diretamente dentro de uma pasta do Drive."""
+    filhos = google_drive.list_children(pasta_id)
+    return sum(
+        1
+        for f in filhos
+        if f.get("mimeType") != GoogleDriveAuth.FOLDER_MIME_TYPE
+        and f.get("name", "").lower() != "desktop.ini"
+    )
+
+
+def _processar_item_docs(
+    google_drive: GoogleDriveAuth,
+    item: dict,
+    is_pasta: bool,
+    caminhos: dict[str, str],
+    empresas,
+    emp_raiz_id: str,
+    registros_historico: list[dict[str, object]],
+    documentos_para_baixa: list[dict[str, object]],
+    documentos_notificacao: list[str],
+) -> str:
+    """Processa um arquivo OU pasta DOCS.
+
+    Identifica o codigo pelo nome (MMAA_CODIGO_CLIENTE), resolve o destino na
+    planilha de caminhos, move para a pasta da empresa e prepara a baixa no SGE.
+    Para pastas, a quantidade de arquivos e a contagem de itens dentro dela.
+
+    Retorna 'movido', 'ignorado' ou 'erro'.
+    """
+    nome = item["name"]
+    logger.info("Processando %s DOCS: %s", "pasta" if is_pasta else "documento", nome)
+
+    try:
+        dados_nome = parse_nome_documento(nome)
+    except ValueError as erro:
+        logger.warning("%s", erro)
+        return "ignorado"
+
+    codigo = dados_nome["codigo"]
+    destino_template = caminhos.get(codigo)
+    if not destino_template:
+        logger.warning("Codigo DOCS nao encontrado em %s: %s", DOCS_CAMINHO_NAME, codigo)
+        return "ignorado"
+
+    empresa_id, empresa_nome = buscar_empresa_por_cliente(dados_nome["cliente"], empresas=empresas)
+    if not empresa_id or not empresa_nome:
+        logger.warning(
+            "Empresa DOCS nao encontrada para cliente %s. Mantido em DOCS: %s",
+            dados_nome["cliente"],
+            nome,
+        )
+        return "ignorado"
+
+    try:
+        quantidade = _contar_arquivos_pasta(google_drive, item["id"]) if is_pasta else 1
+
+        empresa_chave = nome_pasta_empresa(empresa_id, empresa_nome)
+        destino_partes = montar_destino_docs(
+            destino_template=destino_template,
+            empresa_chave=empresa_chave,
+            ano=dados_nome["ano"],
+            mes=dados_nome["mes"],
+        )
+        pasta_destino_id, pasta_destino_historico = resolver_pasta_destino_docs(
+            google_drive=google_drive,
+            emp_folder_id=emp_raiz_id,
+            destino_partes=destino_partes,
+        )
+
+        logger.info(
+            "Movendo %s DOCS para: %s",
+            "pasta" if is_pasta else "documento",
+            pasta_destino_historico,
+        )
+        google_drive.move_file(file_id=item["id"], folder_id_destino=pasta_destino_id)
+        momento_movimento = agora_historico()
+        registros_historico.append(
+            {
+                "empresa_id": normalizar_id_empresa(empresa_id),
+                "empresa_nome": normalizar_nome_empresa(empresa_nome),
+                "data": momento_movimento.strftime("%Y-%m-%d"),
+                "hora": momento_movimento.strftime("%H:%M:%S"),
+                "codigo": codigo,
+                "nome_arquivo": nome,
+                "pasta_destino": pasta_destino_historico,
+                "data_hora_movimento": momento_movimento.strftime("%Y-%m-%d %H:%M:%S"),
+                "status_sge": "",
+            }
+        )
+        documentos_para_baixa.append(
+            {
+                "empresa_id": empresa_id,
+                "competencia": f'{dados_nome["mes"]}-20{dados_nome["ano"]}',
+                "codigo_documento": dados_nome["codigo"],
+                "banco": dados_nome["banco"],
+                "agencia": dados_nome["agencia"],
+                "conta": dados_nome["conta"],
+                "arquivo_nome": nome,
+                "pasta_destino": pasta_destino_historico,
+                "quantidade_arquivos": quantidade,
+                "indice_historico": len(registros_historico) - 1,
+                "data_recebimento": momento_movimento.strftime("%Y-%m-%d"),
+            }
+        )
+        documentos_notificacao.append(f"{nome} - {pasta_destino_historico}")
+        return "movido"
+    except Exception:
+        logger.exception("Erro ao mover documento DOCS: %s", nome)
+        return "erro"
+
+
 def executar_docs() -> dict[str, int]:
     setup_logging()
     execucao_id = f"DOCS-{datetime.now().strftime('%Y%m%d%H%M%S')}"
@@ -412,15 +524,20 @@ def executar_docs() -> dict[str, int]:
         caminhos_local.unlink(missing_ok=True)
 
     empresas = carregar_empresas_ativas()
-    arquivos = google_drive.list_children(docs_folder_id)
+    filhos = google_drive.list_children(docs_folder_id)
     arquivos = [
-        arquivo
-        for arquivo in arquivos
-        if arquivo.get("mimeType") != GoogleDriveAuth.FOLDER_MIME_TYPE
-        and arquivo.get("name", "").lower() != "desktop.ini"
-        and not _mime_type_historico(arquivo)
+        f
+        for f in filhos
+        if f.get("mimeType") != GoogleDriveAuth.FOLDER_MIME_TYPE
+        and f.get("name", "").lower() != "desktop.ini"
+        and not _mime_type_historico(f)
     ]
-    logger.info("Arquivos encontrados na pasta DOCS: %s", len(arquivos))
+    pastas = [
+        f for f in filhos if f.get("mimeType") == GoogleDriveAuth.FOLDER_MIME_TYPE
+    ]
+    logger.info(
+        "Itens na pasta DOCS: %s arquivo(s) | %s subpasta(s)", len(arquivos), len(pastas)
+    )
 
     processados = 0
     movidos = 0
@@ -430,91 +547,26 @@ def executar_docs() -> dict[str, int]:
     documentos_notificacao: list[str] = []
     documentos_para_baixa: list[dict[str, object]] = []
 
-    for arquivo in arquivos:
-        arquivo_id = arquivo["id"]
-        arquivo_nome = arquivo["name"]
+    itens = [(a, False) for a in arquivos] + [(p, True) for p in pastas]
+    for item, is_pasta in itens:
         processados += 1
-        logger.info("Processando documento DOCS: %s", arquivo_nome)
-
-        try:
-            dados_nome = parse_nome_documento(arquivo_nome)
-        except ValueError as erro:
-            ignorados += 1
-            logger.warning("%s", erro)
-            continue
-
-        codigo = dados_nome["codigo"]
-        destino_template = caminhos.get(codigo)
-
-        if not destino_template:
-            ignorados += 1
-            logger.warning("Codigo DOCS nao encontrado em %s: %s", DOCS_CAMINHO_NAME, codigo)
-            continue
-
-        empresa_id, empresa_nome = buscar_empresa_por_cliente(
-            dados_nome["cliente"],
+        resultado = _processar_item_docs(
+            google_drive=google_drive,
+            item=item,
+            is_pasta=is_pasta,
+            caminhos=caminhos,
             empresas=empresas,
+            emp_raiz_id=emp_raiz_id,
+            registros_historico=registros_historico,
+            documentos_para_baixa=documentos_para_baixa,
+            documentos_notificacao=documentos_notificacao,
         )
-
-        if not empresa_id or not empresa_nome:
-            ignorados += 1
-            logger.warning(
-                "Empresa DOCS nao encontrada para cliente %s. Arquivo mantido em DOCS: %s",
-                dados_nome["cliente"],
-                arquivo_nome,
-            )
-            continue
-
-        try:
-            empresa_chave = nome_pasta_empresa(empresa_id, empresa_nome)
-            destino_partes = montar_destino_docs(
-                destino_template=destino_template,
-                empresa_chave=empresa_chave,
-                ano=dados_nome["ano"],
-                mes=dados_nome["mes"],
-            )
-            pasta_destino_id, pasta_destino_historico = resolver_pasta_destino_docs(
-                google_drive=google_drive,
-                emp_folder_id=emp_raiz_id,
-                destino_partes=destino_partes,
-            )
-
-            logger.info("Movendo documento DOCS para: %s", pasta_destino_historico)
-            google_drive.move_file(
-                file_id=arquivo_id,
-                folder_id_destino=pasta_destino_id,
-            )
-            momento_movimento = agora_historico()
-            registros_historico.append(
-                {
-                    "empresa_id": normalizar_id_empresa(empresa_id),
-                    "empresa_nome": normalizar_nome_empresa(empresa_nome),
-                    "data": momento_movimento.strftime("%Y-%m-%d"),
-                    "hora": momento_movimento.strftime("%H:%M:%S"),
-                    "codigo": codigo,
-                    "nome_arquivo": arquivo_nome,
-                    "pasta_destino": pasta_destino_historico,
-                    "data_hora_movimento": momento_movimento.strftime("%Y-%m-%d %H:%M:%S"),
-                    "status_sge": "",
-                }
-            )
-            documentos_para_baixa.append({
-                "empresa_id": empresa_id,
-                "competencia": f'{dados_nome["mes"]}-20{dados_nome["ano"]}',
-                "codigo_documento": dados_nome["codigo"],
-                "banco": dados_nome["banco"],
-                "agencia": dados_nome["agencia"],
-                "conta": dados_nome["conta"],
-                "arquivo_nome": arquivo_nome,
-                "pasta_destino": pasta_destino_historico,
-                "indice_historico": len(registros_historico) - 1,
-                "data_recebimento": momento_movimento.strftime("%Y-%m-%d"),
-            })
-            documentos_notificacao.append(f"{arquivo_nome} - {pasta_destino_historico}")
+        if resultado == "movido":
             movidos += 1
-        except Exception:
+        elif resultado == "ignorado":
+            ignorados += 1
+        else:
             erros += 1
-            logger.exception("Erro ao mover documento DOCS: %s", arquivo_nome)
 
     logger.info("Atualizando controle no portal SGE para %s documento(s)", len(documentos_para_baixa))
     atualizados_sge = 0
@@ -534,7 +586,7 @@ def executar_docs() -> dict[str, int]:
                 conta=doc["conta"],
                 nome_arquivo=doc["arquivo_nome"],
                 local_arquivo=local,
-                quantidade_arquivos=1,
+                quantidade_arquivos=doc.get("quantidade_arquivos", 1),
                 status="Enviado",
                 data_recebimento=doc["data_recebimento"],
             )
