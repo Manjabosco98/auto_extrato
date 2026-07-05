@@ -471,6 +471,37 @@ class DocsServiceTest(unittest.TestCase):
             },
         )
 
+    def test_parse_aplica_alias_de_codigo(self):
+        # FATCAR/EXTMAQCART/EXTAPL sao grafias que mapeiam para os codigos canonicos.
+        self.assertEqual(docs.parse_nome_documento("0626_FATCAR_BORBA.pdf")["codigo"], "FATCART")
+        self.assertEqual(
+            docs.parse_nome_documento("0626_EXTMAQCART_BORBA.xlsx")["codigo"], "EXTMAQCAR"
+        )
+        self.assertEqual(
+            docs.parse_nome_documento("0626_EXTAPL_SICOOB_SAG.pdf")["codigo"], "EXTBANAPL"
+        )
+
+    def test_parse_subtipo_colado_extrai_codigo_base_e_banco(self):
+        resultado = docs.parse_nome_documento("0626_EXTAPL FIC GIRO_C6 BANK_GEO ENG.pdf")
+        self.assertEqual(resultado["codigo"], "EXTBANAPL")
+        self.assertEqual(resultado["banco"], "C6 BANK")
+        self.assertEqual(resultado["cliente"], "GEO ENG")
+
+    def test_parse_codigo_novo_usa_palavra_base(self):
+        # "CONTEMP PRONAMP" -> codigo base "CONTEMP" (nao cadastrado -> pendencia)
+        self.assertEqual(
+            docs.parse_nome_documento("0626_ CONTEMP PRONAMP_DISLEY.pdf")["codigo"], "CONTEMP"
+        )
+        self.assertEqual(
+            docs.parse_nome_documento("0626_RELCAIXA_COLEGIO WR.pdf")["codigo"], "RELCAIXA"
+        )
+
+    def test_parse_extban_sem_cliente_nao_usa_cc_como_cliente(self):
+        resultado = docs.parse_nome_documento("0626_EXTBAN_CAIXA_AG 0636-8_CC 578111288-6.ofx")
+        self.assertEqual(resultado["cliente"], "")
+        self.assertEqual(resultado["banco"], "CAIXA")
+        self.assertEqual(resultado["conta"], "578111288-6")
+
     def test_executar_docs_empresa_nao_cadastrada_sge(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             fake_drive = FakeDriveDocs(

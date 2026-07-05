@@ -35,6 +35,25 @@ logger = logging.getLogger(__name__)
 DOCS_FOLDER_NAME = "DOCS"
 DOCS_CAMINHO_NAME = "DOCS E CAMINHO.xlsx"
 HISTORICO_DOCS = "HISTORICO_DOCS.xlsx"
+
+# Alias de codigos: grafia que aparece no NOME DO ARQUIVO -> grafia canonica
+# usada na planilha DOCS E CAMINHO.xlsx e no codigo_documento da baixa do SGE.
+ALIAS_CODIGO = {
+    "FATCAR": "FATCART",
+    "EXTMAQCART": "EXTMAQCAR",
+    "EXTAPL": "EXTBANAPL",
+}
+
+# Codigos cujo nome traz um segmento de BANCO (e, opcionalmente, AG/CC).
+# Para os demais, o segmento apos o codigo ja e o cliente.
+CODIGOS_COM_BANCO = {
+    "EXTBAN",
+    "EXTBANAPL",
+    "EXTCOTCAP",
+    "EXTMAQCAR",
+    "ENCCTBANC",
+    "FATCART",
+}
 HISTORICO_DOCS_HEADERS = (
     "ID",
     "EMP",
@@ -69,27 +88,32 @@ def parse_nome_documento(nome_arquivo: str) -> dict[str, str]:
     if not re.fullmatch(r"\d{4}", periodo):
         raise ValueError(f"Nome do arquivo DOCS sem periodo MMAA valido: {nome_arquivo}")
 
-    codigo = normalizar_codigo(partes[1])
+    # O segmento do codigo pode trazer um subtipo colado, separado por espaco
+    # (ex.: "EXTAPL FIC GIRO", "EXTAPL CDB", "CONTEMP PRONAMP"). O codigo e a
+    # primeira palavra; o resto e subtipo (informativo). Aplica alias para a
+    # grafia canonica (ex.: EXTAPL -> EXTBANAPL, FATCAR -> FATCART).
+    codigo_segmento = normalizar_codigo(partes[1])
+    codigo_base = codigo_segmento.split(" ", 1)[0]
+    codigo = ALIAS_CODIGO.get(codigo_base, codigo_base)
+
     banco = ""
     agencia = ""
     conta = ""
     cliente = partes[-1]
 
-    if codigo == "EXTBAN" and len(partes) > 3:
+    if codigo in CODIGOS_COM_BANCO and len(partes) > 3:
         banco = partes[2]
-        partes_ag_cc = []
         partes_resto = []
         for p in partes[3:]:
             if p.upper().startswith("AG "):
                 agencia = p[3:].strip()
-                partes_ag_cc.append(p)
             elif p.upper().startswith("CC "):
                 conta = p[3:].strip()
-                partes_ag_cc.append(p)
             else:
                 partes_resto.append(p)
-        if partes_resto:
-            cliente = partes_resto[-1]
+        # Documento bancario sem segmento de cliente (so banco + AG/CC): nao
+        # usar o "CC ..." como cliente; deixar vazio para virar pendencia.
+        cliente = partes_resto[-1] if partes_resto else ""
 
     return {
         "mes": periodo[:2],
@@ -420,15 +444,21 @@ def _processar_item_docs(
         )
         return "ignorado"
 
-    empresa_id, empresa_nome = buscar_empresa_por_cliente(dados_nome["cliente"], empresas=empresas)
+    cliente = dados_nome["cliente"]
+    if not cliente:
+        logger.warning("Documento DOCS sem cliente identificavel no nome: %s", nome)
+        pendencias_notificacao.append(f"{nome} - documento sem cliente identificavel no nome")
+        return "ignorado"
+
+    empresa_id, empresa_nome = buscar_empresa_por_cliente(cliente, empresas=empresas)
     if not empresa_id or not empresa_nome:
         logger.warning(
             "Empresa DOCS nao encontrada para cliente %s. Mantido em DOCS: %s",
-            dados_nome["cliente"],
+            cliente,
             nome,
         )
         pendencias_notificacao.append(
-            f"{nome} - empresa/cliente '{dados_nome['cliente']}' nao encontrada"
+            f"{nome} - empresa/cliente '{cliente}' nao encontrada"
         )
         return "ignorado"
 
