@@ -278,37 +278,50 @@ def _match_instancia(instancias: list[dict], banco: str, conta: str) -> str | No
     return fallback_sem_conta
 
 
-def _detalhe_404_baixa(response, empresa_codigo: str, nome_arquivo: str) -> str:
-    """Constroi mensagem amigavel para os diferentes 404 da baixa SGE.
+def _detalhe_404_baixa(
+    response,
+    empresa_codigo: str,
+    nome_arquivo: str,
+    codigo_documento: str = "",
+    competencia: str = "",
+) -> str:
+    """Constroi mensagem amigavel e detalhada para os 404 da baixa SGE.
 
-    A API SGE retorna 404 em tres cenarios distintos:
-    - empresa/documento nao encontrado -> {"error": {"message": ...}}
+    A API SGE retorna 404 em cenarios distintos:
+    - documento/empresa nao encontrado -> {"error": {"message": ...}}
     - registro de controle inexistente -> {"action": "not_found", "message": ...}
 
-    Sem esse tratamento todo 404 era rotulado como "empresa nao cadastrada",
-    o que mascarava o caso mais comum (registro/instancia inexistente).
+    A mensagem inclui arquivo + codigo + competencia para deixar claro QUAL
+    documento falhou e o que revisar (antes vinha so "Empresa X: <msg crua>").
     """
     try:
         corpo = response.json()
     except Exception:
         corpo = None
 
+    contexto = f"{nome_arquivo} (empresa {empresa_codigo}"
+    if codigo_documento:
+        contexto += f", doc {codigo_documento}"
+    if competencia:
+        contexto += f", competencia {competencia}"
+    contexto += ")"
+
     if isinstance(corpo, dict):
         if corpo.get("action") == "not_found":
             return (
-                f"{nome_arquivo}: registro de controle nao encontrado no SGE "
-                f"(empresa {empresa_codigo}); verifique competencia/instancia"
+                f"{contexto}: registro de controle nao encontrado no SGE - "
+                "gere a competencia/instancia desse documento no portal"
             )
 
         erro = corpo.get("error")
         mensagem = erro.get("message") if isinstance(erro, dict) else None
         if mensagem:
-            return f"Empresa {empresa_codigo}: {mensagem}"
+            return (
+                f"{contexto}: SGE respondeu '{mensagem}' - verifique se o documento "
+                f"{codigo_documento or 'informado'} esta cadastrado para a empresa nessa competencia"
+            )
 
-    return (
-        f"Empresa {empresa_codigo} nao dada baixa: "
-        "nao esta cadastrada na plataforma SGECONT"
-    )
+    return f"{contexto}: empresa nao cadastrada na plataforma SGECONT"
 
 
 def _corpo_json(response):
@@ -476,7 +489,9 @@ def baixar_controle_supabase(
                     return False, detalhe
 
         if response.status_code == 404:
-            detalhe = _detalhe_404_baixa(response, empresa_codigo, nome_arquivo)
+            detalhe = _detalhe_404_baixa(
+                response, empresa_codigo, nome_arquivo, codigo_documento, competencia
+            )
             logger.warning(detalhe)
             return False, detalhe
 
