@@ -189,11 +189,9 @@ class CePart(FecfinHandler):
 
     def matches(self, xls: pd.ExcelFile, file_stem: str = "") -> bool:
         tipo = _identificar_tipo_arquivo(file_stem)
-        logger.info("CePart.matches file_stem=%r tipo=%s", file_stem, tipo)
         if not tipo:
             return False
         bancos = _identificar_bancos(xls, tipo)
-        logger.info("CePart.matches bancos=%s abas=%s", list(bancos.keys()), xls.sheet_names)
         return len(bancos) > 0
 
     def parse(

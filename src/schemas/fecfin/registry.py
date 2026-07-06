@@ -43,7 +43,6 @@ def dispatch_fecwin(
     retorna lista vazia.
     """
     for handler in _FECFIN_HANDLERS:
-        logger.info("Tentando handler %s", type(handler).__name__)
         if handler.matches(xls, file_stem=file_stem):
             logger.info("Layout FECFIN reconhecido: %s", type(handler).__name__)
             return handler.parse(xls, file_stem)
