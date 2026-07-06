@@ -152,7 +152,7 @@ class MultiBanco(FecfinHandler):
 
     bank = "MultiBanco"
 
-    def matches(self, xls: pd.ExcelFile) -> bool:
+    def matches(self, xls: pd.ExcelFile, file_stem: str = "") -> bool:
         abas = [str(aba).upper() for aba in xls.sheet_names]
         for aba in abas:
             if _identificar_banco(aba):

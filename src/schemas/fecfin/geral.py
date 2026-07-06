@@ -35,7 +35,7 @@ class Geral(FecfinHandler):
 
     bank = "Geral"
 
-    def matches(self, xls: pd.ExcelFile) -> bool:
+    def matches(self, xls: pd.ExcelFile, file_stem: str = "") -> bool:
         try:
             df = pd.read_excel(xls, sheet_name=0, header=4, nrows=0)
             colunas = set(str(c).strip().rstrip("\n") for c in df.columns)

@@ -26,7 +26,7 @@ class Midia(FecfinHandler):
 
     bank = "Midia"
 
-    def matches(self, xls: pd.ExcelFile) -> bool:
+    def matches(self, xls: pd.ExcelFile, file_stem: str = "") -> bool:
         try:
             df = pd.read_excel(xls, sheet_name=0, header=None, nrows=2)
             if len(df) < 2:

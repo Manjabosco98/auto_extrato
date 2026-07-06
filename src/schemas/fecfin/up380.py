@@ -55,7 +55,7 @@ class Up380(FecfinHandler):
 
     bank = "Up380"
 
-    def matches(self, xls: pd.ExcelFile) -> bool:
+    def matches(self, xls: pd.ExcelFile, file_stem: str = "") -> bool:
         try:
             df = pd.read_excel(xls, sheet_name=0, nrows=0)
             colunas = set(str(c).strip() for c in df.columns)

@@ -709,5 +709,327 @@ class ExecutarFecfinBaixaTest(unittest.TestCase):
         self.assertEqual(kwargs["conta"], "")
 
 
+def _criar_excel_ce_part(
+    abas: dict[str, tuple[list[str], list[list]]],
+    file_stem: str = "0426_FECFIN_CE PART_TESTE",
+) -> io.BytesIO:
+    """Cria um Excel in-memory com layout CE PART (CORA/CAIXA)."""
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        for nome_aba, (colunas, dados) in abas.items():
+            df = pd.DataFrame(dados, columns=colunas)
+            df.to_excel(writer, index=False, sheet_name=nome_aba)
+    buf.seek(0)
+    return buf, file_stem
+
+
+class FecfinCePartTest(unittest.TestCase):
+    """Testes para o layout FECFIN CE PART (CORA + CAIXA)."""
+
+    def _montar_aba_cora(self, dados_reais: list[list]) -> tuple[list[str], list[list]]:
+        colunas = ["DATA", "OBS", "OBS INTERNA", "TIPO", "DOC", "HISTÓRICO", "ENTRADA", "SAÍDA"]
+        num_colunas = len(colunas)
+        padding = [[""] * num_colunas for _ in range(1)]
+        return colunas, padding + [colunas] + dados_reais
+
+    def _montar_aba_caixa(self, dados_reais: list[list]) -> tuple[list[str], list[list]]:
+        colunas = ["DATA", "HISTÓRICO", "Nº DOC", "TIPO", "OBS", "OBS INT", "ENTRADA", "SAÍDA"]
+        num_colunas = len(colunas)
+        padding = [[""] * num_colunas for _ in range(4)]
+        return colunas, padding + [colunas] + dados_reais
+
+    def test_matches_detecta_ce_part(self):
+        col_cora, dados_cora = self._montar_aba_cora(
+            [["01/04/2026", "CREDITO", "INTERNO", "DOC", "001", "PAGAMENTO", 1000, 0]]
+        )
+        buf, stem = _criar_excel_ce_part({"CORA": (col_cora, dados_cora)})
+
+        with pd.ExcelFile(buf) as xls:
+            from src.schemas.fecfin.ce_part import CePart
+            handler = CePart()
+            self.assertTrue(handler.matches(xls, file_stem=stem))
+
+    def test_matches_rejeita_sem_ce_part_no_nome(self):
+        col_cora, dados_cora = self._montar_aba_cora(
+            [["01/04/2026", "CREDITO", "INTERNO", "DOC", "001", "PAGAMENTO", 1000, 0]]
+        )
+        buf, _ = _criar_excel_ce_part(
+            {"CORA": (col_cora, dados_cora)},
+            file_stem="0426_FECFIN_OUTRO",
+        )
+
+        with pd.ExcelFile(buf) as xls:
+            from src.schemas.fecfin.ce_part import CePart
+            handler = CePart()
+            self.assertFalse(handler.matches(xls, file_stem="0426_FECFIN_OUTRO"))
+
+    def test_parse_ce_part_cora(self):
+        col_cora, dados_cora = self._montar_aba_cora(
+            [["01/04/2026", "CREDITO", "INTERNO", "DOC", "001", "PAGAMENTO", 1500, 0],
+             ["02/04/2026", "DEBITO", "", "TED", "002", "TARIFA", 0, 25]]
+        )
+        buf, stem = _criar_excel_ce_part({"CORA": (col_cora, dados_cora)})
+
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, stem)
+
+        self.assertEqual(len(resultados), 1)
+        banco, df = resultados[0]
+        self.assertEqual(banco, "CORA")
+        self.assertEqual(len(df), 2)
+        self.assertEqual(df.iloc[0]["TIPO"], "C")
+        self.assertEqual(df.iloc[0]["VALOR"], 1500.0)
+        self.assertEqual(df.iloc[1]["TIPO"], "D")
+        self.assertEqual(df.iloc[1]["VALOR"], 25.0)
+
+    def test_parse_ce_part_caixa(self):
+        col_caixa, dados_caixa = self._montar_aba_caixa(
+            [["01/04/2026", "RECEBIMENTO", "001", "DOC", "CREDITO", "", 2000, 0],
+             ["02/04/2026", "TARIFA BANCARIA", "002", "DOC", "DEBITO", "", 0, 50]]
+        )
+        buf, stem = _criar_excel_ce_part({"CAIXA": (col_caixa, dados_caixa)})
+
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, stem)
+
+        self.assertEqual(len(resultados), 1)
+        banco, df = resultados[0]
+        self.assertEqual(banco, "CAIXA")
+        self.assertEqual(len(df), 2)
+        self.assertEqual(df.iloc[0]["TIPO"], "C")
+        self.assertEqual(df.iloc[0]["VALOR"], 2000.0)
+        self.assertEqual(df.iloc[1]["TIPO"], "D")
+        self.assertEqual(df.iloc[1]["VALOR"], 50.0)
+
+    def test_parse_ce_part_dois_bancos(self):
+        col_cora, dados_cora = self._montar_aba_cora(
+            [["01/04/2026", "CREDITO", "", "DOC", "001", "PAGAMENTO", 1000, 0]]
+        )
+        col_caixa, dados_caixa = self._montar_aba_caixa(
+            [["01/04/2026", "RECEBIMENTO", "002", "DOC", "CREDITO", "", 2000, 0]]
+        )
+        buf, stem = _criar_excel_ce_part({
+            "CORA": (col_cora, dados_cora),
+            "CAIXA": (col_caixa, dados_caixa),
+        })
+
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, stem)
+
+        self.assertEqual(len(resultados), 2)
+        bancos = {banco for banco, _ in resultados}
+        self.assertEqual(bancos, {"CORA", "CAIXA"})
+
+    def test_parse_ce_part_descricao_uppercase(self):
+        col_cora, dados_cora = self._montar_aba_cora(
+            [["01/04/2026", "credito", "interno", "doc", "001", "pagamento", 100, 0]]
+        )
+        buf, stem = _criar_excel_ce_part({"CORA": (col_cora, dados_cora)})
+
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, stem)
+
+        _, df = resultados[0]
+        self.assertTrue(df.iloc[0]["DESCRIÇÃO"].isupper())
+
+    def test_parse_ce_part_remove_nan_da_descricao(self):
+        col_cora, dados_cora = self._montar_aba_cora(
+            [["01/04/2026", None, None, "DOC", "001", "PAGAMENTO", 100, 0]]
+        )
+        buf, stem = _criar_excel_ce_part({"CORA": (col_cora, dados_cora)})
+
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, stem)
+
+        _, df = resultados[0]
+        self.assertNotIn("nan", df.iloc[0]["DESCRIÇÃO"].lower())
+
+    def test_parse_ce_part_filtro_saldo(self):
+        col_cora, dados_cora = self._montar_aba_cora(
+            [["01/04/2026", "CREDITO", "", "DOC", "001", "PAGAMENTO", 1000, 0],
+             ["01/04/2026", "", "", "", "", "SALDO ANTERIOR", 0, 0]]
+        )
+        buf, stem = _criar_excel_ce_part({"CORA": (col_cora, dados_cora)})
+
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, stem)
+
+        _, df = resultados[0]
+        self.assertEqual(len(df), 1)
+
+    def test_parse_ce_part_data_formatada(self):
+        col_cora, dados_cora = self._montar_aba_cora(
+            [["2026-04-15", "CREDITO", "", "DOC", "001", "PAGAMENTO", 100, 0]]
+        )
+        buf, stem = _criar_excel_ce_part({"CORA": (col_cora, dados_cora)})
+
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, stem)
+
+        _, df = resultados[0]
+        self.assertEqual(df.iloc[0]["DATA"], "15/04/2026")
+
+
+def _criar_excel_cemaf_part(
+    abas: dict[str, tuple[list[str], list[list]]],
+    file_stem: str = "0426_FECFIN_CEMAF PART_TESTE",
+) -> io.BytesIO:
+    """Cria um Excel in-memory com layout CEMAF PART (UNICRED/CAIXA)."""
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        for nome_aba, (colunas, dados) in abas.items():
+            df = pd.DataFrame(dados, columns=colunas)
+            df.to_excel(writer, index=False, sheet_name=nome_aba)
+    buf.seek(0)
+    return buf, file_stem
+
+
+class FecfinCemafPartTest(unittest.TestCase):
+    """Testes para o layout FECFIN CEMAF PART (UNICRED + CAIXA)."""
+
+    def _montar_aba_unicred(self, dados_reais: list[list]) -> tuple[list[str], list[list]]:
+        colunas = ["DATA", "OBS", "TIPO", "Nº DOC", "HISTÓRICO", "ENTRADA", "SAIDA"]
+        num_colunas = len(colunas)
+        padding = [[""] * num_colunas for _ in range(5)]
+        return colunas, padding + [colunas] + dados_reais
+
+    def _montar_aba_caixa(self, dados_reais: list[list]) -> tuple[list[str], list[list]]:
+        colunas = ["DATA", "OBS", "TIPO", "Nº DOC", "HISTÓRICO", "ENTRADA", "SAIDA"]
+        num_colunas = len(colunas)
+        padding = [[""] * num_colunas for _ in range(4)]
+        return colunas, padding + [colunas] + dados_reais
+
+    def test_matches_detecta_cemaf_part(self):
+        col_unicred, dados_unicred = self._montar_aba_unicred(
+            [["01/04/2026", "CREDITO", "DOC", "001", "PAGAMENTO", 1000, 0]]
+        )
+        buf, stem = _criar_excel_cemaf_part({"UNICRED": (col_unicred, dados_unicred)})
+
+        with pd.ExcelFile(buf) as xls:
+            from src.schemas.fecfin.ce_part import CePart
+            handler = CePart()
+            self.assertTrue(handler.matches(xls, file_stem=stem))
+
+    def test_matches_rejeita_sem_cemaf_part_no_nome(self):
+        col_unicred, dados_unicred = self._montar_aba_unicred(
+            [["01/04/2026", "CREDITO", "DOC", "001", "PAGAMENTO", 1000, 0]]
+        )
+        buf, _ = _criar_excel_cemaf_part(
+            {"UNICRED": (col_unicred, dados_unicred)},
+            file_stem="0426_FECFIN_OUTRO",
+        )
+
+        with pd.ExcelFile(buf) as xls:
+            from src.schemas.fecfin.ce_part import CePart
+            handler = CePart()
+            self.assertFalse(handler.matches(xls, file_stem="0426_FECFIN_OUTRO"))
+
+    def test_parse_cemaf_part_unicred(self):
+        col_unicred, dados_unicred = self._montar_aba_unicred(
+            [["01/04/2026", "CREDITO", "DOC", "001", "PAGAMENTO", 1500, 0],
+             ["02/04/2026", "DEBITO", "TED", "002", "TARIFA", 0, 30]]
+        )
+        buf, stem = _criar_excel_cemaf_part({"UNICRED": (col_unicred, dados_unicred)})
+
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, stem)
+
+        self.assertEqual(len(resultados), 1)
+        banco, df = resultados[0]
+        self.assertEqual(banco, "UNICRED")
+        self.assertEqual(len(df), 2)
+        self.assertEqual(df.iloc[0]["TIPO"], "C")
+        self.assertEqual(df.iloc[0]["VALOR"], 1500.0)
+        self.assertEqual(df.iloc[1]["TIPO"], "D")
+        self.assertEqual(df.iloc[1]["VALOR"], 30.0)
+
+    def test_parse_cemaf_part_caixa(self):
+        col_caixa, dados_caixa = self._montar_aba_caixa(
+            [["01/04/2026", "RECEBIMENTO", "DOC", "001", "CREDITO", 2000, 0],
+             ["02/04/2026", "TARIFA", "DOC", "002", "DEBITO", 0, 40]]
+        )
+        buf, stem = _criar_excel_cemaf_part({"CAIXA": (col_caixa, dados_caixa)})
+
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, stem)
+
+        self.assertEqual(len(resultados), 1)
+        banco, df = resultados[0]
+        self.assertEqual(banco, "CAIXA")
+        self.assertEqual(len(df), 2)
+        self.assertEqual(df.iloc[0]["TIPO"], "C")
+        self.assertEqual(df.iloc[0]["VALOR"], 2000.0)
+        self.assertEqual(df.iloc[1]["TIPO"], "D")
+        self.assertEqual(df.iloc[1]["VALOR"], 40.0)
+
+    def test_parse_cemaf_part_dois_bancos(self):
+        col_unicred, dados_unicred = self._montar_aba_unicred(
+            [["01/04/2026", "CREDITO", "DOC", "001", "PAGAMENTO", 1000, 0]]
+        )
+        col_caixa, dados_caixa = self._montar_aba_caixa(
+            [["01/04/2026", "RECEBIMENTO", "DOC", "002", "CREDITO", 2000, 0]]
+        )
+        buf, stem = _criar_excel_cemaf_part({
+            "UNICRED": (col_unicred, dados_unicred),
+            "CAIXA": (col_caixa, dados_caixa),
+        })
+
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, stem)
+
+        self.assertEqual(len(resultados), 2)
+        bancos = {banco for banco, _ in resultados}
+        self.assertEqual(bancos, {"UNICRED", "CAIXA"})
+
+    def test_parse_cemaf_part_descricao_uppercase(self):
+        col_unicred, dados_unicred = self._montar_aba_unicred(
+            [["01/04/2026", "credito", "doc", "001", "pagamento", 100, 0]]
+        )
+        buf, stem = _criar_excel_cemaf_part({"UNICRED": (col_unicred, dados_unicred)})
+
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, stem)
+
+        _, df = resultados[0]
+        self.assertTrue(df.iloc[0]["DESCRIÇÃO"].isupper())
+
+    def test_parse_cemaf_part_remove_nan_da_descricao(self):
+        col_unicred, dados_unicred = self._montar_aba_unicred(
+            [["01/04/2026", None, "DOC", "001", None, 100, 0]]
+        )
+        buf, stem = _criar_excel_cemaf_part({"UNICRED": (col_unicred, dados_unicred)})
+
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, stem)
+
+        _, df = resultados[0]
+        self.assertNotIn("nan", df.iloc[0]["DESCRIÇÃO"].lower())
+
+    def test_parse_cemaf_part_filtro_saldo(self):
+        col_unicred, dados_unicred = self._montar_aba_unicred(
+            [["01/04/2026", "CREDITO", "DOC", "001", "PAGAMENTO", 1000, 0],
+             ["01/04/2026", "", "", "", "SALDO ANTERIOR", 0, 0]]
+        )
+        buf, stem = _criar_excel_cemaf_part({"UNICRED": (col_unicred, dados_unicred)})
+
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, stem)
+
+        _, df = resultados[0]
+        self.assertEqual(len(df), 1)
+
+    def test_parse_cemaf_part_data_formatada(self):
+        col_unicred, dados_unicred = self._montar_aba_unicred(
+            [["2026-04-15", "CREDITO", "DOC", "001", "PAGAMENTO", 100, 0]]
+        )
+        buf, stem = _criar_excel_cemaf_part({"UNICRED": (col_unicred, dados_unicred)})
+
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, stem)
+
+        _, df = resultados[0]
+        self.assertEqual(df.iloc[0]["DATA"], "15/04/2026")
+
+
 if __name__ == "__main__":
     unittest.main()

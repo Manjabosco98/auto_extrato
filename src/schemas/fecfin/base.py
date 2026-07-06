@@ -14,7 +14,7 @@ class FecfinHandler(ABC):
 
     bank: str
 
-    def matches(self, xls: pd.ExcelFile) -> bool:
+    def matches(self, xls: pd.ExcelFile, file_stem: str = "") -> bool:
         raise NotImplementedError
 
     def parse(self, xls: pd.ExcelFile, file_stem: str) -> list[tuple[str, pd.DataFrame]]:
