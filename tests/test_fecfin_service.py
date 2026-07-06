@@ -1031,5 +1031,166 @@ class FecfinCemafPartTest(unittest.TestCase):
         self.assertEqual(df.iloc[0]["DATA"], "15/04/2026")
 
 
+def _criar_excel_aloha(
+    abas: dict[str, tuple[list[str], list[list]]],
+    file_stem: str = "0626_FECFIN_ALOHA",
+) -> io.BytesIO:
+    """Cria um Excel in-memory com layout ALOHA (INTER/CAIXA)."""
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        for nome_aba, (colunas, dados) in abas.items():
+            df = pd.DataFrame(dados, columns=colunas)
+            df.to_excel(writer, index=False, sheet_name=nome_aba)
+    buf.seek(0)
+    return buf, file_stem
+
+
+class FecfinAlohaTest(unittest.TestCase):
+    """Testes para o layout FECFIN ALOHA (INTER + CAIXA)."""
+
+    def _montar_aba_inter(self, dados_reais: list[list]) -> tuple[list[str], list[list]]:
+        colunas = ["DATA", "OBS", "OBS INTERNA", "TIPO", "DOC", "HISTÓRICO", "ENTRADA", "SAÍDA"]
+        num_colunas = len(colunas)
+        padding = [[""] * num_colunas for _ in range(1)]
+        return colunas, padding + [colunas] + dados_reais
+
+    def _montar_aba_caixa(self, dados_reais: list[list]) -> tuple[list[str], list[list]]:
+        colunas = ["DATA", "HISTÓRICO", "Nº DOC", "TIPO", "OBS", "OBS INT", "ENTRADA", "SAÍDA"]
+        num_colunas = len(colunas)
+        padding = [[""] * num_colunas for _ in range(4)]
+        return colunas, padding + [colunas] + dados_reais
+
+    def test_matches_detecta_aloha(self):
+        col_inter, dados_inter = self._montar_aba_inter(
+            [["01/06/2026", "CREDITO", "INTERNO", "DOC", "001", "PAGAMENTO", 1000, 0]]
+        )
+        buf, stem = _criar_excel_aloha({"INTER": (col_inter, dados_inter)})
+
+        with pd.ExcelFile(buf) as xls:
+            from src.schemas.fecfin.ce_part import CePart
+            handler = CePart()
+            self.assertTrue(handler.matches(xls, file_stem=stem))
+
+    def test_matches_rejeita_sem_aloha_no_nome(self):
+        col_inter, dados_inter = self._montar_aba_inter(
+            [["01/06/2026", "CREDITO", "INTERNO", "DOC", "001", "PAGAMENTO", 1000, 0]]
+        )
+        buf, _ = _criar_excel_aloha(
+            {"INTER": (col_inter, dados_inter)},
+            file_stem="0626_FECFIN_OUTRO",
+        )
+
+        with pd.ExcelFile(buf) as xls:
+            from src.schemas.fecfin.ce_part import CePart
+            handler = CePart()
+            self.assertFalse(handler.matches(xls, file_stem="0626_FECFIN_OUTRO"))
+
+    def test_parse_aloha_inter(self):
+        col_inter, dados_inter = self._montar_aba_inter(
+            [["01/06/2026", "CREDITO", "INTERNO", "DOC", "001", "PAGAMENTO", 1500, 0],
+             ["02/06/2026", "DEBITO", "", "TED", "002", "TARIFA", 0, 25]]
+        )
+        buf, stem = _criar_excel_aloha({"INTER": (col_inter, dados_inter)})
+
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, stem)
+
+        self.assertEqual(len(resultados), 1)
+        banco, df = resultados[0]
+        self.assertEqual(banco, "INTER")
+        self.assertEqual(len(df), 2)
+        self.assertEqual(df.iloc[0]["TIPO"], "C")
+        self.assertEqual(df.iloc[0]["VALOR"], 1500.0)
+        self.assertEqual(df.iloc[1]["TIPO"], "D")
+        self.assertEqual(df.iloc[1]["VALOR"], 25.0)
+
+    def test_parse_aloha_caixa(self):
+        col_caixa, dados_caixa = self._montar_aba_caixa(
+            [["01/06/2026", "RECEBIMENTO", "001", "DOC", "CREDITO", "", 2000, 0],
+             ["02/06/2026", "TARIFA BANCARIA", "002", "DOC", "DEBITO", "", 0, 50]]
+        )
+        buf, stem = _criar_excel_aloha({"CAIXA": (col_caixa, dados_caixa)})
+
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, stem)
+
+        self.assertEqual(len(resultados), 1)
+        banco, df = resultados[0]
+        self.assertEqual(banco, "CAIXA")
+        self.assertEqual(len(df), 2)
+        self.assertEqual(df.iloc[0]["TIPO"], "C")
+        self.assertEqual(df.iloc[0]["VALOR"], 2000.0)
+        self.assertEqual(df.iloc[1]["TIPO"], "D")
+        self.assertEqual(df.iloc[1]["VALOR"], 50.0)
+
+    def test_parse_aloha_dois_bancos(self):
+        col_inter, dados_inter = self._montar_aba_inter(
+            [["01/06/2026", "CREDITO", "", "DOC", "001", "PAGAMENTO", 1000, 0]]
+        )
+        col_caixa, dados_caixa = self._montar_aba_caixa(
+            [["01/06/2026", "RECEBIMENTO", "002", "DOC", "CREDITO", "", 2000, 0]]
+        )
+        buf, stem = _criar_excel_aloha({
+            "INTER": (col_inter, dados_inter),
+            "CAIXA": (col_caixa, dados_caixa),
+        })
+
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, stem)
+
+        self.assertEqual(len(resultados), 2)
+        bancos = {banco for banco, _ in resultados}
+        self.assertEqual(bancos, {"INTER", "CAIXA"})
+
+    def test_parse_aloha_descricao_uppercase(self):
+        col_inter, dados_inter = self._montar_aba_inter(
+            [["01/06/2026", "credito", "interno", "doc", "001", "pagamento", 100, 0]]
+        )
+        buf, stem = _criar_excel_aloha({"INTER": (col_inter, dados_inter)})
+
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, stem)
+
+        _, df = resultados[0]
+        self.assertTrue(df.iloc[0]["DESCRIÇÃO"].isupper())
+
+    def test_parse_aloha_remove_nan_da_descricao(self):
+        col_inter, dados_inter = self._montar_aba_inter(
+            [["01/06/2026", None, None, "DOC", "001", "PAGAMENTO", 100, 0]]
+        )
+        buf, stem = _criar_excel_aloha({"INTER": (col_inter, dados_inter)})
+
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, stem)
+
+        _, df = resultados[0]
+        self.assertNotIn("nan", df.iloc[0]["DESCRIÇÃO"].lower())
+
+    def test_parse_aloha_filtro_saldo(self):
+        col_inter, dados_inter = self._montar_aba_inter(
+            [["01/06/2026", "CREDITO", "", "DOC", "001", "PAGAMENTO", 1000, 0],
+             ["01/06/2026", "", "", "", "", "SALDO ANTERIOR", 0, 0]]
+        )
+        buf, stem = _criar_excel_aloha({"INTER": (col_inter, dados_inter)})
+
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, stem)
+
+        _, df = resultados[0]
+        self.assertEqual(len(df), 1)
+
+    def test_parse_aloha_data_formatada(self):
+        col_inter, dados_inter = self._montar_aba_inter(
+            [["2026-06-15", "CREDITO", "", "DOC", "001", "PAGAMENTO", 100, 0]]
+        )
+        buf, stem = _criar_excel_aloha({"INTER": (col_inter, dados_inter)})
+
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, stem)
+
+        _, df = resultados[0]
+        self.assertEqual(df.iloc[0]["DATA"], "15/06/2026")
+
+
 if __name__ == "__main__":
     unittest.main()

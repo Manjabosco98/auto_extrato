@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 
 _BANCOS_CE_PART = {"CORA", "CAIXA"}
 _BANCOS_CEMAF_PART = {"UNICRED", "CAIXA"}
+_BANCOS_ALOHA = {"INTER", "CAIXA"}
 
 
 def _identificar_tipo_arquivo(file_stem: str) -> str | None:
@@ -18,12 +19,19 @@ def _identificar_tipo_arquivo(file_stem: str) -> str | None:
         return "CEMAF_PART"
     if "CE PART" in stem_upper:
         return "CE_PART"
+    if "ALOHA" in stem_upper:
+        return "ALOHA"
     return None
 
 
 def _identificar_bancos(xls: pd.ExcelFile, tipo: str) -> dict[str, str]:
     """Retorna dict {nome_banco: nome_aba} para abas conhecidas."""
-    bancos_alvo = _BANCOS_CEMAF_PART if tipo == "CEMAF_PART" else _BANCOS_CE_PART
+    if tipo == "CEMAF_PART":
+        bancos_alvo = _BANCOS_CEMAF_PART
+    elif tipo == "ALOHA":
+        bancos_alvo = _BANCOS_ALOHA
+    else:
+        bancos_alvo = _BANCOS_CE_PART
     resultado: dict[str, str] = {}
     for aba in xls.sheet_names:
         aba_upper = str(aba).upper()
@@ -169,10 +177,15 @@ _PROCESSADORES_CEMAF_PART = {
     "CAIXA": _processar_caixa_cemaf,
 }
 
+_PROCESSADORES_ALOHA = {
+    "INTER": _processar_cora,
+    "CAIXA": _processar_caixa_ce_part,
+}
+
 
 @register
 class CePart(FecfinHandler):
-    """Layout FECFIN — CE PART / CEMAF PART.
+    """Layout FECFIN — CE PART / CEMAF PART / ALOHA.
 
     Planilhas multi-banco com abas por instituição.
 
@@ -183,6 +196,10 @@ class CePart(FecfinHandler):
     CEMAF PART: bancos UNICRED e CAIXA.
       - UNICRED: header row 5, colunas OBS/TIPO/Nº DOC/HISTÓRICO
       - CAIXA: header row 4, colunas OBS/TIPO/Nº DOC/HISTÓRICO
+
+    ALOHA: bancos INTER e CAIXA.
+      - INTER: header row 1, colunas OBS/OBS INTERNA/TIPO/DOC/HISTÓRICO
+      - CAIXA: header row 4, colunas HISTÓRICO/Nº DOC/TIPO/OBS/OBS INT
     """
 
     bank = "CePart"
@@ -202,9 +219,10 @@ class CePart(FecfinHandler):
             return []
 
         bancos = _identificar_bancos(xls, tipo)
-        processadores = (
-            _PROCESSADORES_CEMAF_PART if tipo == "CEMAF_PART" else _PROCESSADORES_CE_PART
-        )
+        processadores = {
+            "CEMAF_PART": _PROCESSADORES_CEMAF_PART,
+            "ALOHA": _PROCESSADORES_ALOHA,
+        }.get(tipo, _PROCESSADORES_CE_PART)
 
         resultado: list[tuple[str, pd.DataFrame]] = []
 
