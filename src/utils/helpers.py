@@ -119,6 +119,69 @@ def remover_senha_pdf(caminho_pdf: str, senha: str, caminho_saida: str | None = 
 
     return caminho_saida
 
+def processar_extrato_banco(xls, aba):
+    """Extrai lançamentos de uma aba de extrato bancário no layout FECFIN (*PART).
+
+    O cabeçalho e as colunas de observação disponíveis variam entre bancos
+    e até entre contas do mesmo banco (ex: "SAÍDA" vs "SAIDA", "OBS" vs
+    "OBS INTERNA" vs "OBS INT" vs "OBS CONTABILIDADE"). Em vez de assumir
+    uma posição fixa de cabeçalho e nomes fixos de coluna, esta função
+    localiza o cabeçalho pelo conteúdo e usa apenas as colunas de
+    observação que realmente existem naquela aba.
+
+    Retorna um DataFrame vazio (colunas DATA/DESCRIÇÃO/VALOR/TIPO) quando
+    a aba não tem um layout reconhecível ou não tem lançamentos reais
+    (ex: abas-modelo só com SALDO ANTERIOR/FINAL).
+    """
+    vazio = pd.DataFrame(columns=["DATA", "DESCRIÇÃO", "VALOR", "TIPO"])
+    bruto = pd.read_excel(xls, sheet_name=aba, header=None)
+
+    linha_cabecalho = None
+
+    for i, row in bruto.iterrows():
+        valores = [str(v).strip().upper() for v in row if pd.notna(v)]
+        if "DATA" in valores and any("HIST" in v for v in valores):
+            linha_cabecalho = i
+            break
+
+    if linha_cabecalho is None:
+        return vazio
+
+    df = bruto[linha_cabecalho + 1:].reset_index(drop=True)
+    df.columns = [str(c).strip() for c in bruto.iloc[linha_cabecalho]]
+
+    colunas_desc = ["HISTÓRICO", "TIPO", "DOC", "Nº DOC", "OBS", "OBS INTERNA",
+                    "OBS INT", "OBS P/ INTERNAS", "OBS CONTABILIDADE", "DADOS BANCÁRIOS"]
+    presentes = [c for c in colunas_desc if c in df.columns]
+
+    if "DATA" not in df.columns or not presentes:
+        return vazio
+
+    col_entrada = next((c for c in df.columns if str(c).strip().upper() == "ENTRADA"), None)
+    col_saida = next((c for c in df.columns if str(c).strip().upper() in ("SAÍDA", "SAIDA")), None)
+
+    if col_entrada is None and col_saida is None:
+        return vazio
+
+    entrada = pd.to_numeric(df[col_entrada], errors="coerce").fillna(0) if col_entrada else 0
+    saida = pd.to_numeric(df[col_saida], errors="coerce").fillna(0) if col_saida else 0
+
+    df["DESCRIÇÃO"] = df[presentes].fillna("").astype(str).agg(" ".join, axis=1)
+    df["DESCRIÇÃO"] = df["DESCRIÇÃO"].str.replace("nan", "", regex=False).str.strip().str.upper()
+
+    df["VALOR"] = entrada.where(entrada != 0, saida * -1) if col_saida is not None else entrada
+    df = df.loc[~df["DESCRIÇÃO"].str.contains("SALDO", na=False)]
+    df = df.loc[df["DESCRIÇÃO"] != ""]  # descarta linhas em branco (sobra de formatação/linhas de modelo)
+
+    if df.empty:
+        return vazio
+
+    df["TIPO"] = df["VALOR"].apply(lambda v: "C" if v > 0 else "D")
+    df["VALOR"] = df["VALOR"].abs()
+    df["DATA"] = df["DATA"].apply(lambda x: pd.to_datetime(x, errors="coerce").strftime("%d/%m/%Y") if pd.notnull(x) else "")
+
+    return df[["DATA", "DESCRIÇÃO", "VALOR", "TIPO"]]
+
 def normalizar_parc(valor):
     if pd.isna(valor):
         return ""
