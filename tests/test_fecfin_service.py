@@ -1192,5 +1192,195 @@ class FecfinAlohaTest(unittest.TestCase):
         self.assertEqual(df.iloc[0]["DATA"], "15/06/2026")
 
 
+def _criar_excel_adp_part(
+    abas: dict[str, tuple[list[str], list[list]]],
+    file_stem: str = "0626_FECFIN_ADP PART",
+) -> io.BytesIO:
+    """Cria um Excel in-memory com layout ADP PART (INTER/ITAU/CAIXA)."""
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        for nome_aba, (colunas, dados) in abas.items():
+            df = pd.DataFrame(dados, columns=colunas)
+            df.to_excel(writer, index=False, sheet_name=nome_aba)
+    buf.seek(0)
+    return buf, file_stem
+
+
+class FecfinAdpPartTest(unittest.TestCase):
+    """Testes para o layout FECFIN ADP PART (INTER + ITAU + CAIXA)."""
+
+    def _montar_aba_inter(self, dados_reais: list[list]) -> tuple[list[str], list[list]]:
+        colunas = ["DATA", "OBS CONTABILIDADE", "TIPO", "DOC", "HISTÓRICO", "ENTRADA", "SAÍDA"]
+        num_colunas = len(colunas)
+        padding = [[""] * num_colunas for _ in range(1)]
+        return colunas, padding + [colunas] + dados_reais
+
+    def _montar_aba_itau(self, dados_reais: list[list]) -> tuple[list[str], list[list]]:
+        colunas = ["DATA", "OBS CONTABILIDADE", "OBS INTERNA", "TIPO", "DOC", "HISTÓRICO", "ENTRADA", "SAÍDA"]
+        num_colunas = len(colunas)
+        padding = [[""] * num_colunas for _ in range(1)]
+        return colunas, padding + [colunas] + dados_reais
+
+    def _montar_aba_caixa(self, dados_reais: list[list]) -> tuple[list[str], list[list]]:
+        colunas = ["DATA", "HISTÓRICO", "Nº DOC", "TIPO", "OBS", "ENTRADA", "SAÍDA"]
+        num_colunas = len(colunas)
+        padding = [[""] * num_colunas for _ in range(4)]
+        return colunas, padding + [colunas] + dados_reais
+
+    def test_matches_detecta_adp_part(self):
+        col_inter, dados_inter = self._montar_aba_inter(
+            [["01/06/2026", "CREDITO", "DOC", "001", "PAGAMENTO", 1000, 0]]
+        )
+        buf, stem = _criar_excel_adp_part({"INTER": (col_inter, dados_inter)})
+
+        with pd.ExcelFile(buf) as xls:
+            from src.schemas.fecfin.ce_part import CePart
+            handler = CePart()
+            self.assertTrue(handler.matches(xls, file_stem=stem))
+
+    def test_matches_rejeita_sem_adp_part_no_nome(self):
+        col_inter, dados_inter = self._montar_aba_inter(
+            [["01/06/2026", "CREDITO", "DOC", "001", "PAGAMENTO", 1000, 0]]
+        )
+        buf, _ = _criar_excel_adp_part(
+            {"INTER": (col_inter, dados_inter)},
+            file_stem="0626_FECFIN_OUTRO",
+        )
+
+        with pd.ExcelFile(buf) as xls:
+            from src.schemas.fecfin.ce_part import CePart
+            handler = CePart()
+            self.assertFalse(handler.matches(xls, file_stem="0626_FECFIN_OUTRO"))
+
+    def test_parse_adp_part_inter(self):
+        col_inter, dados_inter = self._montar_aba_inter(
+            [["01/06/2026", "CREDITO", "DOC", "001", "PAGAMENTO", 1500, 0],
+             ["02/06/2026", "DEBITO", "TED", "002", "TARIFA", 0, 25]]
+        )
+        buf, stem = _criar_excel_adp_part({"INTER": (col_inter, dados_inter)})
+
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, stem)
+
+        self.assertEqual(len(resultados), 1)
+        banco, df = resultados[0]
+        self.assertEqual(banco, "INTER")
+        self.assertEqual(len(df), 2)
+        self.assertEqual(df.iloc[0]["TIPO"], "C")
+        self.assertEqual(df.iloc[0]["VALOR"], 1500.0)
+        self.assertEqual(df.iloc[1]["TIPO"], "D")
+        self.assertEqual(df.iloc[1]["VALOR"], 25.0)
+
+    def test_parse_adp_part_itau(self):
+        col_itau, dados_itau = self._montar_aba_itau(
+            [["01/06/2026", "CREDITO", "INTERNO", "DOC", "001", "RECEBIMENTO", 2000, 0],
+             ["02/06/2026", "DEBITO", "", "TED", "002", "TARIFA", 0, 50]]
+        )
+        buf, stem = _criar_excel_adp_part({"ITAU": (col_itau, dados_itau)})
+
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, stem)
+
+        self.assertEqual(len(resultados), 1)
+        banco, df = resultados[0]
+        self.assertEqual(banco, "ITAU")
+        self.assertEqual(len(df), 2)
+        self.assertEqual(df.iloc[0]["TIPO"], "C")
+        self.assertEqual(df.iloc[0]["VALOR"], 2000.0)
+        self.assertEqual(df.iloc[1]["TIPO"], "D")
+        self.assertEqual(df.iloc[1]["VALOR"], 50.0)
+
+    def test_parse_adp_part_caixa(self):
+        col_caixa, dados_caixa = self._montar_aba_caixa(
+            [["01/06/2026", "RECEBIMENTO", "001", "DOC", "CREDITO", 3000, 0],
+             ["02/06/2026", "TARIFA", "002", "DOC", "DEBITO", 0, 30]]
+        )
+        buf, stem = _criar_excel_adp_part({"CAIXA": (col_caixa, dados_caixa)})
+
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, stem)
+
+        self.assertEqual(len(resultados), 1)
+        banco, df = resultados[0]
+        self.assertEqual(banco, "CAIXA")
+        self.assertEqual(len(df), 2)
+        self.assertEqual(df.iloc[0]["TIPO"], "C")
+        self.assertEqual(df.iloc[0]["VALOR"], 3000.0)
+        self.assertEqual(df.iloc[1]["TIPO"], "D")
+        self.assertEqual(df.iloc[1]["VALOR"], 30.0)
+
+    def test_parse_adp_part_tres_bancos(self):
+        col_inter, dados_inter = self._montar_aba_inter(
+            [["01/06/2026", "CREDITO", "DOC", "001", "PAGAMENTO", 1000, 0]]
+        )
+        col_itau, dados_itau = self._montar_aba_itau(
+            [["01/06/2026", "CREDITO", "", "DOC", "002", "RECEBIMENTO", 2000, 0]]
+        )
+        col_caixa, dados_caixa = self._montar_aba_caixa(
+            [["01/06/2026", "RECEBIMENTO", "003", "DOC", "CREDITO", 3000, 0]]
+        )
+        buf, stem = _criar_excel_adp_part({
+            "INTER": (col_inter, dados_inter),
+            "ITAU": (col_itau, dados_itau),
+            "CAIXA": (col_caixa, dados_caixa),
+        })
+
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, stem)
+
+        self.assertEqual(len(resultados), 3)
+        bancos = {banco for banco, _ in resultados}
+        self.assertEqual(bancos, {"INTER", "ITAU", "CAIXA"})
+
+    def test_parse_adp_part_descricao_uppercase(self):
+        col_inter, dados_inter = self._montar_aba_inter(
+            [["01/06/2026", "credito", "doc", "001", "pagamento", 100, 0]]
+        )
+        buf, stem = _criar_excel_adp_part({"INTER": (col_inter, dados_inter)})
+
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, stem)
+
+        _, df = resultados[0]
+        self.assertTrue(df.iloc[0]["DESCRIÇÃO"].isupper())
+
+    def test_parse_adp_part_remove_nan_da_descricao(self):
+        col_inter, dados_inter = self._montar_aba_inter(
+            [["01/06/2026", None, "DOC", "001", None, 100, 0]]
+        )
+        buf, stem = _criar_excel_adp_part({"INTER": (col_inter, dados_inter)})
+
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, stem)
+
+        _, df = resultados[0]
+        self.assertNotIn("nan", df.iloc[0]["DESCRIÇÃO"].lower())
+
+    def test_parse_adp_part_filtro_saldo(self):
+        col_inter, dados_inter = self._montar_aba_inter(
+            [["01/06/2026", "CREDITO", "DOC", "001", "PAGAMENTO", 1000, 0],
+             ["01/06/2026", "", "", "", "SALDO ANTERIOR", 0, 0]]
+        )
+        buf, stem = _criar_excel_adp_part({"INTER": (col_inter, dados_inter)})
+
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, stem)
+
+        _, df = resultados[0]
+        self.assertEqual(len(df), 1)
+
+    def test_parse_adp_part_data_formatada(self):
+        col_inter, dados_inter = self._montar_aba_inter(
+            [["2026-06-15", "CREDITO", "DOC", "001", "PAGAMENTO", 100, 0]]
+        )
+        buf, stem = _criar_excel_adp_part({"INTER": (col_inter, dados_inter)})
+
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, stem)
+
+        _, df = resultados[0]
+        self.assertEqual(df.iloc[0]["DATA"], "15/06/2026")
+
+
 if __name__ == "__main__":
     unittest.main()

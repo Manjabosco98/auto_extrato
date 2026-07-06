@@ -11,12 +11,15 @@ logger = logging.getLogger(__name__)
 _BANCOS_CE_PART = {"CORA", "CAIXA"}
 _BANCOS_CEMAF_PART = {"UNICRED", "CAIXA"}
 _BANCOS_ALOHA = {"INTER", "CAIXA"}
+_BANCOS_ADP_PART = {"INTER", "ITAU", "CAIXA"}
 
 
 def _identificar_tipo_arquivo(file_stem: str) -> str | None:
     stem_upper = file_stem.upper()
     if "CEMAF PART" in stem_upper:
         return "CEMAF_PART"
+    if "ADP PART" in stem_upper:
+        return "ADP_PART"
     if "CE PART" in stem_upper:
         return "CE_PART"
     if "ALOHA" in stem_upper:
@@ -26,12 +29,12 @@ def _identificar_tipo_arquivo(file_stem: str) -> str | None:
 
 def _identificar_bancos(xls: pd.ExcelFile, tipo: str) -> dict[str, str]:
     """Retorna dict {nome_banco: nome_aba} para abas conhecidas."""
-    if tipo == "CEMAF_PART":
-        bancos_alvo = _BANCOS_CEMAF_PART
-    elif tipo == "ALOHA":
-        bancos_alvo = _BANCOS_ALOHA
-    else:
-        bancos_alvo = _BANCOS_CE_PART
+    bancos_map = {
+        "CEMAF_PART": _BANCOS_CEMAF_PART,
+        "ALOHA": _BANCOS_ALOHA,
+        "ADP_PART": _BANCOS_ADP_PART,
+    }
+    bancos_alvo = bancos_map.get(tipo, _BANCOS_CE_PART)
     resultado: dict[str, str] = {}
     for aba in xls.sheet_names:
         aba_upper = str(aba).upper()
@@ -167,6 +170,101 @@ def _processar_caixa_cemaf(xls: pd.ExcelFile, aba: str) -> pd.DataFrame:
     return df
 
 
+def _processar_inter_adp(xls: pd.ExcelFile, aba: str) -> pd.DataFrame:
+    df = pd.read_excel(xls, sheet_name=aba)
+    df.columns = df.iloc[1]
+    df = df[2:].reset_index(drop=True)
+
+    df["DESCRIÇÃO"] = df.apply(
+        lambda x: f'{x["OBS CONTABILIDADE"]} {x["TIPO"]} '
+        f'{x["DOC"]} {x["HISTÓRICO"]}',
+        axis=1,
+    )
+    df["DESCRIÇÃO"] = (
+        df["DESCRIÇÃO"].str.replace("nan", "", regex=False).str.strip().str.upper()
+    )
+
+    df = df[["DATA", "DESCRIÇÃO", "ENTRADA", "SAÍDA"]]
+    df["ENTRADA"] = pd.to_numeric(df["ENTRADA"], errors="coerce").fillna(0)
+    df["SAÍDA"] = pd.to_numeric(df["SAÍDA"], errors="coerce").fillna(0)
+
+    df["VALOR"] = df["ENTRADA"].where(df["ENTRADA"] != 0, df["SAÍDA"] * -1)
+    df = df.loc[~df["DESCRIÇÃO"].astype(str).str.upper().str.contains("SALDO", na=False)]
+
+    df["TIPO"] = df["VALOR"].apply(lambda v: "C" if v > 0 else "D")
+    df = df[["DATA", "DESCRIÇÃO", "VALOR", "TIPO"]]
+    df["VALOR"] = df["VALOR"].abs()
+    df["DATA"] = df["DATA"].apply(
+        lambda x: pd.to_datetime(x, errors="coerce").strftime("%d/%m/%Y")
+        if pd.notnull(x)
+        else ""
+    )
+    return df
+
+
+def _processar_itau_adp(xls: pd.ExcelFile, aba: str) -> pd.DataFrame:
+    df = pd.read_excel(xls, sheet_name=aba)
+    df.columns = df.iloc[1]
+    df = df[2:].reset_index(drop=True)
+
+    df["DESCRIÇÃO"] = df.apply(
+        lambda x: f'{x["OBS CONTABILIDADE"]} {x["OBS INTERNA"]} {x["TIPO"]} '
+        f'{x["DOC"]} {x["HISTÓRICO"]}',
+        axis=1,
+    )
+    df["DESCRIÇÃO"] = (
+        df["DESCRIÇÃO"].str.replace("nan", "", regex=False).str.strip().str.upper()
+    )
+
+    df = df[["DATA", "DESCRIÇÃO", "ENTRADA", "SAÍDA"]]
+    df["ENTRADA"] = pd.to_numeric(df["ENTRADA"], errors="coerce").fillna(0)
+    df["SAÍDA"] = pd.to_numeric(df["SAÍDA"], errors="coerce").fillna(0)
+
+    df["VALOR"] = df["ENTRADA"].where(df["ENTRADA"] != 0, df["SAÍDA"] * -1)
+    df = df.loc[~df["DESCRIÇÃO"].astype(str).str.upper().str.contains("SALDO", na=False)]
+
+    df["TIPO"] = df["VALOR"].apply(lambda v: "C" if v > 0 else "D")
+    df = df[["DATA", "DESCRIÇÃO", "VALOR", "TIPO"]]
+    df["VALOR"] = df["VALOR"].abs()
+    df["DATA"] = df["DATA"].apply(
+        lambda x: pd.to_datetime(x, errors="coerce").strftime("%d/%m/%Y")
+        if pd.notnull(x)
+        else ""
+    )
+    return df
+
+
+def _processar_caixa_adp(xls: pd.ExcelFile, aba: str) -> pd.DataFrame:
+    df = pd.read_excel(xls, sheet_name=aba)
+    df.columns = df.iloc[4]
+    df = df[5:].reset_index(drop=True)
+
+    df["DESCRIÇÃO"] = df.apply(
+        lambda x: f'{x["HISTÓRICO"]} {x["Nº DOC"]} {x["TIPO"]} {x["OBS"]}',
+        axis=1,
+    )
+    df["DESCRIÇÃO"] = (
+        df["DESCRIÇÃO"].str.replace("nan", "", regex=False).str.strip().str.upper()
+    )
+
+    df = df[["DATA", "DESCRIÇÃO", "ENTRADA", "SAÍDA"]]
+    df["ENTRADA"] = pd.to_numeric(df["ENTRADA"], errors="coerce").fillna(0)
+    df["SAÍDA"] = pd.to_numeric(df["SAÍDA"], errors="coerce").fillna(0)
+
+    df["VALOR"] = df["ENTRADA"].where(df["ENTRADA"] != 0, df["SAÍDA"] * -1)
+    df = df.loc[~df["DESCRIÇÃO"].astype(str).str.upper().str.contains("SALDO", na=False)]
+
+    df["TIPO"] = df["VALOR"].apply(lambda v: "C" if v > 0 else "D")
+    df = df[["DATA", "DESCRIÇÃO", "VALOR", "TIPO"]]
+    df["VALOR"] = df["VALOR"].abs()
+    df["DATA"] = df["DATA"].apply(
+        lambda x: pd.to_datetime(x, errors="coerce").strftime("%d/%m/%Y")
+        if pd.notnull(x)
+        else ""
+    )
+    return df
+
+
 _PROCESSADORES_CE_PART = {
     "CORA": _processar_cora,
     "CAIXA": _processar_caixa_ce_part,
@@ -182,10 +280,16 @@ _PROCESSADORES_ALOHA = {
     "CAIXA": _processar_caixa_ce_part,
 }
 
+_PROCESSADORES_ADP_PART = {
+    "INTER": _processar_inter_adp,
+    "ITAU": _processar_itau_adp,
+    "CAIXA": _processar_caixa_adp,
+}
+
 
 @register
 class CePart(FecfinHandler):
-    """Layout FECFIN — CE PART / CEMAF PART / ALOHA.
+    """Layout FECFIN — CE PART / CEMAF PART / ALOHA / ADP PART.
 
     Planilhas multi-banco com abas por instituição.
 
@@ -200,6 +304,11 @@ class CePart(FecfinHandler):
     ALOHA: bancos INTER e CAIXA.
       - INTER: header row 1, colunas OBS/OBS INTERNA/TIPO/DOC/HISTÓRICO
       - CAIXA: header row 4, colunas HISTÓRICO/Nº DOC/TIPO/OBS/OBS INT
+
+    ADP PART: bancos INTER, ITAU e CAIXA.
+      - INTER: header row 1, colunas OBS CONTABILIDADE/TIPO/DOC/HISTÓRICO
+      - ITAU: header row 1, colunas OBS CONTABILIDADE/OBS INTERNA/TIPO/DOC/HISTÓRICO
+      - CAIXA: header row 4, colunas HISTÓRICO/Nº DOC/TIPO/OBS
     """
 
     bank = "CePart"
@@ -222,6 +331,7 @@ class CePart(FecfinHandler):
         processadores = {
             "CEMAF_PART": _PROCESSADORES_CEMAF_PART,
             "ALOHA": _PROCESSADORES_ALOHA,
+            "ADP_PART": _PROCESSADORES_ADP_PART,
         }.get(tipo, _PROCESSADORES_CE_PART)
 
         resultado: list[tuple[str, pd.DataFrame]] = []
