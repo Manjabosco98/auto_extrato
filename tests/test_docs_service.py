@@ -472,20 +472,62 @@ class DocsServiceTest(unittest.TestCase):
         )
 
     def test_parse_aplica_alias_de_codigo(self):
-        # FATCAR/EXTMAQCART/EXTAPL sao grafias que mapeiam para os codigos canonicos.
+        # FATCAR/EXTMAQCART/EXTBANAPL sao grafias que mapeiam para os codigos canonicos.
         self.assertEqual(docs.parse_nome_documento("0626_FATCAR_BORBA.pdf")["codigo"], "FATCART")
         self.assertEqual(
             docs.parse_nome_documento("0626_EXTMAQCART_BORBA.xlsx")["codigo"], "EXTMAQCAR"
         )
         self.assertEqual(
-            docs.parse_nome_documento("0626_EXTAPL_SICOOB_SAG.pdf")["codigo"], "EXTBANAPL"
+            docs.parse_nome_documento("0626_EXTBANAPL_ENFOCA.pdf")["codigo"], "EXTAPL"
+        )
+        self.assertEqual(
+            docs.parse_nome_documento("0626_EXTAPL_SICOOB_SAG.pdf")["codigo"], "EXTAPL"
         )
 
     def test_parse_subtipo_colado_extrai_codigo_base_e_banco(self):
         resultado = docs.parse_nome_documento("0626_EXTAPL FIC GIRO_C6 BANK_GEO ENG.pdf")
-        self.assertEqual(resultado["codigo"], "EXTBANAPL")
+        self.assertEqual(resultado["codigo"], "EXTAPL")
         self.assertEqual(resultado["banco"], "C6 BANK")
         self.assertEqual(resultado["cliente"], "GEO ENG")
+
+    def test_executar_docs_extapl_usa_codigo_atual_da_planilha_e_sge(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_drive = FakeDriveDocs(
+                temp_dir,
+                existing_folders={("id-EMP", "510_CASA CARLOS")},
+                children=[
+                    {"id": "doc-1", "name": "0626_EXTAPL_CANTINA.pdf", "mimeType": "application/pdf"},
+                    {"id": "doc-2", "name": "0626_EXTBANAPL_ENFOCA.pdf", "mimeType": "application/pdf"},
+                ],
+                caminhos_rows=[
+                    ["EXTAPL", "SRVARQ/EMP/{EMPRESA}/MOV/CONT/{ANO}/{MES}/EXT"]
+                ],
+            )
+
+            with (
+                patch.object(docs, "GoogleDriveAuth", return_value=fake_drive),
+                patch.object(docs, "GOOGLE_DRIVE_FOLDER_ID", "root-folder"),
+                patch.object(docs, "GOOGLE_DRIVE_EMP_FOLDER_ID", "srvarq-folder"),
+                patch.object(
+                    docs,
+                    "carregar_empresas_ativas",
+                    return_value={
+                        "CANTINA": (510, "CASA CARLOS"),
+                        "ENFOCA": (510, "CASA CARLOS"),
+                    },
+                ),
+                patch.object(docs, "enviar_notificacao_docs_google_chat"),
+                patch.object(docs, "baixar_controle_supabase", return_value=(True, None)) as mock_baixa,
+                patch.object(docs, "agora_historico", return_value=docs.datetime(2026, 6, 26, 8, 40, 0)),
+            ):
+                resultado = docs.executar_docs()
+
+        self.assertEqual(resultado["movidos"], 2)
+        self.assertEqual(resultado["pendencias"], 0)
+        self.assertEqual(
+            [call.kwargs["codigo_documento"] for call in mock_baixa.call_args_list],
+            ["EXTAPL", "EXTAPL"],
+        )
 
     def test_parse_codigo_novo_usa_palavra_base(self):
         # "CONTEMP PRONAMP" -> codigo base "CONTEMP" (nao cadastrado -> pendencia)

@@ -1618,7 +1618,7 @@ class ConversaoPasswordTest(unittest.TestCase):
         self.assertNotIn("nao esta cadastrada", detalhe)
 
     def test_baixar_controle_404_documento_nao_encontrado_mensagem_clara(self):
-        # Caso real (DOCS EXTBANAPL): SGE responde 404 com error.message cru.
+        # Caso real (DOCS EXTAPL): SGE responde 404 com error.message cru.
         # A mensagem deve dizer QUAL arquivo/codigo/competencia e o que revisar.
         fake_response = MagicMock()
         fake_response.status_code = 404
@@ -1627,7 +1627,7 @@ class ConversaoPasswordTest(unittest.TestCase):
         with patch.object(supabase_api.requests, "post", return_value=fake_response):
             sucesso, detalhe = supabase_api.baixar_controle_supabase(
                 empresa_codigo="33",
-                codigo_documento="EXTBANAPL",
+                codigo_documento="EXTAPL",
                 competencia="06-2026",
                 banco="CAIXA",
                 agencia="",
@@ -1639,7 +1639,7 @@ class ConversaoPasswordTest(unittest.TestCase):
 
         self.assertFalse(sucesso)
         self.assertIn("0626_EXTAPL FIC GIRO_CAIXA_GEO ENG.pdf", detalhe)
-        self.assertIn("EXTBANAPL", detalhe)
+        self.assertIn("EXTAPL", detalhe)
         self.assertIn("06-2026", detalhe)
         self.assertIn("cadastrado para a empresa", detalhe)
 

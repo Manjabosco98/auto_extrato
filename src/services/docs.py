@@ -39,16 +39,16 @@ HISTORICO_DOCS = "HISTORICO_DOCS.xlsx"
 # Alias de codigos: grafia que aparece no NOME DO ARQUIVO -> grafia canonica
 # usada na planilha DOCS E CAMINHO.xlsx e no codigo_documento da baixa do SGE.
 ALIAS_CODIGO = {
+    "EXTBANAPL": "EXTAPL",
     "FATCAR": "FATCART",
     "EXTMAQCART": "EXTMAQCAR",
-    "EXTAPL": "EXTBANAPL",
 }
 
 # Codigos cujo nome traz um segmento de BANCO (e, opcionalmente, AG/CC).
 # Para os demais, o segmento apos o codigo ja e o cliente.
 CODIGOS_COM_BANCO = {
     "EXTBAN",
-    "EXTBANAPL",
+    "EXTAPL",
     "EXTCOTCAP",
     "EXTMAQCAR",
     "ENCCTBANC",
@@ -91,7 +91,7 @@ def parse_nome_documento(nome_arquivo: str) -> dict[str, str]:
     # O segmento do codigo pode trazer um subtipo colado, separado por espaco
     # (ex.: "EXTAPL FIC GIRO", "EXTAPL CDB", "CONTEMP PRONAMP"). O codigo e a
     # primeira palavra; o resto e subtipo (informativo). Aplica alias para a
-    # grafia canonica (ex.: EXTAPL -> EXTBANAPL, FATCAR -> FATCART).
+    # grafia canonica (ex.: EXTBANAPL -> EXTAPL, FATCAR -> FATCART).
     codigo_segmento = normalizar_codigo(partes[1])
     codigo_base = codigo_segmento.split(" ", 1)[0]
     codigo = ALIAS_CODIGO.get(codigo_base, codigo_base)
