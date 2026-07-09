@@ -26,10 +26,10 @@ services:
       - WEBHOOK_API_WHATSAPP=${WEBHOOK_API_WHATSAPP:-http://localhost:8000}
       - GOOGLE_CHAT_SEND_URL=${GOOGLE_CHAT_SEND_URL:-https://google-chat-api.onrender.com/google-chat/send}
       - GOOGLE_CHAT_SPACE_NAME=${GOOGLE_CHAT_SPACE_NAME:-spaces/AAQAQEHQc-k}
-      - gemini_api_key=${gemini_api_key}
-      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-3.1-flash}
-      - GEMINI_PAGINAS_POR_LOTE=${GEMINI_PAGINAS_POR_LOTE:-4}
-      - GEMINI_MAX_OUTPUT_TOKENS=${GEMINI_MAX_OUTPUT_TOKENS:-65536}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-5-mini}
+      - IA_PAGINAS_POR_LOTE=${IA_PAGINAS_POR_LOTE:-4}
+      - IA_MAX_OUTPUT_TOKENS=${IA_MAX_OUTPUT_TOKENS:-65536}
     networks:
       - autoextrato-network
 

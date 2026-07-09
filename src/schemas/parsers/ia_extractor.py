@@ -1,20 +1,21 @@
-"""Fallback de extração via IA (Gemini) para extratos ilegíveis.
+"""Fallback de extração via IA (OpenAI) para extratos ilegíveis.
 
 Usado quando o ``PDFExtractor`` não consegue extrair texto do PDF (scan/imagem,
 fontes ``cid:``, página em branco) ou quando nenhum parser de banco reconhece o
-layout. O PDF é enviado à API do Gemini, que valida se é um extrato bancário e
-devolve as movimentações estruturadas em JSON. A saída é normalizada para o mesmo
-contrato dos parsers de banco: colunas ``DATA, DESCRIÇÃO, VALOR, TIPO``.
+layout. O PDF é enviado como file input à Responses API da OpenAI, que valida se
+é um extrato bancário e devolve as movimentações estruturadas em JSON. A saída é
+normalizada para o mesmo contrato dos parsers de banco: colunas
+``DATA, DESCRIÇÃO, VALOR, TIPO``.
 
 Garantias de completude (nenhuma movimentação perdida):
 
-* PDFs longos são divididos em lotes de páginas (``GEMINI_PAGINAS_POR_LOTE``)
+* PDFs longos são divididos em lotes de páginas (``IA_PAGINAS_POR_LOTE``)
   para a resposta nunca estourar o limite de saída do modelo;
-* respostas truncadas em ``MAX_TOKENS`` são detectadas e o lote é redividido;
+* respostas truncadas em ``max_output_tokens`` são detectadas e o lote é
+  redividido;
 * o modelo autodeclara ``total_movimentacoes`` e, se a contagem divergir da
   lista retornada, a chamada é refeita e vence a resposta mais completa;
-* geração determinística (``temperature=0``) com saída JSON forçada e
-  resolução de mídia alta para OCR de scans densos.
+* saída JSON forçada via ``text.format=json_object``.
 """
 
 import json
@@ -27,12 +28,16 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini")
 
 # PDFs com mais páginas que isso são processados em lotes; respostas muito
 # longas numa chamada única são a principal causa de movimentações perdidas.
-PAGINAS_POR_LOTE = max(1, int(os.getenv("GEMINI_PAGINAS_POR_LOTE", "4")))
-MAX_OUTPUT_TOKENS = int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "65536"))
+PAGINAS_POR_LOTE = max(
+    1, int(os.getenv("IA_PAGINAS_POR_LOTE") or os.getenv("GEMINI_PAGINAS_POR_LOTE") or "4")
+)
+MAX_OUTPUT_TOKENS = int(
+    os.getenv("IA_MAX_OUTPUT_TOKENS") or os.getenv("GEMINI_MAX_OUTPUT_TOKENS") or "65536"
+)
 
 COLUNAS_CONTRATO = ["DATA", "DESCRIÇÃO", "VALOR", "TIPO"]
 
@@ -178,7 +183,7 @@ def _limpar_json_texto(texto: str) -> str:
 
 
 def _montar_dataframe(movimentacoes: list[dict]) -> pd.DataFrame:
-    """Normaliza as movimentações do Gemini para o contrato DATA/DESCRIÇÃO/VALOR/TIPO."""
+    """Normaliza as movimentações da IA para o contrato DATA/DESCRIÇÃO/VALOR/TIPO."""
     if not movimentacoes:
         return pd.DataFrame(columns=COLUNAS_CONTRATO)
 
@@ -213,53 +218,46 @@ def _montar_dataframe(movimentacoes: list[dict]) -> pd.DataFrame:
     return df[COLUNAS_CONTRATO]
 
 
-def _config_geracao():
-    """Config determinística com JSON forçado e resolução de mídia alta (OCR)."""
-    from google.genai import types
-
-    kwargs = {
-        "temperature": 0,
-        "response_mime_type": "application/json",
-        "max_output_tokens": MAX_OUTPUT_TOKENS,
-    }
-    media_resolution = getattr(types, "MediaResolution", None)
-    if media_resolution is not None:
-        kwargs["media_resolution"] = media_resolution.MEDIA_RESOLUTION_HIGH
-    return types.GenerateContentConfig(**kwargs)
-
-
-def _chamar_gemini(client, caminho_pdf, prompt: str) -> dict:
-    """Faz uma chamada ao Gemini com o PDF e retorna o JSON parseado.
+def _chamar_openai(client, caminho_pdf, prompt: str) -> dict:
+    """Envia o PDF como file input à Responses API e retorna o JSON parseado.
 
     Levanta ``_RespostaTruncada`` quando a resposta estoura ``MAX_OUTPUT_TOKENS``
     (JSON incompleto = movimentações perdidas; o chamador redivide o PDF).
     """
-    from google.genai import types
-
-    arquivo_upload = client.files.upload(file=str(caminho_pdf))
+    with open(caminho_pdf, "rb") as arquivo:
+        arquivo_upload = client.files.create(file=arquivo, purpose="user_data")
     try:
-        resposta = client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=[arquivo_upload, prompt],
-            config=_config_geracao(),
+        resposta = client.responses.create(
+            model=OPENAI_MODEL,
+            input=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_file", "file_id": arquivo_upload.id},
+                        {"type": "input_text", "text": prompt},
+                    ],
+                }
+            ],
+            text={"format": {"type": "json_object"}},
+            max_output_tokens=MAX_OUTPUT_TOKENS,
         )
     finally:
         try:
-            client.files.delete(name=arquivo_upload.name)
+            client.files.delete(arquivo_upload.id)
         except Exception:
             logger.warning(
-                "Nao foi possivel remover o arquivo enviado ao Gemini: %s",
-                getattr(arquivo_upload, "name", None),
+                "Nao foi possivel remover o arquivo enviado a OpenAI: %s",
+                getattr(arquivo_upload, "id", None),
             )
 
-    candidatos = getattr(resposta, "candidates", None) or []
-    finish_reason = getattr(candidatos[0], "finish_reason", None) if candidatos else None
-    if finish_reason == types.FinishReason.MAX_TOKENS:
-        raise _RespostaTruncada(
-            f"Resposta do Gemini truncada em MAX_TOKENS para {caminho_pdf}"
-        )
+    if getattr(resposta, "status", None) == "incomplete":
+        detalhes = getattr(resposta, "incomplete_details", None)
+        if getattr(detalhes, "reason", None) == "max_output_tokens":
+            raise _RespostaTruncada(
+                f"Resposta da OpenAI truncada em max_output_tokens para {caminho_pdf}"
+            )
 
-    return json.loads(_limpar_json_texto(resposta.text))
+    return json.loads(_limpar_json_texto(resposta.output_text))
 
 
 def _contagem_confere(dados: dict) -> bool:
@@ -270,13 +268,13 @@ def _contagem_confere(dados: dict) -> bool:
 
 
 def _chamar_com_conferencia(client, caminho_pdf, prompt: str, rotulo: str) -> dict:
-    """Chama o Gemini e confere a contagem autodeclarada de movimentações.
+    """Chama a OpenAI e confere a contagem autodeclarada de movimentações.
 
     Se ``total_movimentacoes`` divergir da lista retornada, refaz a chamada uma
     vez e mantém a resposta com mais movimentações (proteção contra respostas
     incompletas).
     """
-    dados = _chamar_gemini(client, caminho_pdf, prompt)
+    dados = _chamar_openai(client, caminho_pdf, prompt)
     if _contagem_confere(dados):
         return dados
 
@@ -287,7 +285,7 @@ def _chamar_com_conferencia(client, caminho_pdf, prompt: str, rotulo: str) -> di
         len(dados.get("movimentacoes") or []),
     )
     try:
-        nova = _chamar_gemini(client, caminho_pdf, prompt)
+        nova = _chamar_openai(client, caminho_pdf, prompt)
     except _RespostaTruncada:
         raise
     except Exception:
@@ -386,7 +384,7 @@ def _processar_em_lotes(
             if primeiro:
                 if dados.get("documento_valido") is not True:
                     logger.info(
-                        "Gemini nao reconheceu como extrato bancario: %s | mensagem=%s",
+                        "OpenAI nao reconheceu como extrato bancario: %s | mensagem=%s",
                         caminho_pdf,
                         dados.get("mensagem"),
                     )
@@ -418,7 +416,7 @@ def _extrair_movimentacoes(client, caminho_pdf) -> list[dict] | None:
 
     if dados.get("documento_valido") is not True:
         logger.info(
-            "Gemini nao reconheceu como extrato bancario: %s | mensagem=%s",
+            "OpenAI nao reconheceu como extrato bancario: %s | mensagem=%s",
             caminho_pdf,
             dados.get("mensagem"),
         )
@@ -428,26 +426,26 @@ def _extrair_movimentacoes(client, caminho_pdf) -> list[dict] | None:
 
 
 def extrair_extrato_ia(caminho_pdf) -> pd.DataFrame | None:
-    """Envia o PDF ao Gemini e retorna um DataFrame no contrato do fluxo.
+    """Envia o PDF à OpenAI e retorna um DataFrame no contrato do fluxo.
 
     Retorna ``None`` (degradação segura) quando: não há chave de API configurada,
     o modelo indica que o documento não é um extrato bancário, ou ocorre qualquer
     erro de upload/API/parse. Nesses casos o chamador mantém o comportamento
     atual (mover para 00_INVALIDOS).
     """
-    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("gemini_api_key")
+    api_key = os.getenv("OPENAI_API_KEY") or os.getenv("openai_api_key")
     if not api_key:
         logger.warning(
-            "GEMINI_API_KEY nao configurada; fallback via IA desabilitado para %s",
+            "OPENAI_API_KEY nao configurada; fallback via IA desabilitado para %s",
             caminho_pdf,
         )
         return None
 
     try:
-        from google import genai
+        from openai import OpenAI
 
-        client = genai.Client(api_key=api_key)
-        logger.info("Enviando PDF para o Gemini (%s): %s", GEMINI_MODEL, caminho_pdf)
+        client = OpenAI(api_key=api_key)
+        logger.info("Enviando PDF para a OpenAI (%s): %s", OPENAI_MODEL, caminho_pdf)
 
         movimentacoes = _extrair_movimentacoes(client, caminho_pdf)
         if movimentacoes is None:
@@ -455,10 +453,10 @@ def extrair_extrato_ia(caminho_pdf) -> pd.DataFrame | None:
 
         df = _montar_dataframe(movimentacoes)
         logger.info(
-            "Gemini extraiu %s movimentacao(oes) de %s", len(df), caminho_pdf
+            "OpenAI extraiu %s movimentacao(oes) de %s", len(df), caminho_pdf
         )
         return df
 
     except Exception:
-        logger.exception("Falha ao extrair extrato via Gemini: %s", caminho_pdf)
+        logger.exception("Falha ao extrair extrato via OpenAI: %s", caminho_pdf)
         return None

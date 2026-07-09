@@ -7,33 +7,38 @@ from unittest.mock import MagicMock, patch
 from src.schemas.parsers import ia_extractor
 
 
+def _resposta_ok(texto):
+    resposta = MagicMock()
+    resposta.output_text = texto
+    resposta.status = "completed"
+    return resposta
+
+
+def _resposta_truncada():
+    resposta = MagicMock()
+    resposta.output_text = "{"
+    resposta.status = "incomplete"
+    resposta.incomplete_details = MagicMock(reason="max_output_tokens")
+    return resposta
+
+
 def _fake_client(resposta_texto):
     client = MagicMock()
     upload = MagicMock()
-    upload.name = "files/abc123"
-    client.files.upload.return_value = upload
-    client.models.generate_content.return_value = MagicMock(text=resposta_texto)
+    upload.id = "file-abc123"
+    client.files.create.return_value = upload
+    client.responses.create.return_value = _resposta_ok(resposta_texto)
     return client
 
 
 def _fake_client_sequencial(respostas):
-    """Client cujo generate_content devolve uma resposta diferente por chamada."""
+    """Client cujo responses.create devolve uma resposta diferente por chamada."""
     client = MagicMock()
     upload = MagicMock()
-    upload.name = "files/abc123"
-    client.files.upload.return_value = upload
-    client.models.generate_content.side_effect = respostas
+    upload.id = "file-abc123"
+    client.files.create.return_value = upload
+    client.responses.create.side_effect = respostas
     return client
-
-
-def _resposta_truncada():
-    from google.genai import types
-
-    candidato = MagicMock()
-    candidato.finish_reason = types.FinishReason.MAX_TOKENS
-    resposta = MagicMock(text="{")
-    resposta.candidates = [candidato]
-    return resposta
 
 
 def _mov(dia, valor, descricao="Recebimento"):
@@ -58,15 +63,23 @@ def _criar_pdf(caminho, paginas):
 
 
 class IaExtractorTest(unittest.TestCase):
-    def _run_com_client(self, resposta_texto):
+    def _run_com_client(self, resposta_texto, caminho="extrato.pdf"):
         client = _fake_client(resposta_texto)
         with (
-            patch.dict("os.environ", {"GEMINI_API_KEY": "chave-teste"}, clear=False),
-            patch("google.genai.Client", return_value=client) as client_cls,
+            patch.dict("os.environ", {"OPENAI_API_KEY": "chave-teste"}, clear=False),
+            patch("openai.OpenAI", return_value=client) as client_cls,
+            patch.object(ia_extractor, "_contar_paginas", return_value=1),
         ):
-            resultado = ia_extractor.extrair_extrato_ia("extrato.pdf")
+            resultado = ia_extractor.extrair_extrato_ia(caminho)
         client_cls.assert_called_once()
         return resultado, client
+
+    def _run_com_client_sequencial(self, client, caminho):
+        with (
+            patch.dict("os.environ", {"OPENAI_API_KEY": "chave-teste"}, clear=False),
+            patch("openai.OpenAI", return_value=client),
+        ):
+            return ia_extractor.extrair_extrato_ia(caminho)
 
     def test_json_valido_gera_dataframe_no_contrato(self):
         resposta = json.dumps(
@@ -90,10 +103,16 @@ class IaExtractorTest(unittest.TestCase):
                         "categoria_original": None,
                     },
                 ],
+                "total_movimentacoes": 2,
             }
         )
 
-        df, client = self._run_com_client(resposta)
+        # o teste usa um caminho inexistente; o PDF nao e aberto porque files.create
+        # e mockado antes -- mas o open() real precisa de um arquivo valido
+        with tempfile.TemporaryDirectory() as tmp:
+            caminho = Path(tmp) / "extrato.pdf"
+            _criar_pdf(caminho, paginas=1)
+            df, client = self._run_com_client(resposta, caminho)
 
         self.assertIsNotNone(df)
         self.assertEqual(list(df.columns), ["DATA", "DESCRIÇÃO", "VALOR", "TIPO"])
@@ -106,8 +125,8 @@ class IaExtractorTest(unittest.TestCase):
         self.assertEqual(df.loc[1, "TIPO"], "D")
         # "None" textual removido da descricao
         self.assertNotIn("NONE", df.loc[1, "DESCRIÇÃO"])
-        # arquivo enviado ao Gemini e removido depois
-        client.files.delete.assert_called_once_with(name="files/abc123")
+        # arquivo enviado a OpenAI e removido depois
+        client.files.delete.assert_called_once_with("file-abc123")
 
     def test_contrato_compativel_com_validador(self):
         from src.services import conversao
@@ -125,16 +144,23 @@ class IaExtractorTest(unittest.TestCase):
                         "categoria_original": "PIX",
                     }
                 ],
+                "total_movimentacoes": 1,
             }
         )
 
-        df, _ = self._run_com_client(resposta)
+        with tempfile.TemporaryDirectory() as tmp:
+            caminho = Path(tmp) / "extrato.pdf"
+            _criar_pdf(caminho, paginas=1)
+            df, _ = self._run_com_client(resposta, caminho)
         # nao deve levantar
         conversao.validar_dataframe_extrato(df)
 
     def test_documento_invalido_retorna_none(self):
         resposta = json.dumps({"mensagem": "O PDF enviado não é um extrato bancário."})
-        df, _ = self._run_com_client(resposta)
+        with tempfile.TemporaryDirectory() as tmp:
+            caminho = Path(tmp) / "extrato.pdf"
+            _criar_pdf(caminho, paginas=1)
+            df, _ = self._run_com_client(resposta, caminho)
         self.assertIsNone(df)
 
     def test_json_com_fence_markdown_e_tolerado(self):
@@ -153,18 +179,22 @@ class IaExtractorTest(unittest.TestCase):
                             "categoria_original": "PIX",
                         }
                     ],
+                    "total_movimentacoes": 1,
                 }
             )
             + "\n```"
         )
-        df, _ = self._run_com_client(resposta)
+        with tempfile.TemporaryDirectory() as tmp:
+            caminho = Path(tmp) / "extrato.pdf"
+            _criar_pdf(caminho, paginas=1)
+            df, _ = self._run_com_client(resposta, caminho)
         self.assertIsNotNone(df)
         self.assertEqual(len(df), 1)
 
     def test_erro_na_api_retorna_none(self):
         with (
-            patch.dict("os.environ", {"GEMINI_API_KEY": "chave-teste"}, clear=False),
-            patch("google.genai.Client", side_effect=RuntimeError("api fora do ar")),
+            patch.dict("os.environ", {"OPENAI_API_KEY": "chave-teste"}, clear=False),
+            patch("openai.OpenAI", side_effect=RuntimeError("api fora do ar")),
         ):
             df = ia_extractor.extrair_extrato_ia("extrato.pdf")
         self.assertIsNone(df)
@@ -173,13 +203,6 @@ class IaExtractorTest(unittest.TestCase):
         with patch.dict("os.environ", {}, clear=True):
             df = ia_extractor.extrair_extrato_ia("extrato.pdf")
         self.assertIsNone(df)
-
-    def _run_com_client_sequencial(self, client, caminho):
-        with (
-            patch.dict("os.environ", {"GEMINI_API_KEY": "chave-teste"}, clear=False),
-            patch("google.genai.Client", return_value=client),
-        ):
-            return ia_extractor.extrair_extrato_ia(caminho)
 
     def test_pdf_longo_e_processado_em_lotes(self):
         # 6 paginas com lote de 4 -> 2 chamadas (validacao + continuacao)
@@ -204,7 +227,7 @@ class IaExtractorTest(unittest.TestCase):
             }
         )
         client = _fake_client_sequencial(
-            [MagicMock(text=resposta_lote1), MagicMock(text=resposta_lote2)]
+            [_resposta_ok(resposta_lote1), _resposta_ok(resposta_lote2)]
         )
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -214,11 +237,11 @@ class IaExtractorTest(unittest.TestCase):
 
         self.assertIsNotNone(df)
         self.assertEqual(len(df), 3)
-        self.assertEqual(client.models.generate_content.call_count, 2)
+        self.assertEqual(client.responses.create.call_count, 2)
         # segunda chamada usa o prompt de continuacao com o contexto do extrato
-        prompt_lote2 = client.models.generate_content.call_args_list[1].kwargs[
-            "contents"
-        ][1]
+        prompt_lote2 = client.responses.create.call_args_list[1].kwargs["input"][0][
+            "content"
+        ][1]["text"]
         self.assertIn("continuação", prompt_lote2)
         self.assertIn("Banco X", prompt_lote2)
 
@@ -242,8 +265,8 @@ class IaExtractorTest(unittest.TestCase):
         client = _fake_client_sequencial(
             [
                 _resposta_truncada(),
-                MagicMock(text=resposta_pagina1),
-                MagicMock(text=resposta_pagina2),
+                _resposta_ok(resposta_pagina1),
+                _resposta_ok(resposta_pagina2),
             ]
         )
 
@@ -254,7 +277,7 @@ class IaExtractorTest(unittest.TestCase):
 
         self.assertIsNotNone(df)
         self.assertEqual(len(df), 2)
-        self.assertEqual(client.models.generate_content.call_count, 3)
+        self.assertEqual(client.responses.create.call_count, 3)
 
     def test_contagem_divergente_refaz_chamada_e_usa_resposta_completa(self):
         incompleta = json.dumps(
@@ -272,14 +295,17 @@ class IaExtractorTest(unittest.TestCase):
             }
         )
         client = _fake_client_sequencial(
-            [MagicMock(text=incompleta), MagicMock(text=completa)]
+            [_resposta_ok(incompleta), _resposta_ok(completa)]
         )
 
-        df = self._run_com_client_sequencial(client, "extrato.pdf")
+        with tempfile.TemporaryDirectory() as tmp:
+            caminho = Path(tmp) / "extrato.pdf"
+            _criar_pdf(caminho, paginas=1)
+            df = self._run_com_client_sequencial(client, caminho)
 
         self.assertIsNotNone(df)
         self.assertEqual(len(df), 2)
-        self.assertEqual(client.models.generate_content.call_count, 2)
+        self.assertEqual(client.responses.create.call_count, 2)
 
 
 if __name__ == "__main__":
