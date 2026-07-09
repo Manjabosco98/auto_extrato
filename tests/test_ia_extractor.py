@@ -1,5 +1,7 @@
 import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from src.schemas.parsers import ia_extractor
@@ -12,6 +14,47 @@ def _fake_client(resposta_texto):
     client.files.upload.return_value = upload
     client.models.generate_content.return_value = MagicMock(text=resposta_texto)
     return client
+
+
+def _fake_client_sequencial(respostas):
+    """Client cujo generate_content devolve uma resposta diferente por chamada."""
+    client = MagicMock()
+    upload = MagicMock()
+    upload.name = "files/abc123"
+    client.files.upload.return_value = upload
+    client.models.generate_content.side_effect = respostas
+    return client
+
+
+def _resposta_truncada():
+    from google.genai import types
+
+    candidato = MagicMock()
+    candidato.finish_reason = types.FinishReason.MAX_TOKENS
+    resposta = MagicMock(text="{")
+    resposta.candidates = [candidato]
+    return resposta
+
+
+def _mov(dia, valor, descricao="Recebimento"):
+    return {
+        "data": f"2026-05-{dia:02d}",
+        "descricao": descricao,
+        "documento": None,
+        "valor": valor,
+        "tipo": "C",
+        "categoria_original": "PIX",
+    }
+
+
+def _criar_pdf(caminho, paginas):
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    for _ in range(paginas):
+        writer.add_blank_page(width=200, height=200)
+    with open(caminho, "wb") as arquivo:
+        writer.write(arquivo)
 
 
 class IaExtractorTest(unittest.TestCase):
@@ -130,6 +173,113 @@ class IaExtractorTest(unittest.TestCase):
         with patch.dict("os.environ", {}, clear=True):
             df = ia_extractor.extrair_extrato_ia("extrato.pdf")
         self.assertIsNone(df)
+
+    def _run_com_client_sequencial(self, client, caminho):
+        with (
+            patch.dict("os.environ", {"GEMINI_API_KEY": "chave-teste"}, clear=False),
+            patch("google.genai.Client", return_value=client),
+        ):
+            return ia_extractor.extrair_extrato_ia(caminho)
+
+    def test_pdf_longo_e_processado_em_lotes(self):
+        # 6 paginas com lote de 4 -> 2 chamadas (validacao + continuacao)
+        resposta_lote1 = json.dumps(
+            {
+                "documento_valido": True,
+                "banco": {"nome": "Banco X"},
+                "extrato": {
+                    "competencia": "05/2026",
+                    "data_inicio": "2026-05-01",
+                    "data_fim": "2026-05-31",
+                },
+                "movimentacoes": [_mov(1, 10.0), _mov(2, 20.0)],
+                "total_movimentacoes": 2,
+            }
+        )
+        resposta_lote2 = json.dumps(
+            {
+                "documento_valido": True,
+                "movimentacoes": [_mov(3, 30.0)],
+                "total_movimentacoes": 1,
+            }
+        )
+        client = _fake_client_sequencial(
+            [MagicMock(text=resposta_lote1), MagicMock(text=resposta_lote2)]
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            caminho = Path(tmp) / "extrato.pdf"
+            _criar_pdf(caminho, paginas=6)
+            df = self._run_com_client_sequencial(client, caminho)
+
+        self.assertIsNotNone(df)
+        self.assertEqual(len(df), 3)
+        self.assertEqual(client.models.generate_content.call_count, 2)
+        # segunda chamada usa o prompt de continuacao com o contexto do extrato
+        prompt_lote2 = client.models.generate_content.call_args_list[1].kwargs[
+            "contents"
+        ][1]
+        self.assertIn("continuação", prompt_lote2)
+        self.assertIn("Banco X", prompt_lote2)
+
+    def test_resposta_truncada_reprocessa_pagina_a_pagina(self):
+        resposta_pagina1 = json.dumps(
+            {
+                "documento_valido": True,
+                "banco": {"nome": "Banco X"},
+                "extrato": {"data_inicio": "2026-05-01", "data_fim": "2026-05-31"},
+                "movimentacoes": [_mov(1, 10.0)],
+                "total_movimentacoes": 1,
+            }
+        )
+        resposta_pagina2 = json.dumps(
+            {
+                "documento_valido": True,
+                "movimentacoes": [_mov(2, 20.0)],
+                "total_movimentacoes": 1,
+            }
+        )
+        client = _fake_client_sequencial(
+            [
+                _resposta_truncada(),
+                MagicMock(text=resposta_pagina1),
+                MagicMock(text=resposta_pagina2),
+            ]
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            caminho = Path(tmp) / "extrato.pdf"
+            _criar_pdf(caminho, paginas=2)
+            df = self._run_com_client_sequencial(client, caminho)
+
+        self.assertIsNotNone(df)
+        self.assertEqual(len(df), 2)
+        self.assertEqual(client.models.generate_content.call_count, 3)
+
+    def test_contagem_divergente_refaz_chamada_e_usa_resposta_completa(self):
+        incompleta = json.dumps(
+            {
+                "documento_valido": True,
+                "movimentacoes": [_mov(1, 10.0)],
+                "total_movimentacoes": 2,
+            }
+        )
+        completa = json.dumps(
+            {
+                "documento_valido": True,
+                "movimentacoes": [_mov(1, 10.0), _mov(2, 20.0)],
+                "total_movimentacoes": 2,
+            }
+        )
+        client = _fake_client_sequencial(
+            [MagicMock(text=incompleta), MagicMock(text=completa)]
+        )
+
+        df = self._run_com_client_sequencial(client, "extrato.pdf")
+
+        self.assertIsNotNone(df)
+        self.assertEqual(len(df), 2)
+        self.assertEqual(client.models.generate_content.call_count, 2)
 
 
 if __name__ == "__main__":

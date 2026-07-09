@@ -5,54 +5,41 @@ fontes ``cid:``, página em branco) ou quando nenhum parser de banco reconhece o
 layout. O PDF é enviado à API do Gemini, que valida se é um extrato bancário e
 devolve as movimentações estruturadas em JSON. A saída é normalizada para o mesmo
 contrato dos parsers de banco: colunas ``DATA, DESCRIÇÃO, VALOR, TIPO``.
+
+Garantias de completude (nenhuma movimentação perdida):
+
+* PDFs longos são divididos em lotes de páginas (``GEMINI_PAGINAS_POR_LOTE``)
+  para a resposta nunca estourar o limite de saída do modelo;
+* respostas truncadas em ``MAX_TOKENS`` são detectadas e o lote é redividido;
+* o modelo autodeclara ``total_movimentacoes`` e, se a contagem divergir da
+  lista retornada, a chamada é refeita e vence a resposta mais completa;
+* geração determinística (``temperature=0``) com saída JSON forçada e
+  resolução de mídia alta para OCR de scans densos.
 """
 
 import json
 import logging
 import os
+import tempfile
+from pathlib import Path
 
 import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash")
+
+# PDFs com mais páginas que isso são processados em lotes; respostas muito
+# longas numa chamada única são a principal causa de movimentações perdidas.
+PAGINAS_POR_LOTE = max(1, int(os.getenv("GEMINI_PAGINAS_POR_LOTE", "4")))
+MAX_OUTPUT_TOKENS = int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "65536"))
 
 COLUNAS_CONTRATO = ["DATA", "DESCRIÇÃO", "VALOR", "TIPO"]
 
-PROMPT = """
-Leia o PDF enviado e primeiro valide se o documento é um extrato bancário.
-
-Um documento deve ser considerado extrato bancário somente se apresentar evidências claras de extrato, como:
-
-* nome de banco ou instituição financeira;
-* dados de conta, agência, titular ou cliente;
-* período do extrato, competência ou intervalo de datas;
-* lista de movimentações financeiras;
-* saldos, lançamentos, créditos, débitos, pagamentos, transferências, PIX, tarifas ou depósitos.
-
-Se o PDF NÃO for um extrato bancário, retorne somente o JSON abaixo, sem explicações, sem markdown e sem texto antes ou depois:
-
-{
-"mensagem": "O PDF enviado não é um extrato bancário."
-}
-
-Se o PDF for um extrato bancário, extraia as informações estruturadas abaixo.
-
-O objetivo é identificar:
-
-* banco;
-* cliente/titular da conta;
-* agência;
-* número da conta;
-* período de competência do extrato;
-* data inicial do extrato;
-* data final do extrato;
-* todas as movimentações financeiras presentes no documento.
-
-REGRAS IMPORTANTES:
+REGRAS = """REGRAS IMPORTANTES:
 
 1. Retorne somente um JSON válido, sem explicações, sem markdown e sem texto antes ou depois.
-2. Não retorne amostra. Extraia todas as movimentações financeiras encontradas no PDF.
+2. Não retorne amostra nem resumo. Extraia TODAS as movimentações financeiras encontradas no PDF, de todas as páginas, da primeira à última linha. Nunca pare no meio da lista.
 3. Não invente informações.
 4. Se algum campo não for encontrado no PDF, retorne null.
 5. Preserve os dados exatamente como aparecem no extrato sempre que possível.
@@ -70,9 +57,54 @@ REGRAS IMPORTANTES:
 12. Ignore linhas de cabeçalho, rodapé, saldo anterior, saldo final, totalizadores, mensagens institucionais e propagandas.
 13. Não considere saldos como movimentações financeiras, a menos que o PDF indique claramente que é uma transação.
 14. Mantenha a ordem original das movimentações conforme aparecem no extrato.
-15. Antes de extrair movimentações, confirme que o documento possui características suficientes de extrato bancário.
-16. Caso o documento seja boleto, nota fiscal, contrato, comprovante, recibo, relatório genérico, imagem sem dados bancários ou qualquer outro tipo de documento que não seja extrato bancário, retorne o JSON de documento inválido.
-17. Se houver dúvida se o documento é ou não extrato bancário, considere inválido e informe em observacoes o motivo da dúvida.
+15. Se a mesma movimentação (mesma data, mesma descrição e mesmo valor) aparecer mais de uma vez no extrato, retorne todas as ocorrências. NÃO remova o que parecer duplicado.
+16. Ao final, conte as movimentações extraídas e preencha o campo total_movimentacoes com esse número. Antes de responder, releia o documento página por página e confirme que nenhuma movimentação ficou de fora; se encontrar alguma faltando, adicione-a na posição correta."""
+
+ESTRUTURA_MOVIMENTACAO = """{
+"data": null,
+"descricao": null,
+"documento": null,
+"valor": null,
+"tipo": null,
+"saldo_apos_movimentacao": null,
+"categoria_original": null
+}"""
+
+PROMPT = (
+    """Leia o PDF enviado e primeiro valide se o documento é um extrato bancário.
+
+Um documento deve ser considerado extrato bancário somente se apresentar evidências claras de extrato, como:
+
+* nome de banco ou instituição financeira;
+* dados de conta, agência, titular ou cliente;
+* período do extrato, competência ou intervalo de datas;
+* lista de movimentações financeiras;
+* saldos, lançamentos, créditos, débitos, pagamentos, transferências, PIX, tarifas ou depósitos.
+
+Se o PDF NÃO for um extrato bancário, retorne somente o JSON abaixo, sem explicações, sem markdown e sem texto antes ou depois:
+
+{
+"mensagem": "O PDF enviado não é um extrato bancário."
+}
+
+Caso o documento seja boleto, nota fiscal, contrato, comprovante, recibo, relatório genérico, imagem sem dados bancários ou qualquer outro tipo de documento que não seja extrato bancário, retorne o JSON de documento inválido. Se houver dúvida se o documento é ou não extrato bancário, considere inválido e informe em observacoes o motivo da dúvida.
+
+Se o PDF for um extrato bancário, extraia as informações estruturadas abaixo.
+
+O objetivo é identificar:
+
+* banco;
+* cliente/titular da conta;
+* agência;
+* número da conta;
+* período de competência do extrato;
+* data inicial do extrato;
+* data final do extrato;
+* todas as movimentações financeiras presentes no documento.
+
+"""
+    + REGRAS
+    + """
 
 ESTRUTURA JSON OBRIGATÓRIA PARA EXTRATO BANCÁRIO VÁLIDO:
 
@@ -100,19 +132,40 @@ ESTRUTURA JSON OBRIGATÓRIA PARA EXTRATO BANCÁRIO VÁLIDO:
 "moeda": "BRL"
 },
 "movimentacoes": [
-{
-"data": null,
-"descricao": null,
-"documento": null,
-"valor": null,
-"tipo": null,
-"saldo_apos_movimentacao": null,
-"categoria_original": null
-}
+"""
+    + ESTRUTURA_MOVIMENTACAO
+    + """
 ],
+"total_movimentacoes": null,
 "observacoes": []
 }
 """
+)
+
+
+class _RespostaTruncada(Exception):
+    """Resposta do modelo cortada pelo limite de tokens de saída."""
+
+
+def _prompt_continuacao(contexto: dict | None) -> str:
+    """Prompt para lotes de páginas intermediárias/finais de um extrato já validado."""
+    contexto = contexto or {}
+    return (
+        "O PDF enviado contém páginas de continuação de um extrato bancário maior "
+        "que já foi validado como legítimo. Estas páginas podem não ter cabeçalho "
+        "com os dados do banco ou da conta; mesmo assim, trate o documento como "
+        "extrato válido.\n\n"
+        "Contexto do extrato completo:\n"
+        f"* banco: {contexto.get('banco')}\n"
+        f"* competência: {contexto.get('competencia')}\n"
+        f"* data inicial: {contexto.get('data_inicio')}\n"
+        f"* data final: {contexto.get('data_fim')}\n\n"
+        "Extraia TODAS as movimentações financeiras presentes nestas páginas.\n\n"
+        + REGRAS
+        + "\n\nESTRUTURA JSON OBRIGATÓRIA:\n\n{\n\"documento_valido\": true,\n\"movimentacoes\": [\n"
+        + ESTRUTURA_MOVIMENTACAO
+        + "\n],\n\"total_movimentacoes\": null,\n\"observacoes\": []\n}\n"
+    )
 
 
 def _limpar_json_texto(texto: str) -> str:
@@ -160,6 +213,220 @@ def _montar_dataframe(movimentacoes: list[dict]) -> pd.DataFrame:
     return df[COLUNAS_CONTRATO]
 
 
+def _config_geracao():
+    """Config determinística com JSON forçado e resolução de mídia alta (OCR)."""
+    from google.genai import types
+
+    kwargs = {
+        "temperature": 0,
+        "response_mime_type": "application/json",
+        "max_output_tokens": MAX_OUTPUT_TOKENS,
+    }
+    media_resolution = getattr(types, "MediaResolution", None)
+    if media_resolution is not None:
+        kwargs["media_resolution"] = media_resolution.MEDIA_RESOLUTION_HIGH
+    return types.GenerateContentConfig(**kwargs)
+
+
+def _chamar_gemini(client, caminho_pdf, prompt: str) -> dict:
+    """Faz uma chamada ao Gemini com o PDF e retorna o JSON parseado.
+
+    Levanta ``_RespostaTruncada`` quando a resposta estoura ``MAX_OUTPUT_TOKENS``
+    (JSON incompleto = movimentações perdidas; o chamador redivide o PDF).
+    """
+    from google.genai import types
+
+    arquivo_upload = client.files.upload(file=str(caminho_pdf))
+    try:
+        resposta = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=[arquivo_upload, prompt],
+            config=_config_geracao(),
+        )
+    finally:
+        try:
+            client.files.delete(name=arquivo_upload.name)
+        except Exception:
+            logger.warning(
+                "Nao foi possivel remover o arquivo enviado ao Gemini: %s",
+                getattr(arquivo_upload, "name", None),
+            )
+
+    candidatos = getattr(resposta, "candidates", None) or []
+    finish_reason = getattr(candidatos[0], "finish_reason", None) if candidatos else None
+    if finish_reason == types.FinishReason.MAX_TOKENS:
+        raise _RespostaTruncada(
+            f"Resposta do Gemini truncada em MAX_TOKENS para {caminho_pdf}"
+        )
+
+    return json.loads(_limpar_json_texto(resposta.text))
+
+
+def _contagem_confere(dados: dict) -> bool:
+    total = dados.get("total_movimentacoes")
+    if not isinstance(total, int):
+        return True
+    return total == len(dados.get("movimentacoes") or [])
+
+
+def _chamar_com_conferencia(client, caminho_pdf, prompt: str, rotulo: str) -> dict:
+    """Chama o Gemini e confere a contagem autodeclarada de movimentações.
+
+    Se ``total_movimentacoes`` divergir da lista retornada, refaz a chamada uma
+    vez e mantém a resposta com mais movimentações (proteção contra respostas
+    incompletas).
+    """
+    dados = _chamar_gemini(client, caminho_pdf, prompt)
+    if _contagem_confere(dados):
+        return dados
+
+    logger.warning(
+        "Contagem de movimentacoes divergente em %s (informado=%s, extraido=%s); refazendo chamada",
+        rotulo,
+        dados.get("total_movimentacoes"),
+        len(dados.get("movimentacoes") or []),
+    )
+    try:
+        nova = _chamar_gemini(client, caminho_pdf, prompt)
+    except _RespostaTruncada:
+        raise
+    except Exception:
+        logger.exception(
+            "Falha na segunda tentativa para %s; usando a primeira resposta", rotulo
+        )
+        return dados
+
+    if _contagem_confere(nova):
+        return nova
+    return max(
+        (dados, nova), key=lambda d: len(d.get("movimentacoes") or [])
+    )
+
+
+def _contar_paginas(caminho_pdf) -> int | None:
+    try:
+        from pypdf import PdfReader
+
+        return len(PdfReader(str(caminho_pdf)).pages)
+    except Exception:
+        logger.warning("Nao foi possivel contar as paginas de %s", caminho_pdf)
+        return None
+
+
+def _dividir_pdf_em_lotes(caminho_pdf, paginas_por_lote: int, destino_dir) -> list[Path]:
+    from pypdf import PdfReader, PdfWriter
+
+    reader = PdfReader(str(caminho_pdf))
+    lotes: list[Path] = []
+    for inicio in range(0, len(reader.pages), paginas_por_lote):
+        writer = PdfWriter()
+        for pagina in reader.pages[inicio : inicio + paginas_por_lote]:
+            writer.add_page(pagina)
+        caminho_lote = Path(destino_dir) / f"lote_{len(lotes) + 1:03d}.pdf"
+        with open(caminho_lote, "wb") as arquivo:
+            writer.write(arquivo)
+        lotes.append(caminho_lote)
+    return lotes
+
+
+def _extrair_contexto(dados: dict) -> dict:
+    extrato = dados.get("extrato") or {}
+    banco = dados.get("banco") or {}
+    return {
+        "banco": banco.get("nome"),
+        "competencia": extrato.get("competencia"),
+        "data_inicio": extrato.get("data_inicio"),
+        "data_fim": extrato.get("data_fim"),
+    }
+
+
+def _processar_em_lotes(
+    client, caminho_pdf, paginas_por_lote: int, contexto: dict | None = None
+) -> tuple[list[dict] | None, dict | None]:
+    """Processa o PDF em lotes de páginas e concatena as movimentações na ordem.
+
+    Retorna ``(movimentacoes, contexto)``; ``movimentacoes`` é ``None`` quando o
+    primeiro lote indica que o documento não é um extrato bancário. Lotes com
+    resposta truncada são redivididos pela metade até chegar a 1 página.
+    """
+    with tempfile.TemporaryDirectory(prefix="autoextrato_ia_") as destino:
+        lotes = _dividir_pdf_em_lotes(caminho_pdf, paginas_por_lote, destino)
+        logger.info(
+            "Processando %s em %s lote(s) de ate %s pagina(s)",
+            caminho_pdf,
+            len(lotes),
+            paginas_por_lote,
+        )
+        movimentacoes: list[dict] = []
+        for indice, caminho_lote in enumerate(lotes, start=1):
+            primeiro = contexto is None and indice == 1
+            prompt = PROMPT if primeiro else _prompt_continuacao(contexto)
+            rotulo = f"{caminho_pdf} (lote {indice}/{len(lotes)})"
+            try:
+                dados = _chamar_com_conferencia(client, caminho_lote, prompt, rotulo)
+            except _RespostaTruncada:
+                if paginas_por_lote <= 1:
+                    raise
+                logger.warning(
+                    "Resposta truncada em %s; redividindo o lote", rotulo
+                )
+                parciais, contexto_lote = _processar_em_lotes(
+                    client,
+                    caminho_lote,
+                    max(1, paginas_por_lote // 2),
+                    contexto=contexto,
+                )
+                if parciais is None:
+                    return None, None
+                if contexto is None:
+                    contexto = contexto_lote
+                movimentacoes.extend(parciais)
+                continue
+
+            if primeiro:
+                if dados.get("documento_valido") is not True:
+                    logger.info(
+                        "Gemini nao reconheceu como extrato bancario: %s | mensagem=%s",
+                        caminho_pdf,
+                        dados.get("mensagem"),
+                    )
+                    return None, None
+                contexto = _extrair_contexto(dados)
+
+            movimentacoes.extend(dados.get("movimentacoes") or [])
+
+        return movimentacoes, contexto
+
+
+def _extrair_movimentacoes(client, caminho_pdf) -> list[dict] | None:
+    total_paginas = _contar_paginas(caminho_pdf)
+
+    if total_paginas and total_paginas > PAGINAS_POR_LOTE:
+        movimentacoes, _ = _processar_em_lotes(client, caminho_pdf, PAGINAS_POR_LOTE)
+        return movimentacoes
+
+    try:
+        dados = _chamar_com_conferencia(client, caminho_pdf, PROMPT, str(caminho_pdf))
+    except _RespostaTruncada:
+        if not total_paginas or total_paginas <= 1:
+            raise
+        logger.warning(
+            "Resposta truncada para %s; reprocessando pagina a pagina", caminho_pdf
+        )
+        movimentacoes, _ = _processar_em_lotes(client, caminho_pdf, 1)
+        return movimentacoes
+
+    if dados.get("documento_valido") is not True:
+        logger.info(
+            "Gemini nao reconheceu como extrato bancario: %s | mensagem=%s",
+            caminho_pdf,
+            dados.get("mensagem"),
+        )
+        return None
+
+    return dados.get("movimentacoes") or []
+
+
 def extrair_extrato_ia(caminho_pdf) -> pd.DataFrame | None:
     """Envia o PDF ao Gemini e retorna um DataFrame no contrato do fluxo.
 
@@ -176,31 +443,16 @@ def extrair_extrato_ia(caminho_pdf) -> pd.DataFrame | None:
         )
         return None
 
-    arquivo_upload = None
-    client = None
     try:
         from google import genai
 
         client = genai.Client(api_key=api_key)
         logger.info("Enviando PDF para o Gemini (%s): %s", GEMINI_MODEL, caminho_pdf)
-        arquivo_upload = client.files.upload(file=str(caminho_pdf))
 
-        resposta = client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=[arquivo_upload, PROMPT],
-        )
-
-        dados = json.loads(_limpar_json_texto(resposta.text))
-
-        if dados.get("documento_valido") is not True:
-            logger.info(
-                "Gemini nao reconheceu como extrato bancario: %s | mensagem=%s",
-                caminho_pdf,
-                dados.get("mensagem"),
-            )
+        movimentacoes = _extrair_movimentacoes(client, caminho_pdf)
+        if movimentacoes is None:
             return None
 
-        movimentacoes = dados.get("movimentacoes") or []
         df = _montar_dataframe(movimentacoes)
         logger.info(
             "Gemini extraiu %s movimentacao(oes) de %s", len(df), caminho_pdf
@@ -210,13 +462,3 @@ def extrair_extrato_ia(caminho_pdf) -> pd.DataFrame | None:
     except Exception:
         logger.exception("Falha ao extrair extrato via Gemini: %s", caminho_pdf)
         return None
-
-    finally:
-        if client is not None and arquivo_upload is not None:
-            try:
-                client.files.delete(name=arquivo_upload.name)
-            except Exception:
-                logger.warning(
-                    "Nao foi possivel remover o arquivo enviado ao Gemini: %s",
-                    getattr(arquivo_upload, "name", None),
-                )
