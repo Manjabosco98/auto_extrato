@@ -81,7 +81,7 @@ def _processar_cora(xls: pd.ExcelFile, aba: str) -> pd.DataFrame:
     df = df[["DATA", "DESCRIÇÃO", "VALOR", "TIPO"]]
     df["VALOR"] = df["VALOR"].abs()
     df["DATA"] = df["DATA"].apply(
-        lambda x: pd.to_datetime(x, errors="coerce").strftime("%d/%m/%Y")
+        lambda x: pd.to_datetime(x, errors="coerce", dayfirst=True).strftime("%d/%m/%Y")
         if pd.notnull(x)
         else ""
     )
@@ -113,7 +113,7 @@ def _processar_caixa_ce_part(xls: pd.ExcelFile, aba: str) -> pd.DataFrame:
     df = df[["DATA", "DESCRIÇÃO", "VALOR", "TIPO"]]
     df["VALOR"] = df["VALOR"].abs()
     df["DATA"] = df["DATA"].apply(
-        lambda x: pd.to_datetime(x, errors="coerce").strftime("%d/%m/%Y")
+        lambda x: pd.to_datetime(x, errors="coerce", dayfirst=True).strftime("%d/%m/%Y")
         if pd.notnull(x)
         else ""
     )
@@ -144,7 +144,7 @@ def _processar_unicred_cemaf(xls: pd.ExcelFile, aba: str) -> pd.DataFrame:
     df = df[["DATA", "DESCRIÇÃO", "VALOR", "TIPO"]]
     df["VALOR"] = df["VALOR"].abs()
     df["DATA"] = df["DATA"].apply(
-        lambda x: pd.to_datetime(x, errors="coerce").strftime("%d/%m/%Y")
+        lambda x: pd.to_datetime(x, errors="coerce", dayfirst=True).strftime("%d/%m/%Y")
         if pd.notnull(x)
         else ""
     )
@@ -175,7 +175,7 @@ def _processar_caixa_cemaf(xls: pd.ExcelFile, aba: str) -> pd.DataFrame:
     df = df[["DATA", "DESCRIÇÃO", "VALOR", "TIPO"]]
     df["VALOR"] = df["VALOR"].abs()
     df["DATA"] = df["DATA"].apply(
-        lambda x: pd.to_datetime(x, errors="coerce").strftime("%d/%m/%Y")
+        lambda x: pd.to_datetime(x, errors="coerce", dayfirst=True).strftime("%d/%m/%Y")
         if pd.notnull(x)
         else ""
     )
@@ -207,7 +207,7 @@ def _processar_inter_adp(xls: pd.ExcelFile, aba: str) -> pd.DataFrame:
     df = df[["DATA", "DESCRIÇÃO", "VALOR", "TIPO"]]
     df["VALOR"] = df["VALOR"].abs()
     df["DATA"] = df["DATA"].apply(
-        lambda x: pd.to_datetime(x, errors="coerce").strftime("%d/%m/%Y")
+        lambda x: pd.to_datetime(x, errors="coerce", dayfirst=True).strftime("%d/%m/%Y")
         if pd.notnull(x)
         else ""
     )
@@ -239,7 +239,7 @@ def _processar_itau_adp(xls: pd.ExcelFile, aba: str) -> pd.DataFrame:
     df = df[["DATA", "DESCRIÇÃO", "VALOR", "TIPO"]]
     df["VALOR"] = df["VALOR"].abs()
     df["DATA"] = df["DATA"].apply(
-        lambda x: pd.to_datetime(x, errors="coerce").strftime("%d/%m/%Y")
+        lambda x: pd.to_datetime(x, errors="coerce", dayfirst=True).strftime("%d/%m/%Y")
         if pd.notnull(x)
         else ""
     )
@@ -270,7 +270,7 @@ def _processar_caixa_adp(xls: pd.ExcelFile, aba: str) -> pd.DataFrame:
     df = df[["DATA", "DESCRIÇÃO", "VALOR", "TIPO"]]
     df["VALOR"] = df["VALOR"].abs()
     df["DATA"] = df["DATA"].apply(
-        lambda x: pd.to_datetime(x, errors="coerce").strftime("%d/%m/%Y")
+        lambda x: pd.to_datetime(x, errors="coerce", dayfirst=True).strftime("%d/%m/%Y")
         if pd.notnull(x)
         else ""
     )
@@ -302,7 +302,7 @@ def _processar_sicoob_acr(xls: pd.ExcelFile, aba: str) -> pd.DataFrame:
     df = df[["DATA", "DESCRIÇÃO", "VALOR", "TIPO"]]
     df["VALOR"] = df["VALOR"].abs()
     df["DATA"] = df["DATA"].apply(
-        lambda x: pd.to_datetime(x, errors="coerce").strftime("%d/%m/%Y")
+        lambda x: pd.to_datetime(x, errors="coerce", dayfirst=True).strftime("%d/%m/%Y")
         if pd.notnull(x)
         else ""
     )
@@ -334,7 +334,7 @@ def _processar_sicoob_cemaf60(xls: pd.ExcelFile, aba: str) -> pd.DataFrame:
     df = df[["DATA", "DESCRIÇÃO", "VALOR", "TIPO"]]
     df["VALOR"] = df["VALOR"].abs()
     df["DATA"] = df["DATA"].apply(
-        lambda x: pd.to_datetime(x, errors="coerce").strftime("%d/%m/%Y")
+        lambda x: pd.to_datetime(x, errors="coerce", dayfirst=True).strftime("%d/%m/%Y")
         if pd.notnull(x)
         else ""
     )
@@ -371,7 +371,7 @@ def _processar_caixa_acr(xls: pd.ExcelFile, aba: str) -> pd.DataFrame:
     df = df[["DATA", "DESCRIÇÃO", "VALOR", "TIPO"]]
     df["VALOR"] = df["VALOR"].abs()
     df["DATA"] = df["DATA"].apply(
-        lambda x: pd.to_datetime(x, errors="coerce").strftime("%d/%m/%Y")
+        lambda x: pd.to_datetime(x, errors="coerce", dayfirst=True).strftime("%d/%m/%Y")
         if pd.notnull(x)
         else ""
     )
@@ -403,7 +403,7 @@ def _processar_sicoob_ad52(xls: pd.ExcelFile, aba: str) -> pd.DataFrame:
     df = df[["DATA", "DESCRIÇÃO", "VALOR", "TIPO"]]
     df["VALOR"] = df["VALOR"].abs()
     df["DATA"] = df["DATA"].apply(
-        lambda x: pd.to_datetime(x, errors="coerce").strftime("%d/%m/%Y")
+        lambda x: pd.to_datetime(x, errors="coerce", dayfirst=True).strftime("%d/%m/%Y")
         if pd.notnull(x)
         else ""
     )
@@ -434,7 +434,7 @@ def _processar_inter_ad52(xls: pd.ExcelFile, aba: str) -> pd.DataFrame:
     df = df[["DATA", "DESCRIÇÃO", "VALOR", "TIPO"]]
     df["VALOR"] = df["VALOR"].abs()
     df["DATA"] = df["DATA"].apply(
-        lambda x: pd.to_datetime(x, errors="coerce").strftime("%d/%m/%Y")
+        lambda x: pd.to_datetime(x, errors="coerce", dayfirst=True).strftime("%d/%m/%Y")
         if pd.notnull(x)
         else ""
     )
@@ -471,7 +471,7 @@ def _processar_caixa_ad52(xls: pd.ExcelFile, aba: str) -> pd.DataFrame:
     df = df[["DATA", "DESCRIÇÃO", "VALOR", "TIPO"]]
     df["VALOR"] = df["VALOR"].abs()
     df["DATA"] = df["DATA"].apply(
-        lambda x: pd.to_datetime(x, errors="coerce").strftime("%d/%m/%Y")
+        lambda x: pd.to_datetime(x, errors="coerce", dayfirst=True).strftime("%d/%m/%Y")
         if pd.notnull(x)
         else ""
     )
