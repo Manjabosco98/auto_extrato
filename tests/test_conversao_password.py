@@ -1778,6 +1778,17 @@ class ConversaoPasswordTest(unittest.TestCase):
         ]
         self.assertEqual(supabase_api._match_instancia(instancias, "BB", ""), "3")
 
+    def test_match_instancia_alias_siccob_para_sicoob(self):
+        # Typo comum no nome do arquivo: "SICCOB" em vez de "SICOOB"
+        # (caso real: 0526_EXTBAN_SICCOB_SAG_AG 3333-2_CC 12225-4.pdf, empresa 462).
+        instancias = [
+            {"codigo": "462-122254", "descricao": "EXTBAN-BANCO SICOOB - A:3333-2 - C: 12225-4"},
+        ]
+        self.assertEqual(
+            supabase_api._match_instancia(instancias, "SICCOB", "12225-4"),
+            "462-122254",
+        )
+
     def test_chave_banco_remove_espaco_e_acento(self):
         self.assertEqual(supabase_api._chave_banco("C6 BANK"), "C6BANK")
         self.assertEqual(supabase_api._chave_banco("Banco C6 Bank"), "BANCOC6BANK")

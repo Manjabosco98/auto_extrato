@@ -213,6 +213,7 @@ def atualizar_controle_supabase(
 # "BANCODOBRASIL" para casar com a descricao "EXTBAN-BANCO DO BRASIL".
 _ALIAS_BANCO = {
     "BB": "BANCODOBRASIL",
+    "SICCOB": "SICOOB",
 }
 
 
