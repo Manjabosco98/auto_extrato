@@ -5,13 +5,26 @@ from src.schemas.base import BankHandler, layout
 from src.schemas.registry import register
 
 
+def _ano_periodo_sicoob(linhas) -> str | None:
+    """Extrai o ano (4 dígitos) do cabeçalho do extrato SICOOB.
+
+    Busca uma data completa (DD/MM/AAAA) nas linhas do cabeçalho em vez de
+    depender de uma posição fixa, que varia conforme o layout/cliente.
+    """
+    for linha in linhas:
+        m = re.search(r"\d{2}/\d{2}/(\d{4})", str(linha))
+        if m:
+            return m.group(1)
+    return None
+
+
 @register
 class Sicoob(BankHandler):
     bank = "Sicoob"
 
     @layout("SICOOB", "SISTEMA DE COOPERATIVAS DE CRÉDITO DO BRASIL", " EXTRATO CONTA CORRENTE ")
     def layout1(self, pdf):
-        periodo = pdf[6].split("/")[-1]
+        periodo = _ano_periodo_sicoob(pdf[:9])
         indice = next((i for i, item in enumerate(pdf) if "RESUMO" in item), None)
         pdf = pdf[9:indice]
         pdf = [item for item in pdf if not any(texto in item for texto in ["DATA "])]
@@ -120,13 +133,16 @@ class Sicoob(BankHandler):
             .str.replace("R$", "")
             .astype(float)
         )
-        df["DATA"] = df.apply(lambda row: f"{row["DATA"]}/{periodo}", axis=1)
+        df["DATA"] = df.apply(
+            lambda row: f"{row["DATA"]}/{periodo}" if periodo else row["DATA"],
+            axis=1,
+        )
         df["DESCRIÇÃO"] = df["DESCRIÇÃO"].str.upper()
         return df
 
     @layout("SISTEMA DE COOPERATIVAS DE CRÉDITO DO BRASIL", "EXTRATO DE CONTA CORRENTE ")
     def layout2(self, pdf):
-        periodo = pdf[5].split(" - ")[0].split(": ")[-1].split("/")[-1]
+        periodo = _ano_periodo_sicoob(pdf[:8])
         indice = next((i for i, item in enumerate(pdf) if "RESUMO" in item), None)
         pdf = pdf[8:indice]
 
@@ -283,6 +299,7 @@ class Sicoob(BankHandler):
             .str.replace("R$", "", regex=False)
             .str.replace("C", "", regex=False)
             .str.replace("D", "",regex=False)
+            .str.replace("*", "", regex=False)
             .str.replace(".", "", regex=False)
             .str.replace(",", ".", regex=False)
             .astype(float)
