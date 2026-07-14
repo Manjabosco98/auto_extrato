@@ -606,6 +606,72 @@ class ConversaoPasswordTest(unittest.TestCase):
 
         self.assertEqual(worksheet.cell(row=2, column=8).value, "ITAU")
 
+    def _historico_com_uma_linha(self, headers, linha):
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.append(list(headers))
+        worksheet.append(list(linha))
+        return worksheet
+
+    def test_historico_com_coluna_vazia_a_direita_nao_apaga_linhas(self):
+        # Excel/Sheets deixam celulas formatadas depois da ultima coluna ao salvar,
+        # o que antes fazia a migracao nao reconhecer o cabecalho e zerar o historico.
+        worksheet = self._historico_com_uma_linha(
+            conversao.HISTORICO_HEADERS,
+            [
+                22,
+                "SILVA",
+                "2026-06-13",
+                "11:45:06",
+                "0526_LANCBAN ITAU 98313-2_SILVA.xlsm",
+                "EMP/22_SILVA/MOV/CONT/26/05/EXT",
+                "2026-06-13 11:45:12",
+                "ITAU",
+            ],
+        )
+        worksheet.cell(row=1, column=len(conversao.HISTORICO_HEADERS) + 1).number_format = "General"
+
+        conversao.migrar_historico_antigo(worksheet)
+
+        self.assertEqual(worksheet.max_row, 2)
+        self.assertEqual(worksheet.cell(row=2, column=5).value, "0526_LANCBAN ITAU 98313-2_SILVA.xlsm")
+
+    def test_historico_layout_antigo_com_coluna_vazia_a_direita_migra(self):
+        worksheet = self._historico_com_uma_linha(
+            conversao.HISTORICO_HEADERS_SEM_BANCO,
+            [
+                22,
+                "SILVA",
+                "2026-06-13",
+                "11:45:06",
+                "0526_LANCBAN ITAU 98313-2_SILVA.xlsm",
+                "EMP/22_SILVA/MOV/CONT/26/05/EXT",
+                "2026-06-13 11:45:12",
+            ],
+        )
+        worksheet.cell(row=1, column=len(conversao.HISTORICO_HEADERS_SEM_BANCO) + 1).number_format = "General"
+
+        conversao.migrar_historico_antigo(worksheet)
+
+        self.assertEqual(
+            tuple(cell.value for cell in worksheet[1])[:8],
+            conversao.HISTORICO_HEADERS,
+        )
+        self.assertEqual(worksheet.max_row, 2)
+        self.assertEqual(worksheet.cell(row=2, column=8).value, "ITAU")
+
+    def test_historico_com_cabecalho_desconhecido_falha_sem_apagar(self):
+        worksheet = self._historico_com_uma_linha(
+            ("COLUNA A", "COLUNA B"),
+            ["valor-a", "valor-b"],
+        )
+
+        with self.assertRaises(ValueError):
+            conversao.migrar_historico_antigo(worksheet)
+
+        self.assertEqual(worksheet.max_row, 2)
+        self.assertEqual(worksheet.cell(row=2, column=1).value, "valor-a")
+
     def test_move_pdf_com_senha_sem_interromper_conversao(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             fake_drive = FakeDrive(

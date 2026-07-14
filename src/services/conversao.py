@@ -766,11 +766,36 @@ def separar_data_hora_historico(valor) -> tuple[str, str]:
     return data, hora
 
 
+def normalizar_headers(valores) -> tuple[str, ...]:
+    """Normaliza o cabecalho para comparacao entre layouts.
+
+    Excel e Google Sheets deixam celulas vazias formatadas depois da ultima
+    coluna quando alguem abre e salva o arquivo. Sem descartar essas sobras o
+    cabecalho lido vira ("ID", ..., "BANCO", None) e nao casa com layout nenhum.
+    """
+    limpos = list(valores)
+
+    while limpos and (limpos[-1] is None or not str(limpos[-1]).strip()):
+        limpos.pop()
+
+    return tuple(" ".join(str(valor).split()).upper() for valor in limpos)
+
+
+def ler_headers_historico(worksheet) -> tuple[str, ...]:
+    if not worksheet.max_row:
+        return ()
+
+    return normalizar_headers(cell.value for cell in worksheet[1])
+
+
+def ajustar_largura_linha(linha, largura: int) -> list:
+    """Recorta ou completa a linha para a largura do layout de origem."""
+    valores = list(linha) + [None] * largura
+    return valores[:largura]
+
+
 def preencher_banco_historico(worksheet) -> None:
-    headers = tuple(
-        cell.value
-        for cell in worksheet[1]
-    ) if worksheet.max_row else ()
+    headers = ler_headers_historico(worksheet)
 
     if "NOME ARQUIVO" not in headers or "BANCO" not in headers:
         return
@@ -791,89 +816,114 @@ def preencher_banco_historico(worksheet) -> None:
             banco_cell.value = banco
 
 
-def migrar_historico_antigo(worksheet) -> None:
-    headers = tuple(
-        cell.value
-        for cell in worksheet[1]
-    ) if worksheet.max_row else ()
+def _converter_linha_sem_banco(linha) -> list:
+    empresa_id, empresa_nome, data, hora, nome_arquivo, pasta_destino, data_hora_movimento = ajustar_largura_linha(
+        linha, len(HISTORICO_HEADERS_SEM_BANCO)
+    )
+    return [
+        empresa_id or "",
+        empresa_nome or "",
+        data or "",
+        hora or "",
+        nome_arquivo or "",
+        pasta_destino or "",
+        data_hora_movimento or "",
+        extrair_banco_nome_arquivo(nome_arquivo or ""),
+    ]
 
-    if headers == HISTORICO_HEADERS:
+
+def _converter_linha_com_hora_movimento(linha) -> list:
+    empresa_id, empresa_nome, data, hora, hora_movimento, nome_arquivo, pasta_destino = ajustar_largura_linha(
+        linha, len(HISTORICO_HEADERS_COM_HORA_MOVIMENTO)
+    )
+    data_hora_movimento = ""
+    if data and hora_movimento:
+        data_hora_movimento = f"{data} {hora_movimento}"
+
+    return [
+        empresa_id or "",
+        empresa_nome or "",
+        data or "",
+        hora or "",
+        nome_arquivo or "",
+        pasta_destino or "",
+        data_hora_movimento,
+        extrair_banco_nome_arquivo(nome_arquivo or ""),
+    ]
+
+
+def _converter_linha_sem_movimento(linha) -> list:
+    empresa_id, empresa_nome, data, hora, nome_arquivo, pasta_destino = ajustar_largura_linha(
+        linha, len(HISTORICO_HEADERS_SEM_MOVIMENTO)
+    )
+    return [
+        empresa_id or "",
+        empresa_nome or "",
+        data or "",
+        hora or "",
+        nome_arquivo or "",
+        pasta_destino or "",
+        "",
+        extrair_banco_nome_arquivo(nome_arquivo or ""),
+    ]
+
+
+def _converter_linha_antigo(linha) -> list:
+    nome_arquivo, data_hora_conversao, pasta_destino = ajustar_largura_linha(
+        linha, len(HISTORICO_HEADERS_ANTIGO)
+    )
+    data, hora = separar_data_hora_historico(data_hora_conversao)
+    return [
+        "",
+        "",
+        data,
+        hora,
+        nome_arquivo or "",
+        pasta_destino or "",
+        "",
+        extrair_banco_nome_arquivo(nome_arquivo or ""),
+    ]
+
+
+CONVERSORES_HISTORICO = {
+    normalizar_headers(HISTORICO_HEADERS_SEM_BANCO): _converter_linha_sem_banco,
+    normalizar_headers(HISTORICO_HEADERS_COM_HORA_MOVIMENTO): _converter_linha_com_hora_movimento,
+    normalizar_headers(HISTORICO_HEADERS_SEM_MOVIMENTO): _converter_linha_sem_movimento,
+    normalizar_headers(HISTORICO_HEADERS_ANTIGO): _converter_linha_antigo,
+}
+
+
+def migrar_historico_antigo(worksheet) -> None:
+    headers = ler_headers_historico(worksheet)
+
+    if headers == normalizar_headers(HISTORICO_HEADERS):
         preencher_banco_historico(worksheet)
         return
 
-    linhas_antigas = list(worksheet.iter_rows(min_row=2, values_only=True))
+    if not headers:
+        worksheet.delete_rows(1, worksheet.max_row)
+        worksheet.append(HISTORICO_HEADERS)
+        return
+
+    conversor = CONVERSORES_HISTORICO.get(headers)
+
+    if conversor is None:
+        raise ValueError(
+            f"Cabecalho de {HISTORICO_CONVERSOES} nao reconhecido: {headers}. "
+            "Migracao abortada para nao apagar o historico existente."
+        )
+
+    # Converte antes de apagar: um erro aqui nao pode custar o historico.
+    linhas_convertidas = [
+        conversor(linha)
+        for linha in worksheet.iter_rows(min_row=2, values_only=True)
+    ]
+
     worksheet.delete_rows(1, worksheet.max_row)
     worksheet.append(HISTORICO_HEADERS)
 
-    if headers == HISTORICO_HEADERS_SEM_BANCO:
-        for empresa_id, empresa_nome, data, hora, nome_arquivo, pasta_destino, data_hora_movimento in linhas_antigas:
-            worksheet.append(
-                [
-                    empresa_id or "",
-                    empresa_nome or "",
-                    data or "",
-                    hora or "",
-                    nome_arquivo or "",
-                    pasta_destino or "",
-                    data_hora_movimento or "",
-                    extrair_banco_nome_arquivo(nome_arquivo or ""),
-                ]
-            )
-        return
-
-    if headers == HISTORICO_HEADERS_COM_HORA_MOVIMENTO:
-        for empresa_id, empresa_nome, data, hora, hora_movimento, nome_arquivo, pasta_destino in linhas_antigas:
-            data_hora_movimento = ""
-            if data and hora_movimento:
-                data_hora_movimento = f"{data} {hora_movimento}"
-
-            worksheet.append(
-                [
-                    empresa_id or "",
-                    empresa_nome or "",
-                    data or "",
-                    hora or "",
-                    nome_arquivo or "",
-                    pasta_destino or "",
-                    data_hora_movimento,
-                    extrair_banco_nome_arquivo(nome_arquivo or ""),
-                ]
-            )
-        return
-
-    if headers == HISTORICO_HEADERS_SEM_MOVIMENTO:
-        for empresa_id, empresa_nome, data, hora, nome_arquivo, pasta_destino in linhas_antigas:
-            worksheet.append(
-                [
-                    empresa_id or "",
-                    empresa_nome or "",
-                    data or "",
-                    hora or "",
-                    nome_arquivo or "",
-                    pasta_destino or "",
-                    "",
-                    extrair_banco_nome_arquivo(nome_arquivo or ""),
-                ]
-            )
-        return
-
-    if headers != HISTORICO_HEADERS_ANTIGO:
-        return
-
-    for nome_arquivo, data_hora_conversao, pasta_destino in linhas_antigas:
-        data, hora = separar_data_hora_historico(data_hora_conversao)
-        worksheet.append(
-            [
-                "",
-                "",
-                data,
-                hora,
-                nome_arquivo or "",
-                pasta_destino or "",
-                "",
-                extrair_banco_nome_arquivo(nome_arquivo or ""),
-            ]
-        )
+    for linha in linhas_convertidas:
+        worksheet.append(linha)
 
 
 def renomear_e_mover_para_invalidos(
