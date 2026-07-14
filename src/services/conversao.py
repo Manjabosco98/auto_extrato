@@ -62,6 +62,8 @@ PREFIXOS_INVALIDOS = (
     LAYOUT_INVALIDO_PREFIX,
 )
 HISTORICO_CONVERSOES = "HISTORICO_CONVERSOES.xlsx"
+HISTORICO_BACKUP_PASTA = "00_BACKUP_HISTORICO"
+HISTORICO_BACKUP_MANTER = 30
 TIMEZONE_HISTORICO = ZoneInfo("America/Sao_Paulo")
 HISTORICO_HEADERS = ("ID", "EMP", "DATA", "HORA", "NOME ARQUIVO", "PASTA DESTINO", "DATA HORA MOVIMENTO", "BANCO")
 HISTORICO_HEADERS_SEM_BANCO = ("ID", "EMP", "DATA", "HORA", "NOME ARQUIVO", "PASTA DESTINO", "DATA HORA MOVIMENTO")
@@ -947,6 +949,54 @@ def renomear_e_mover_para_invalidos(
     return nome_final
 
 
+def contar_linhas_historico(worksheet) -> int:
+    return max(worksheet.max_row - 1, 0)
+
+
+def fazer_backup_historico(
+    google_drive: GoogleDriveAuth,
+    pasta_raiz_id: str,
+    historico_local: Path,
+    momento: datetime,
+) -> None:
+    """Sobe uma copia do historico ANTES de sobrescreve-lo no Drive.
+
+    O update_file no Drive e destrutivo e as revisoes expiram (as anteriores a
+    06/07/2026 ja nao eram mais baixaveis); sem esta copia um erro na escrita
+    nao tem volta.
+
+    Guarda um snapshot por dia: como cada empresa convertida dispara uma
+    escrita, um backup por escrita encheria a retencao em poucos dias. O
+    snapshot do dia captura o estado ao fim do dia anterior.
+    """
+    pasta_backup_id = google_drive.get_or_create_folder(
+        folder_id_pai=pasta_raiz_id,
+        name_folder=HISTORICO_BACKUP_PASTA,
+    )["id"]
+
+    backups = google_drive.list_children(pasta_backup_id)
+    nome_backup = f"{Path(HISTORICO_CONVERSOES).stem}_{momento.strftime('%Y%m%d')}.xlsx"
+
+    if any(arquivo.get("name") == nome_backup for arquivo in backups):
+        return
+
+    google_drive.upload(
+        caminho_local=historico_local,
+        folder_id_destino=pasta_backup_id,
+        type_file=XLSX_MIME_TYPE,
+        name_drive=nome_backup,
+    )
+    logger.info("Backup do historico criado: %s/%s", HISTORICO_BACKUP_PASTA, nome_backup)
+
+    # O nome termina em YYYYMMDD, entao ordem alfabetica é ordem cronologica.
+    antigos = sorted(backups, key=lambda arquivo: arquivo.get("name", ""))
+    excedente = max(len(antigos) + 1 - HISTORICO_BACKUP_MANTER, 0)
+
+    for arquivo in antigos[:excedente]:
+        google_drive.trash_file(arquivo["id"])
+        logger.info("Backup antigo removido: %s", arquivo.get("name"))
+
+
 def registrar_historico_conversao(
     google_drive: GoogleDriveAuth,
     pasta_raiz_id: str,
@@ -966,6 +1016,7 @@ def registrar_historico_conversao(
         name=HISTORICO_CONVERSOES,
         mime_type=XLSX_MIME_TYPE,
     )
+    linhas_antes = 0
 
     if arquivo_historico:
         logger.info("Baixando historico de conversoes existente")
@@ -973,8 +1024,15 @@ def registrar_historico_conversao(
             file_id=arquivo_historico["id"],
             destino_local=historico_local,
         )
+        fazer_backup_historico(
+            google_drive=google_drive,
+            pasta_raiz_id=pasta_raiz_id,
+            historico_local=historico_local,
+            momento=data_hora or agora_historico(),
+        )
         workbook = load_workbook(historico_local)
         worksheet = workbook.active
+        linhas_antes = contar_linhas_historico(worksheet)
         migrar_historico_antigo(worksheet)
     else:
         logger.info("Criando historico de conversoes")
@@ -1004,6 +1062,15 @@ def registrar_historico_conversao(
                 data_hora_movimento_formatada,
                 extrair_banco_nome_arquivo(nome_arquivo),
             ]
+        )
+
+    linhas_depois = contar_linhas_historico(worksheet)
+
+    if linhas_depois < linhas_antes + len(nomes_arquivos):
+        raise ValueError(
+            f"Escrita de {HISTORICO_CONVERSOES} abortada: o historico iria de "
+            f"{linhas_antes} para {linhas_depois} linhas, mas deveria ganhar "
+            f"{len(nomes_arquivos)}. Nada foi enviado ao Drive."
         )
 
     workbook.save(historico_local)

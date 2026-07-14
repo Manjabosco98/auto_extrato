@@ -33,6 +33,7 @@ class FakeDrive:
         self.history_rows = []
         self.folders = []
         self.pdfs_calls = []
+        self.backup_children = []
         self._existing_folders = existing_folders or set()
 
     def get_or_create_folder(self, folder_id_pai, name_folder):
@@ -92,6 +93,11 @@ class FakeDrive:
             "folder_id_destino": folder_id_destino,
             "type_file": type_file,
         }
+
+        if str(caminho_local).endswith(".xlsx"):
+            worksheet = load_workbook(caminho_local).active
+            upload["rows"] = [tuple(row) for row in worksheet.iter_rows(values_only=True)]
+
         self.uploaded.append(upload)
         self._capture_history_rows(caminho_local, upload["name"])
         return upload
@@ -124,6 +130,9 @@ class FakeDrive:
         return {"id": file_id, "name": new_name}
 
     def list_children(self, folder_id):
+        if folder_id == f"id-{conversao.HISTORICO_BACKUP_PASTA}":
+            return self.backup_children
+
         if folder_id != "id-PDFS_COM_SENHAS":
             return []
 
@@ -605,6 +614,132 @@ class ConversaoPasswordTest(unittest.TestCase):
         conversao.migrar_historico_antigo(worksheet)
 
         self.assertEqual(worksheet.cell(row=2, column=8).value, "ITAU")
+
+    def _drive_com_historico(self, temp_dir_path, linhas):
+        historico_existente = temp_dir_path / conversao.HISTORICO_CONVERSOES
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.append(list(conversao.HISTORICO_HEADERS))
+        for linha in linhas:
+            worksheet.append(list(linha))
+        workbook.save(historico_existente)
+
+        fake_drive = FakeDrive(temp_dir_path)
+        fake_drive.history_file = {
+            "id": "history-id",
+            "name": conversao.HISTORICO_CONVERSOES,
+            "content": historico_existente.read_bytes(),
+        }
+        return fake_drive
+
+    def _linha_historico(self, nome_arquivo):
+        return [
+            437,
+            "CAMARGOS",
+            "2026-06-12",
+            "09:30:00",
+            nome_arquivo,
+            "EMP/437_CAMARGOS/MOV/CONT/26/05/EXT",
+            "2026-06-12 09:31:05",
+            "C6BANK",
+        ]
+
+    def _registrar(self, fake_drive, temp_dir_path, nomes_arquivos):
+        with patch.object(
+            conversao,
+            "buscar_empresa_por_cliente",
+            return_value=(437, "CAMARGOS"),
+        ):
+            conversao.registrar_historico_conversao(
+                google_drive=fake_drive,
+                pasta_raiz_id="root-folder",
+                temp_dir=temp_dir_path,
+                nomes_arquivos=nomes_arquivos,
+                pasta_destino="EMP/437_CAMARGOS/MOV/CONT/26/05/EXT",
+                data_hora=conversao.datetime(2026, 7, 14, 15, 0, 0),
+                data_hora_movimento=conversao.datetime(2026, 7, 14, 15, 0, 5),
+            )
+
+    def test_registrar_historico_faz_backup_antes_de_sobrescrever(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_dir_path = Path(temp_dir)
+            fake_drive = self._drive_com_historico(
+                temp_dir_path,
+                [self._linha_historico("0526_EXTBAN C6BANK_CAMARGOS.pdf")],
+            )
+
+            self._registrar(fake_drive, temp_dir_path, ["0626_EXTBAN C6BANK_CAMARGOS.pdf"])
+
+        backup = fake_drive.uploaded[-1]
+        self.assertEqual(backup["name"], "HISTORICO_CONVERSOES_20260714.xlsx")
+        self.assertEqual(backup["folder_id_destino"], f"id-{conversao.HISTORICO_BACKUP_PASTA}")
+        # O backup guarda o conteudo ANTERIOR, sem a linha nova.
+        self.assertEqual(len(backup["rows"]), 2)
+        self.assertEqual(backup["rows"][1][4], "0526_EXTBAN C6BANK_CAMARGOS.pdf")
+        # E o historico no Drive segue com as duas linhas.
+        self.assertEqual(fake_drive.updated[-1]["id"], "history-id")
+        self.assertEqual(len(fake_drive.history_rows), 3)
+
+    def test_backup_do_dia_nao_e_refeito_na_segunda_escrita(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_dir_path = Path(temp_dir)
+            fake_drive = self._drive_com_historico(
+                temp_dir_path,
+                [self._linha_historico("0526_EXTBAN C6BANK_CAMARGOS.pdf")],
+            )
+            fake_drive.backup_children = [
+                {"id": "backup-hoje", "name": "HISTORICO_CONVERSOES_20260714.xlsx"}
+            ]
+
+            self._registrar(fake_drive, temp_dir_path, ["0626_EXTBAN C6BANK_CAMARGOS.pdf"])
+
+        self.assertEqual(fake_drive.uploaded, [])
+        self.assertEqual(fake_drive.updated[-1]["id"], "history-id")
+        self.assertEqual(len(fake_drive.history_rows), 3)
+
+    def test_backup_antigo_e_removido_mantendo_os_ultimos(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_dir_path = Path(temp_dir)
+            fake_drive = self._drive_com_historico(
+                temp_dir_path,
+                [self._linha_historico("0526_EXTBAN C6BANK_CAMARGOS.pdf")],
+            )
+            fake_drive.backup_children = [
+                {"id": f"backup-{i}", "name": f"HISTORICO_CONVERSOES_202606{i:02d}.xlsx"}
+                for i in range(1, conversao.HISTORICO_BACKUP_MANTER + 2)
+            ]
+
+            self._registrar(fake_drive, temp_dir_path, ["0626_EXTBAN C6BANK_CAMARGOS.pdf"])
+
+        # Havia MANTER+1 backups; com o novo, os 2 mais antigos saem.
+        self.assertEqual(fake_drive.trashed, {"backup-1", "backup-2"})
+        self.assertEqual(fake_drive.uploaded[-1]["name"], "HISTORICO_CONVERSOES_20260714.xlsx")
+
+    def test_registrar_historico_aborta_se_planilha_encolher(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_dir_path = Path(temp_dir)
+            fake_drive = self._drive_com_historico(
+                temp_dir_path,
+                [self._linha_historico("0526_EXTBAN C6BANK_CAMARGOS.pdf")],
+            )
+
+            # Simula qualquer defeito futuro que apague linhas durante a migracao.
+            def apagar_tudo(worksheet):
+                worksheet.delete_rows(1, worksheet.max_row)
+                worksheet.append(conversao.HISTORICO_HEADERS)
+
+            with patch.object(conversao, "migrar_historico_antigo", side_effect=apagar_tudo):
+                with self.assertRaises(ValueError):
+                    self._registrar(
+                        fake_drive,
+                        temp_dir_path,
+                        ["0626_EXTBAN C6BANK_CAMARGOS.pdf"],
+                    )
+
+        # Nada foi enviado ao Drive, mas o backup ja estava salvo.
+        self.assertEqual(fake_drive.updated, [])
+        self.assertEqual(len(fake_drive.uploaded), 1)
+        self.assertEqual(len(fake_drive.uploaded[0]["rows"]), 2)
 
     def _historico_com_uma_linha(self, headers, linha):
         workbook = Workbook()
