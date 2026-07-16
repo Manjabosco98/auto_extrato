@@ -91,6 +91,24 @@ def competencia_de_data_hora(valor) -> str:
     return ""
 
 
+def competencia_de_nome_arquivo(nome_arquivo: str) -> str:
+    """Extrai competência 'YYYY-MM' a partir do prefixo MMYY do nome do arquivo.
+
+    Exemplos:
+        '0526_EXTBAN_UNICRED_...' → '2026-05'
+        '0626_EXTBAN_INTER_...'   → '2026-06'
+    """
+    if not nome_arquivo:
+        return ""
+    partes = nome_arquivo.split("_")
+    if partes and len(partes[0]) == 4 and partes[0].isdigit():
+        mm = partes[0][:2]
+        yy = partes[0][2:]
+        if 1 <= int(mm) <= 12:
+            return f"20{yy}-{mm}"
+    return ""
+
+
 def baixar_historico_drive(temp_dir: Path) -> pd.DataFrame:
     """Baixa HISTORICO_CONVERSOES.xlsx do Google Drive e retorna DataFrame."""
     logger.info("Autenticando Google Drive")
@@ -290,8 +308,8 @@ def main() -> None:
         empresa_cache_nome: dict[str, str] = {}  # id_sge → nome do histórico
         for _, row in df_hist.iterrows():
             id_sge, nome_hist = resolver_empresa(row.get(col_empresa))
-            dt_mov = row.get(col_dt_mov) if col_dt_mov else None
-            comp = competencia_de_data_hora(dt_mov)
+            arquivo_hist = str(row.get(col_arquivo, "")).strip() if col_arquivo else ""
+            comp = competencia_de_nome_arquivo(arquivo_hist)
             if id_sge and comp:
                 combos.add((id_sge, comp))
                 empresa_cache_nome[id_sge] = nome_hist
@@ -313,8 +331,8 @@ def main() -> None:
         for _, row in df_hist.iterrows():
             id_sge, nome_hist = resolver_empresa(row.get(col_empresa))
             dt_mov = row.get(col_dt_mov) if col_dt_mov else None
-            comp = competencia_de_data_hora(dt_mov)
             arquivo_hist = str(row.get(col_arquivo, "")).strip() if col_arquivo else ""
+            comp = competencia_de_nome_arquivo(arquivo_hist)
             banco = str(row.get(col_banco, "")).strip() if col_banco else ""
             dt_mov_str = str(dt_mov).strip() if dt_mov else ""
 
