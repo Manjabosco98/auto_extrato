@@ -619,12 +619,13 @@ def nome_pasta_empresa(empresa_id, empresa_nome: str) -> str:
 def resolver_pasta_emp_base(
     google_drive: GoogleDriveAuth,
     pasta_base_id: str,
+    nome_pasta: str = "EMP",
 ) -> str:
-    logger.info("Localizando pasta EMP dentro da pasta base SRVARQ")
+    logger.info("Localizando pasta %s dentro da pasta base SRVARQ", nome_pasta)
     try:
         pasta_emp = google_drive.get_or_create_folder(
             folder_id_pai=pasta_base_id,
-            name_folder="EMP",
+            name_folder=nome_pasta,
         )
     except HttpError as erro:
         if erro.resp.status != 404:
@@ -644,7 +645,7 @@ def resolver_pasta_emp_base(
         logger.info("Pasta SRVARQ localizada por nome: %s", pasta_base["id"])
         pasta_emp = google_drive.get_or_create_folder(
             folder_id_pai=pasta_base["id"],
-            name_folder="EMP",
+            name_folder=nome_pasta,
         )
 
     return pasta_emp["id"]

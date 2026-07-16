@@ -19,7 +19,10 @@ from src.app.gdrive.settings import (
     XLS_MIME_TYPE,
     XLSX_MIME_TYPE,
 )
-from src.app.supabase.supabase_api import baixar_controle_supabase
+from src.app.supabase.supabase_api import (
+    baixar_controle_supabase,
+    carregar_caminhos_documentos_api,
+)
 from src.schemas.fecfin.registry import dispatch_fecwin
 from src.services.conversao import (
     GOOGLE_CHAT_SEND_URL,
@@ -32,10 +35,9 @@ from src.services.conversao import (
     resolver_pasta_emp_base,
 )
 from src.services.docs import (
-    DOCS_CAMINHO_NAME,
-    carregar_caminhos_docs,
     montar_destino_docs,
     resolver_pasta_destino_docs,
+    resolver_raiz_destino,
 )
 from src.utils.helpers import planilha_lancamento
 from src.utils.logging_config import setup_logging
@@ -44,8 +46,8 @@ from src.utils.logging_config import setup_logging
 logger = logging.getLogger(__name__)
 
 # Codigo do documento FECFIN no controle SGE. Nao exige instancia
-# (ExigeInstancia=Nao em DOCS E CAMINHO.xlsx), logo a baixa e uma
-# por empresa+competencia, sem banco/agencia/conta.
+# (Exige Instancia=Nao no cadastro de Documentos do portal), logo a
+# baixa e uma por empresa+competencia, sem banco/agencia/conta.
 FECFIN_CODIGO = "FECFIN"
 
 
@@ -65,23 +67,13 @@ def parse_nome_fecfin(nome_arquivo: str) -> tuple[str, str, str]:
     return periodo.group(1), periodo.group(2), partes[-1]
 
 
-def _carregar_destino_fecfin(google_drive, raiz_id: str, temp_dir: Path) -> str | None:
-    """Le o template de destino do codigo FECFIN em DOCS E CAMINHO.xlsx."""
-    arquivo = (
-        google_drive.find_file_by_name(
-            folder_id=raiz_id, name=DOCS_CAMINHO_NAME, mime_type=XLSX_MIME_TYPE
-        )
-        or google_drive.find_file_by_name(folder_id=raiz_id, name=DOCS_CAMINHO_NAME)
-    )
-    if not arquivo:
-        return None
-
-    local = temp_dir / DOCS_CAMINHO_NAME
+def _carregar_destino_fecfin() -> str | None:
+    """Le o template de destino do codigo FECFIN no cadastro de Documentos do SGE."""
     try:
-        google_drive.download(file_id=arquivo["id"], destino_local=local)
-        caminhos = carregar_caminhos_docs(local)
-    finally:
-        local.unlink(missing_ok=True)
+        caminhos = carregar_caminhos_documentos_api()
+    except Exception:
+        logger.exception("Falha ao carregar destino final dos documentos no SGE")
+        return None
     return caminhos.get(FECFIN_CODIGO)
 
 
@@ -197,10 +189,13 @@ def executar_fecfin() -> dict[str, int]:
     temp_dir.mkdir(parents=True, exist_ok=True)
     logger.info("Diretorio temporario preparado: %s", temp_dir)
 
-    emp_raiz_id = resolver_pasta_emp_base(
-        google_drive=google_drive,
-        pasta_base_id=GOOGLE_DRIVE_EMP_FOLDER_ID,
-    )
+    # Cache de raizes de destino (EMP resolvida ja; PUBLICO sob demanda).
+    raizes_ids: dict[str, str] = {
+        "EMP": resolver_pasta_emp_base(
+            google_drive=google_drive,
+            pasta_base_id=GOOGLE_DRIVE_EMP_FOLDER_ID,
+        )
+    }
 
     pasta_entrada_ext = google_drive.get_or_create_folder(
         folder_id_pai=extratos_id,
@@ -210,11 +205,10 @@ def executar_fecfin() -> dict[str, int]:
     logger.info("Pasta de entrada EXT do Google Drive: %s", entrada_ext_id)
 
     empresas = carregar_empresas_ativas()
-    destino_template = _carregar_destino_fecfin(google_drive, raiz_id, temp_dir)
+    destino_template = _carregar_destino_fecfin()
     if not destino_template:
         logger.error(
-            "Template de destino FECFIN nao encontrado em %s; abortando",
-            DOCS_CAMINHO_NAME,
+            "Template de destino FECFIN nao encontrado no cadastro de Documentos do SGE; abortando"
         )
         return {"processados": 0, "movidos": 0, "lancamentos": 0, "erros": 1, "atualizados_sge": 0}
 
@@ -278,16 +272,18 @@ def executar_fecfin() -> dict[str, int]:
                 continue
 
             empresa_chave = nome_pasta_empresa(empresa_id, empresa_nome)
-            destino_partes = montar_destino_docs(
+            raiz_nome, destino_partes = montar_destino_docs(
                 destino_template=destino_template,
                 empresa_chave=empresa_chave,
                 ano=ano,
                 mes=mes,
             )
+            raiz_folder_id = resolver_raiz_destino(google_drive, raizes_ids, raiz_nome)
             pasta_destino_id, pasta_destino_historico = resolver_pasta_destino_docs(
                 google_drive=google_drive,
-                emp_folder_id=emp_raiz_id,
+                raiz_folder_id=raiz_folder_id,
                 destino_partes=destino_partes,
+                raiz_nome=raiz_nome,
             )
 
             # Gerar e enviar os lancamentos [LANC] por banco

@@ -25,6 +25,10 @@ SUPABASE_EMPRESAS_URL = os.getenv(
     "SUPABASE_EMPRESAS_URL",
     f"{SUPABASE_BASE_URL}/empresas",
 )
+SUPABASE_DOCUMENTOS_URL = os.getenv(
+    "SUPABASE_DOCUMENTOS_URL",
+    f"{SUPABASE_BASE_URL}/documentos",
+)
 
 _CACHE_EMPRESAS: dict[str, tuple[str, str]] | None = None
 _CACHE_EMPRESAS_TS: float = 0
@@ -604,3 +608,56 @@ def carregar_empresas_ativas_api(
 
     logger.info("Empresas ativas carregadas: %s registros", len(empresas))
     return empresas
+
+
+def carregar_caminhos_documentos_api(
+    *,
+    documentos_url: str | None = None,
+    documentos_key: str | None = None,
+) -> dict[str, str]:
+    """GET /documentos - retorna ``{codigo_documento: destino_final}`` dos ativos.
+
+    Substitui a planilha DOCS E CAMINHO.xlsx: o destino final de cada codigo
+    agora e mantido no cadastro de Documentos do portal SGE.
+    """
+    url = documentos_url or SUPABASE_DOCUMENTOS_URL
+    key = documentos_key or SUPABASE_CONTROLE_KEY
+
+    headers = {"Authorization": f"Bearer {key}"}
+    limite = 300
+    offset = 0
+    caminhos: dict[str, str] = {}
+
+    logger.info("Buscando documentos (destino final) via API: %s", url)
+    while True:
+        params = {"limit": limite, "offset": offset}
+        response = requests.get(url, headers=headers, params=params, timeout=30)
+
+        if response.status_code < 200 or response.status_code >= 300:
+            logger.error(
+                "Falha ao buscar documentos no SGE: status=%s body=%s",
+                response.status_code,
+                (response.text or "")[:500],
+            )
+            raise RuntimeError(
+                f"API documentos retornou status {response.status_code}"
+            )
+
+        corpo = response.json()
+        data = corpo.get("data", [])
+
+        for item in data:
+            if not item.get("ativo"):
+                continue
+            codigo = str(item.get("codigo_documento") or "").strip().upper()
+            destino = str(item.get("destino_final") or "").strip()
+            if codigo and destino:
+                caminhos[codigo] = destino
+
+        offset += len(data)
+        total = corpo.get("count")
+        if not data or total is None or offset >= total:
+            break
+
+    logger.info("Documentos com destino final carregados: %s registros", len(caminhos))
+    return caminhos

@@ -1,18 +1,25 @@
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from openpyxl import Workbook, load_workbook
+from openpyxl import load_workbook
 
 from src.api.endpoints import docs as docs_endpoint
+from src.app.supabase import supabase_api
 from src.services import docs
 
 
+# Mapa padrao codigo -> destino_final usado nos testes (antes vinha da
+# planilha DOCS E CAMINHO.xlsx; hoje vem do cadastro de Documentos do SGE).
+CAMINHOS_PADRAO = {"JURATPAS": "SRVARQ/EMP/{EMPRESA}/MOV/CONT/{ANO}/{MES}/REL"}
+
+
 class FakeDriveDocs:
-    def __init__(self, temp_dir, existing_folders=None, children=None, folder_children=None, caminhos_rows=None):
+    def __init__(self, temp_dir, existing_folders=None, children=None, folder_children=None):
         self.temp_dir = Path(temp_dir)
         self.children = children if children is not None else [
             {
@@ -22,27 +29,13 @@ class FakeDriveDocs:
             }
         ]
         self.folder_children = folder_children or {}
-        self._caminhos_rows = caminhos_rows or [
-            ["JURATPAS", "SRVARQ/EMP/{EMPRESA}/MOV/CONT/{ANO}/{MES}/REL"]
-        ]
         self.folders = []
         self.moved = []
         self.uploaded = []
         self.updated = []
         self.history_rows = []
         self.history_file = None
-        self.caminhos_content = self._build_caminhos_content()
         self._existing_folders = existing_folders or set()
-
-    def _build_caminhos_content(self):
-        caminho = self.temp_dir / docs.DOCS_CAMINHO_NAME
-        workbook = Workbook()
-        worksheet = workbook.active
-        worksheet.append(["Codigo", "destino_final"])
-        for row in self._caminhos_rows:
-            worksheet.append(row)
-        workbook.save(caminho)
-        return caminho.read_bytes()
 
     def get_or_create_folder(self, folder_id_pai, name_folder):
         self.folders.append((folder_id_pai, name_folder))
@@ -57,9 +50,6 @@ class FakeDriveDocs:
         return None
 
     def find_file_by_name(self, folder_id, name, mime_type=None):
-        if name == docs.DOCS_CAMINHO_NAME:
-            return {"id": "caminhos-id", "name": name, "mimeType": mime_type}
-
         if self.history_file and name == self.history_file["name"]:
             return {
                 "id": self.history_file["id"],
@@ -71,10 +61,6 @@ class FakeDriveDocs:
 
     def download(self, file_id, destino_local):
         destino = Path(destino_local)
-
-        if file_id == "caminhos-id":
-            destino.write_bytes(self.caminhos_content)
-            return str(destino)
 
         if self.history_file and file_id == self.history_file["id"]:
             destino.write_bytes(self.history_file["content"])
@@ -150,7 +136,7 @@ class DocsServiceTest(unittest.TestCase):
 
         self.assertEqual(
             resultado,
-            ["196_BRITO", "MOV", "CONT", "26", "06", "REL"],
+            ("EMP", ["196_BRITO", "MOV", "CONT", "26", "06", "REL"]),
         )
 
     def test_monta_destino_docs_remove_prefixo_emp(self):
@@ -163,7 +149,7 @@ class DocsServiceTest(unittest.TestCase):
 
         self.assertEqual(
             resultado,
-            ["196_BRITO", "MOV", "CONT", "26", "06", "REL"],
+            ("EMP", ["196_BRITO", "MOV", "CONT", "26", "06", "REL"]),
         )
 
     def test_monta_destino_docs_aceita_caminho_iniciando_na_empresa(self):
@@ -176,24 +162,74 @@ class DocsServiceTest(unittest.TestCase):
 
         self.assertEqual(
             resultado,
-            ["196_BRITO", "MOV", "CONT", "26", "06", "REL"],
+            ("EMP", ["196_BRITO", "MOV", "CONT", "26", "06", "REL"]),
         )
 
-    def test_carrega_caminhos_docs(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            caminho = Path(temp_dir) / docs.DOCS_CAMINHO_NAME
-            workbook = Workbook()
-            worksheet = workbook.active
-            worksheet.append(["Codigo", "destino_final"])
-            worksheet.append(["JURATPAS", "SRVARQ/EMP/{EMPRESA}/MOV/CONT/{ANO}/{MES}/REL"])
-            workbook.save(caminho)
-
-            resultado = docs.carregar_caminhos_docs(caminho)
+    def test_monta_destino_docs_raiz_publico(self):
+        # destino UNC vindo do cadastro de Documentos do SGE (raiz PUBLICO)
+        resultado = docs.montar_destino_docs(
+            destino_template="\\\\SRVARQ\\PUBLICO\\{EMPRESA}\\MOV\\CONT\\{ANO}\\{MES}\\REL",
+            empresa_chave="196_BRITO",
+            ano="26",
+            mes="06",
+        )
 
         self.assertEqual(
             resultado,
-            {"JURATPAS": "SRVARQ/EMP/{EMPRESA}/MOV/CONT/{ANO}/{MES}/REL"},
+            ("PUBLICO", ["196_BRITO", "MOV", "CONT", "26", "06", "REL"]),
         )
+
+    def test_monta_destino_docs_alias_pub_vira_publico(self):
+        # grafia legada da planilha: SRVARQ\PUB -> pasta real PUBLICO
+        resultado = docs.montar_destino_docs(
+            destino_template="SRVARQ/PUB/{EMPRESA}/MOV/CONT/{ANO}/{MES}/EST",
+            empresa_chave="196_BRITO",
+            ano="26",
+            mes="06",
+        )
+
+        self.assertEqual(
+            resultado,
+            ("PUBLICO", ["196_BRITO", "MOV", "CONT", "26", "06", "EST"]),
+        )
+
+    def test_carrega_caminhos_documentos_api(self):
+        resposta = unittest.mock.Mock()
+        resposta.status_code = 200
+        resposta.json.return_value = {
+            "count": 3,
+            "data": [
+                {
+                    "codigo_documento": "JURATPAS",
+                    "destino_final": "SRVARQ\\EMP\\{EMPRESA}\\MOV\\CONT\\{ANO}\\{MES}\\REL",
+                    "ativo": True,
+                },
+                {
+                    "codigo_documento": "ANTIGO",
+                    "destino_final": "SRVARQ\\EMP\\{EMPRESA}\\X",
+                    "ativo": False,
+                },
+                {"codigo_documento": "SEMDESTINO", "destino_final": "", "ativo": True},
+            ],
+        }
+
+        with patch.object(supabase_api.requests, "get", return_value=resposta):
+            resultado = supabase_api.carregar_caminhos_documentos_api()
+
+        # apenas ativos com destino_final entram no mapa
+        self.assertEqual(
+            resultado,
+            {"JURATPAS": "SRVARQ\\EMP\\{EMPRESA}\\MOV\\CONT\\{ANO}\\{MES}\\REL"},
+        )
+
+    def test_carrega_caminhos_documentos_api_falha_levanta_erro(self):
+        resposta = unittest.mock.Mock()
+        resposta.status_code = 500
+        resposta.text = "erro interno"
+
+        with patch.object(supabase_api.requests, "get", return_value=resposta):
+            with self.assertRaises(RuntimeError):
+                supabase_api.carregar_caminhos_documentos_api()
 
     def test_executar_docs_move_arquivo_registra_historico_e_notifica(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -206,6 +242,7 @@ class DocsServiceTest(unittest.TestCase):
                 patch.object(docs, "GoogleDriveAuth", return_value=fake_drive),
                 patch.object(docs, "GOOGLE_DRIVE_FOLDER_ID", "root-folder"),
                 patch.object(docs, "GOOGLE_DRIVE_EMP_FOLDER_ID", "srvarq-folder"),
+                patch.object(docs, "carregar_caminhos_documentos_api", return_value=CAMINHOS_PADRAO),
                 patch.object(docs, "carregar_empresas_ativas", return_value={"BRITO": (196, "BRITO")}),
                 patch.object(docs, "enviar_notificacao_docs_google_chat") as notificacao,
                 patch.object(docs, "baixar_controle_supabase", return_value=(True, None)),
@@ -274,6 +311,7 @@ class DocsServiceTest(unittest.TestCase):
             with (
                 patch.object(docs, "GoogleDriveAuth", return_value=fake_drive),
                 patch.object(docs, "GOOGLE_DRIVE_FOLDER_ID", "root-folder"),
+                patch.object(docs, "carregar_caminhos_documentos_api", return_value=CAMINHOS_PADRAO),
                 patch.object(docs, "carregar_empresas_ativas", return_value={}),
                 patch.object(docs, "enviar_notificacao_docs_google_chat") as notificacao,
             ):
@@ -325,7 +363,7 @@ class DocsServiceTest(unittest.TestCase):
             resultado = docs.enviar_notificacao_docs_google_chat(
                 [],
                 pendencias=[
-                    "0626_COMPSN_DISLEY.pdf - codigo 'COMPSN' nao cadastrado em DOCS E CAMINHO.xlsx",
+                    "0626_COMPSN_DISLEY.pdf - codigo 'COMPSN' nao cadastrado em Documentos no portal SGE",
                 ],
                 momento=docs.datetime(2026, 6, 16, 12, 30, 0),
                 google_drive="fake-drive",
@@ -367,15 +405,17 @@ class DocsServiceTest(unittest.TestCase):
                         {"id": "n3", "name": "nota3.pdf", "mimeType": "application/pdf"},
                     ]
                 },
-                caminhos_rows=[
-                    ["NFSENT", "SRVARQ/EMP/{EMPRESA}/MOV/CONT/{ANO}/{MES}/REL/NFSENT"]
-                ],
             )
 
             with (
                 patch.object(docs, "GoogleDriveAuth") as mock_auth,
                 patch.object(docs, "GOOGLE_DRIVE_FOLDER_ID", "root-folder"),
                 patch.object(docs, "GOOGLE_DRIVE_EMP_FOLDER_ID", "srvarq-folder"),
+                patch.object(
+                    docs,
+                    "carregar_caminhos_documentos_api",
+                    return_value={"NFSENT": "SRVARQ/EMP/{EMPRESA}/MOV/CONT/{ANO}/{MES}/REL/NFSENT"},
+                ),
                 patch.object(docs, "carregar_empresas_ativas", return_value={"CEMAF OPE": (156, "CEMAF OPE")}),
                 patch.object(docs, "enviar_notificacao_docs_google_chat"),
                 patch.object(docs, "baixar_controle_supabase", return_value=(True, None)) as mock_baixa,
@@ -397,6 +437,43 @@ class DocsServiceTest(unittest.TestCase):
         self.assertEqual(kwargs["empresa_codigo"], "156")
         self.assertEqual(kwargs["quantidade_arquivos"], 3)
         self.assertEqual(kwargs["status"], "Enviado")
+
+    def test_executar_docs_destino_raiz_publico(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_drive = FakeDriveDocs(
+                temp_dir,
+                existing_folders={("id-PUBLICO", "196_BRITO")},
+                children=[
+                    {"id": "doc-1", "name": "0626_RELVEND_BRITO.pdf", "mimeType": "application/pdf"}
+                ],
+            )
+
+            with (
+                patch.object(docs, "GoogleDriveAuth", return_value=fake_drive),
+                patch.object(docs, "GOOGLE_DRIVE_FOLDER_ID", "root-folder"),
+                patch.object(docs, "GOOGLE_DRIVE_EMP_FOLDER_ID", "srvarq-folder"),
+                patch.object(
+                    docs,
+                    "carregar_caminhos_documentos_api",
+                    return_value={"RELVEND": "\\\\SRVARQ\\PUBLICO\\{EMPRESA}\\MOV\\CONT\\{ANO}\\{MES}\\REL"},
+                ),
+                patch.object(docs, "carregar_empresas_ativas", return_value={"BRITO": (196, "BRITO")}),
+                patch.object(docs, "enviar_notificacao_docs_google_chat"),
+                patch.object(docs, "baixar_controle_supabase", return_value=(True, None)),
+                patch.object(docs, "agora_historico", return_value=docs.datetime(2026, 6, 16, 12, 30, 5)),
+            ):
+                resultado = docs.executar_docs()
+
+        self.assertEqual(resultado["movidos"], 1)
+        self.assertEqual(resultado["pendencias"], 0)
+        # raiz PUBLICO resolvida dentro de SRVARQ e usada como base do destino
+        self.assertIn(("srvarq-folder", "PUBLICO"), fake_drive.folders)
+        self.assertEqual(fake_drive.moved, [("doc-1", "id-REL")])
+        # historico registra o caminho a partir da raiz PUBLICO
+        self.assertEqual(
+            fake_drive.history_rows[-1][6],
+            "PUBLICO/196_BRITO/MOV/CONT/26/06/REL",
+        )
 
     def test_rota_docs_executar_responde_202(self):
         app = FastAPI()
@@ -499,15 +576,17 @@ class DocsServiceTest(unittest.TestCase):
                     {"id": "doc-1", "name": "0626_EXTAPL_CANTINA.pdf", "mimeType": "application/pdf"},
                     {"id": "doc-2", "name": "0626_EXTBANAPL_ENFOCA.pdf", "mimeType": "application/pdf"},
                 ],
-                caminhos_rows=[
-                    ["EXTAPL", "SRVARQ/EMP/{EMPRESA}/MOV/CONT/{ANO}/{MES}/EXT"]
-                ],
             )
 
             with (
                 patch.object(docs, "GoogleDriveAuth", return_value=fake_drive),
                 patch.object(docs, "GOOGLE_DRIVE_FOLDER_ID", "root-folder"),
                 patch.object(docs, "GOOGLE_DRIVE_EMP_FOLDER_ID", "srvarq-folder"),
+                patch.object(
+                    docs,
+                    "carregar_caminhos_documentos_api",
+                    return_value={"EXTAPL": "SRVARQ/EMP/{EMPRESA}/MOV/CONT/{ANO}/{MES}/EXT"},
+                ),
                 patch.object(
                     docs,
                     "carregar_empresas_ativas",
@@ -555,6 +634,7 @@ class DocsServiceTest(unittest.TestCase):
                 patch.object(docs, "GoogleDriveAuth", return_value=fake_drive),
                 patch.object(docs, "GOOGLE_DRIVE_FOLDER_ID", "root-folder"),
                 patch.object(docs, "GOOGLE_DRIVE_EMP_FOLDER_ID", "srvarq-folder"),
+                patch.object(docs, "carregar_caminhos_documentos_api", return_value=CAMINHOS_PADRAO),
                 patch.object(docs, "carregar_empresas_ativas", return_value={"BRITO": (196, "BRITO")}),
                 patch.object(docs, "enviar_notificacao_docs_google_chat") as notificacao,
                 patch.object(docs, "baixar_controle_supabase", return_value=(False, "Empresa 196 nao dada baixa: nao esta cadastrada na plataforma SGECONT")),
@@ -582,6 +662,7 @@ class DocsServiceTest(unittest.TestCase):
                 patch.object(docs, "GoogleDriveAuth", return_value=fake_drive),
                 patch.object(docs, "GOOGLE_DRIVE_FOLDER_ID", "root-folder"),
                 patch.object(docs, "GOOGLE_DRIVE_EMP_FOLDER_ID", "srvarq-folder"),
+                patch.object(docs, "carregar_caminhos_documentos_api", return_value=CAMINHOS_PADRAO),
                 patch.object(docs, "carregar_empresas_ativas", return_value={"BRITO": (196, "BRITO")}),
                 patch.object(docs, "enviar_notificacao_docs_google_chat") as notificacao,
                 patch.object(docs, "baixar_controle_supabase", return_value=(False, "Empresa 196 nao cadastrada")),

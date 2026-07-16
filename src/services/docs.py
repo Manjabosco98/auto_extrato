@@ -16,6 +16,7 @@ from src.app.gdrive.settings import (
 )
 from src.app.supabase.supabase_api import (
     baixar_controle_supabase,
+    carregar_caminhos_documentos_api,
 )
 from src.services.chat_notifications import registrar_e_enviar_notificacao
 from src.services.conversao import (
@@ -33,7 +34,6 @@ from src.utils.logging_config import setup_logging
 logger = logging.getLogger(__name__)
 
 DOCS_FOLDER_NAME = "DOCS"
-DOCS_CAMINHO_NAME = "DOCS E CAMINHO.xlsx"
 HISTORICO_DOCS = "HISTORICO_DOCS.xlsx"
 
 # Alias de codigos: grafia que aparece no NOME DO ARQUIVO -> grafia canonica
@@ -126,46 +126,10 @@ def parse_nome_documento(nome_arquivo: str) -> dict[str, str]:
     }
 
 
-def carregar_caminhos_docs(caminhos_path: Path) -> dict[str, str]:
-    workbook = load_workbook(caminhos_path, read_only=True, data_only=True)
-
-    try:
-        worksheet = workbook.active
-        rows = worksheet.iter_rows(values_only=True)
-        headers = next(rows, None)
-
-        if not headers:
-            logger.warning("Arquivo de caminhos DOCS sem cabecalho: %s", caminhos_path)
-            return {}
-
-        headers_normalizados = [str(header or "").strip() for header in headers]
-
-        try:
-            codigo_index = headers_normalizados.index("Codigo")
-            destino_index = headers_normalizados.index("destino_final")
-        except ValueError:
-            logger.warning(
-                "Arquivo de caminhos DOCS sem colunas Codigo/destino_final: %s",
-                caminhos_path,
-            )
-            return {}
-
-        caminhos = {}
-        for row in rows:
-            if not row:
-                continue
-
-            codigo = row[codigo_index] if codigo_index < len(row) else None
-            destino = row[destino_index] if destino_index < len(row) else None
-            codigo_normalizado = normalizar_codigo(codigo)
-            destino_texto = str(destino or "").strip()
-
-            if codigo_normalizado and destino_texto:
-                caminhos[codigo_normalizado] = destino_texto
-
-        return caminhos
-    finally:
-        workbook.close()
+# Pastas raiz de destino validas dentro de SRVARQ no Google Drive.
+RAIZES_DESTINO = {"EMP", "PUBLICO"}
+# Alias de raiz: grafia legada da planilha -> nome real da pasta no Drive.
+ALIAS_RAIZ = {"PUB": "PUBLICO"}
 
 
 def montar_destino_docs(
@@ -173,7 +137,12 @@ def montar_destino_docs(
     empresa_chave: str,
     ano: str,
     mes: str,
-) -> list[str]:
+) -> tuple[str, list[str]]:
+    """Resolve o template de destino em (raiz, partes relativas a raiz).
+
+    A raiz e a pasta de topo dentro de SRVARQ ("EMP" ou "PUBLICO"); sem
+    prefixo reconhecido, assume "EMP" (ex.: template iniciando em {EMPRESA}).
+    """
     destino = (
         destino_template
         .replace("{EMPRESA}", empresa_chave)
@@ -184,20 +153,45 @@ def montar_destino_docs(
     destino = destino.replace("\\", "/").strip("/")
     partes = [parte for parte in destino.split("/") if parte]
 
-    if len(partes) >= 2 and partes[0].upper() == "SRVARQ" and partes[1].upper() == "EMP":
-        partes = partes[2:]
-    elif partes and partes[0].upper() == "EMP":
+    if partes and partes[0].upper() == "SRVARQ":
         partes = partes[1:]
 
-    return partes
+    raiz = "EMP"
+    if partes:
+        cabeca = ALIAS_RAIZ.get(partes[0].upper(), partes[0].upper())
+        if cabeca in RAIZES_DESTINO:
+            raiz = cabeca
+            partes = partes[1:]
+
+    return raiz, partes
+
+
+def resolver_raiz_destino(
+    google_drive: GoogleDriveAuth,
+    raizes_ids: dict[str, str],
+    raiz_nome: str,
+) -> str:
+    """Retorna o folder_id da raiz de destino, resolvendo sob demanda.
+
+    ``raizes_ids`` funciona como cache mutavel {nome_raiz: folder_id}; raizes
+    ainda nao resolvidas (ex.: PUBLICO) sao localizadas dentro de SRVARQ.
+    """
+    if raiz_nome not in raizes_ids:
+        raizes_ids[raiz_nome] = resolver_pasta_emp_base(
+            google_drive=google_drive,
+            pasta_base_id=GOOGLE_DRIVE_EMP_FOLDER_ID,
+            nome_pasta=raiz_nome,
+        )
+    return raizes_ids[raiz_nome]
 
 
 def resolver_pasta_destino_docs(
     google_drive: GoogleDriveAuth,
-    emp_folder_id: str,
+    raiz_folder_id: str,
     destino_partes: list[str],
+    raiz_nome: str = "EMP",
 ) -> tuple[str, str]:
-    pasta_atual_id = emp_folder_id
+    pasta_atual_id = raiz_folder_id
 
     for i, nome_pasta in enumerate(destino_partes):
         if i == 0:
@@ -207,7 +201,7 @@ def resolver_pasta_destino_docs(
             )
             if not pasta:
                 raise ValueError(
-                    f"Pasta de cliente '{nome_pasta}' nao encontrada em EMP. "
+                    f"Pasta de cliente '{nome_pasta}' nao encontrada em {raiz_nome}. "
                     "A pasta deve existir previamente no Google Drive."
                 )
         else:
@@ -217,7 +211,7 @@ def resolver_pasta_destino_docs(
             )
         pasta_atual_id = pasta["id"]
 
-    return pasta_atual_id, "/".join(["EMP", *destino_partes])
+    return pasta_atual_id, "/".join([raiz_nome, *destino_partes])
 
 
 def registrar_historico_docs(
@@ -407,7 +401,7 @@ def _processar_item_docs(
     is_pasta: bool,
     caminhos: dict[str, str],
     empresas,
-    emp_raiz_id: str,
+    raizes_ids: dict[str, str],
     registros_historico: list[dict[str, object]],
     documentos_para_baixa: list[dict[str, object]],
     documentos_notificacao: list[str],
@@ -438,9 +432,9 @@ def _processar_item_docs(
     codigo = dados_nome["codigo"]
     destino_template = caminhos.get(codigo)
     if not destino_template:
-        logger.warning("Codigo DOCS nao encontrado em %s: %s", DOCS_CAMINHO_NAME, codigo)
+        logger.warning("Codigo DOCS nao cadastrado no SGE (Documentos): %s", codigo)
         pendencias_notificacao.append(
-            f"{nome} - codigo '{codigo}' nao cadastrado em {DOCS_CAMINHO_NAME}"
+            f"{nome} - codigo '{codigo}' nao cadastrado em Documentos no portal SGE"
         )
         return "ignorado"
 
@@ -466,16 +460,18 @@ def _processar_item_docs(
         quantidade = _contar_arquivos_pasta(google_drive, item["id"]) if is_pasta else 1
 
         empresa_chave = nome_pasta_empresa(empresa_id, empresa_nome)
-        destino_partes = montar_destino_docs(
+        raiz_nome, destino_partes = montar_destino_docs(
             destino_template=destino_template,
             empresa_chave=empresa_chave,
             ano=dados_nome["ano"],
             mes=dados_nome["mes"],
         )
+        raiz_folder_id = resolver_raiz_destino(google_drive, raizes_ids, raiz_nome)
         pasta_destino_id, pasta_destino_historico = resolver_pasta_destino_docs(
             google_drive=google_drive,
-            emp_folder_id=emp_raiz_id,
+            raiz_folder_id=raiz_folder_id,
             destino_partes=destino_partes,
+            raiz_nome=raiz_nome,
         )
 
         logger.info(
@@ -547,36 +543,23 @@ def executar_docs() -> dict[str, int]:
     logger.info("Pasta DOCS localizada: %s", docs_folder_id)
 
     logger.info("Localizando pasta EMP dentro da pasta base SRVARQ para DOCS")
-    emp_raiz_id = resolver_pasta_emp_base(
-        google_drive=google_drive,
-        pasta_base_id=GOOGLE_DRIVE_EMP_FOLDER_ID,
-    )
-
-    caminhos_drive = (
-        google_drive.find_file_by_name(
-            folder_id=raiz_id,
-            name=DOCS_CAMINHO_NAME,
-            mime_type=XLSX_MIME_TYPE,
+    # Cache de raizes de destino (EMP resolvida ja; PUBLICO sob demanda).
+    raizes_ids: dict[str, str] = {
+        "EMP": resolver_pasta_emp_base(
+            google_drive=google_drive,
+            pasta_base_id=GOOGLE_DRIVE_EMP_FOLDER_ID,
         )
-        or google_drive.find_file_by_name(
-            folder_id=raiz_id,
-            name=DOCS_CAMINHO_NAME,
-        )
-    )
+    }
 
-    if not caminhos_drive:
-        logger.warning("Arquivo de caminhos DOCS nao encontrado na raiz: %s", DOCS_CAMINHO_NAME)
+    try:
+        caminhos = carregar_caminhos_documentos_api()
+    except Exception:
+        logger.exception("Falha ao carregar destino final dos documentos no SGE")
         return {"processados": 0, "movidos": 0, "ignorados": 0, "erros": 1}
 
-    caminhos_local = temp_dir / DOCS_CAMINHO_NAME
-    try:
-        google_drive.download(
-            file_id=caminhos_drive["id"],
-            destino_local=caminhos_local,
-        )
-        caminhos = carregar_caminhos_docs(caminhos_local)
-    finally:
-        caminhos_local.unlink(missing_ok=True)
+    if not caminhos:
+        logger.warning("Nenhum documento ativo com destino final cadastrado no SGE")
+        return {"processados": 0, "movidos": 0, "ignorados": 0, "erros": 1}
 
     empresas = carregar_empresas_ativas()
     filhos = google_drive.list_children(docs_folder_id)
@@ -612,7 +595,7 @@ def executar_docs() -> dict[str, int]:
             is_pasta=is_pasta,
             caminhos=caminhos,
             empresas=empresas,
-            emp_raiz_id=emp_raiz_id,
+            raizes_ids=raizes_ids,
             registros_historico=registros_historico,
             documentos_para_baixa=documentos_para_baixa,
             documentos_notificacao=documentos_notificacao,

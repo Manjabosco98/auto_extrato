@@ -689,7 +689,7 @@ class ExecutarFecfinBaixaTest(unittest.TestCase):
              patch.object(fecfin_service, "buscar_empresa_por_cliente", return_value=("114", "DAFF LTDA")), \
              patch.object(fecfin_service, "_carregar_destino_fecfin", return_value="SRVARQ\\EMP\\{EMPRESA}\\MOV\\CONT\\{ANO}\\{MES}\\EXT"), \
              patch.object(fecfin_service, "nome_pasta_empresa", return_value="114_DAFF LTDA"), \
-             patch.object(fecfin_service, "montar_destino_docs", return_value=["114_DAFF LTDA", "MOV", "CONT", "26", "06", "EXT"]), \
+             patch.object(fecfin_service, "montar_destino_docs", return_value=("EMP", ["114_DAFF LTDA", "MOV", "CONT", "26", "06", "EXT"])), \
              patch.object(fecfin_service, "resolver_pasta_destino_docs", return_value=("dest", "EMP/114_DAFF LTDA/MOV/CONT/26/06/EXT")), \
              patch.object(fecfin_service, "dispatch_fecwin", return_value=[("ITAU", df)]), \
              patch.object(fecfin_service.shutil, "copy2"), \
