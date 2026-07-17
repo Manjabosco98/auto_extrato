@@ -74,6 +74,7 @@ class FakeDrive:
             arquivo
             for arquivo in self.root_pdfs
             if arquivo["id"] not in self.trashed
+            and (pdf_type is None or arquivo.get("mimeType") == pdf_type)
         ]
 
     def download(self, file_id, destino_local):
@@ -948,6 +949,14 @@ class ConversaoPasswordTest(unittest.TestCase):
                 self.assertEqual(dados.senha, senha)
                 self.assertEqual(dados.sem_movimentacao, sem_movimentacao)
 
+    def test_interpreta_ag_e_cc_sem_espaco(self):
+        dados = conversao.interpretar_nome_extrato(
+            "0626_EXTBAN_SICOOB_TECNOMAQ_AG 3320-0_CC3348-0.pdf"
+        )
+        self.assertEqual(dados.empresa, "TECNOMAQ")
+        self.assertEqual(dados.agencia, "3320-0")
+        self.assertEqual(dados.conta, "3348-0")
+
     def test_banco_canonico_e_extraido_de_pdf_xlsx_e_xlsm(self):
         self.assertEqual(
             conversao.extrair_banco_nome_arquivo(
@@ -1139,6 +1148,79 @@ class ConversaoPasswordTest(unittest.TestCase):
         pdf_extractor.assert_not_called()
         mock_baixa.assert_called_once()
         self.assertEqual(mock_baixa.call_args[1]["status"], "Enviado")
+
+    def test_excel_com_sm_move_para_pasta_empresa_e_da_baixa(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_drive = FakeDrive(
+                temp_dir,
+                root_pdfs=[
+                    {
+                        "id": "excel-sm",
+                        "name": "0626_EXTBAN_ASAAS_SM_ABDALLA_AG 0001_CC 5435758-7.xlsx",
+                        "mimeType": conversao.XLSX_MIME_TYPE,
+                    }
+                ],
+                existing_folders={("id-EMP", "77_ABDALLA")},
+            )
+
+            with (
+                patch.object(conversao, "GoogleDriveAuth", return_value=fake_drive),
+                patch.object(conversao, "carregar_empresas_ativas", return_value={"ABDALLA": (77, "ABDALLA")}),
+                patch.object(conversao, "PDFExtractor") as pdf_extractor,
+                patch.object(conversao, "buscar_id_empresa_supabase", return_value="uuid-empresa-77"),
+                patch.object(conversao, "baixar_controle_supabase", return_value=(True, None)) as mock_baixa,
+                patch.object(conversao, "enviar_notificacao_google_chat") as notificacao,
+            ):
+                conversao.executar_conversao()
+
+        self.assertIn(("excel-sm", "id-EXT"), fake_drive.moved)
+        self.assertEqual(
+            fake_drive.history_rows[1][4],
+            "0626_EXTBAN_ASAAS_SM_ABDALLA_AG 0001_CC 5435758-7.xlsx",
+        )
+        self.assertEqual(fake_drive.history_rows[1][5], "EMP/77_ABDALLA/MOV/CONT/26/06/EXT")
+        notificacao.assert_called_once()
+        self.assertEqual(
+            notificacao.call_args.kwargs["pdfs_sem_movimentacao"],
+            [
+                "0626_EXTBAN_ASAAS_SM_ABDALLA_AG 0001_CC 5435758-7.xlsx"
+                " - EMP/77_ABDALLA/MOV/CONT/26/06/EXT"
+            ],
+        )
+        self.assertEqual(notificacao.call_args.kwargs["status_execucao"], "SUCESSO")
+        self.assertEqual(notificacao.call_args.kwargs["tipo"], "CONCLUSAO")
+        pdf_extractor.assert_not_called()
+        mock_baixa.assert_called_once()
+        self.assertEqual(mock_baixa.call_args[1]["status"], "Enviado")
+        self.assertEqual(mock_baixa.call_args[1]["quantidade_arquivos"], 1)
+        self.assertEqual(mock_baixa.call_args[1]["competencia"], "06-2026")
+
+    def test_excel_sem_sm_permanece_na_ext(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_drive = FakeDrive(
+                temp_dir,
+                root_pdfs=[
+                    {
+                        "id": "excel-mov",
+                        "name": "0626_EXTBAN_ASAAS_ABDALLA_AG 0001_CC 5435758-7.xlsx",
+                        "mimeType": conversao.XLSX_MIME_TYPE,
+                    }
+                ],
+                existing_folders={("id-EMP", "77_ABDALLA")},
+            )
+
+            with (
+                patch.object(conversao, "GoogleDriveAuth", return_value=fake_drive),
+                patch.object(conversao, "carregar_empresas_ativas", return_value={"ABDALLA": (77, "ABDALLA")}),
+                patch.object(conversao, "baixar_controle_supabase") as mock_baixa,
+                patch.object(conversao, "enviar_notificacao_google_chat") as notificacao,
+            ):
+                conversao.executar_conversao()
+
+        self.assertEqual(fake_drive.moved, [])
+        mock_baixa.assert_not_called()
+        notificacao.assert_called_once()
+        self.assertEqual(notificacao.call_args.kwargs["status_execucao"], "SUCESSO")
 
     def test_sem_movimentacao_sem_empresa_permanece_na_ext(self):
         with tempfile.TemporaryDirectory() as temp_dir:

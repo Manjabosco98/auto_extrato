@@ -68,9 +68,9 @@ def extrair_agencia_conta(nome_arquivo: str) -> tuple[str, str]:
     conta = ""
     for i, parte in enumerate(partes):
         p = parte.strip()
-        # Rótulo e valor no mesmo segmento: "AG 0001-9" / "CC 5561082-0"
-        m_ag = re.match(r"^AG\s+(.+)$", p, re.IGNORECASE)
-        m_cc = re.match(r"^CC\s+(.+)$", p, re.IGNORECASE)
+        # Rótulo e valor no mesmo segmento, com ou sem espaço: "AG 0001-9" / "CC5561082-0"
+        m_ag = re.match(r"^AG\s*(\d.+)$", p, re.IGNORECASE)
+        m_cc = re.match(r"^CC\s*(\d.+)$", p, re.IGNORECASE)
         if m_ag:
             agencia = m_ag.group(1).strip()
         elif m_cc:

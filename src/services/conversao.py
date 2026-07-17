@@ -355,10 +355,15 @@ def sanitizar_nome_senha(nome_arquivo: str) -> str:
     return "_".join(partes_limpas) + caminho.suffix
 
 
-def interpretar_nome_extrato(nome_arquivo: str) -> NomeExtrato:
+def interpretar_nome_extrato(
+    nome_arquivo: str,
+    extensoes: tuple[str, ...] = (".pdf",),
+) -> NomeExtrato:
     caminho = Path(nome_arquivo)
-    if caminho.suffix.lower() != ".pdf":
-        raise ValueError("Arquivo nao possui extensao PDF")
+    if caminho.suffix.lower() not in extensoes:
+        raise ValueError(
+            f"Arquivo nao possui extensao esperada ({', '.join(extensoes)})"
+        )
 
     partes = [parte.strip() for parte in caminho.stem.split("_")]
     if len(partes) < 6 or any(not parte for parte in partes):
@@ -394,8 +399,8 @@ def interpretar_nome_extrato(nome_arquivo: str) -> NomeExtrato:
         raise ValueError("Nome deve terminar com EMPRESA_AG AGENCIA_CC CONTA")
 
     empresa = partes[indice]
-    agencia_match = re.fullmatch(r"AG\s+(.+)", partes[indice + 1], flags=re.IGNORECASE)
-    conta_match = re.fullmatch(r"CC\s+(.+)", partes[indice + 2], flags=re.IGNORECASE)
+    agencia_match = re.fullmatch(r"AG\s*(.+)", partes[indice + 1], flags=re.IGNORECASE)
+    conta_match = re.fullmatch(r"CC\s*(.+)", partes[indice + 2], flags=re.IGNORECASE)
     if not empresa or not agencia_match or not conta_match:
         raise ValueError("Empresa, agencia ou conta ausente no nome")
 
@@ -1118,13 +1123,13 @@ def arquivar_pdf_sem_movimentacao(
         )
     except ValueError:
         logger.exception(
-            "Nao foi possivel resolver pasta EMP para PDF sem movimentacao. Arquivo mantido na pasta EXT: %s",
+            "Nao foi possivel resolver pasta EMP para arquivo sem movimentacao. Arquivo mantido na pasta EXT: %s",
             nome_arquivo,
         )
         return None
 
     momento = agora_historico()
-    logger.info("Movendo PDF sem movimentacao para pasta destino EMP: %s", nome_arquivo)
+    logger.info("Movendo arquivo sem movimentacao para pasta destino EMP: %s", nome_arquivo)
     google_drive.move_file(
         file_id=arquivo_id,
         folder_id_destino=pasta_destino_id,
@@ -1144,7 +1149,7 @@ def arquivar_pdf_sem_movimentacao(
         empresas=empresas,
     )
     logger.info(
-        "PDF sem movimentacao salvo na pasta da empresa: %s -> %s",
+        "Arquivo sem movimentacao salvo na pasta da empresa: %s -> %s",
         nome_arquivo,
         pasta_destino_historico,
     )
@@ -1625,6 +1630,75 @@ def _executar_conversao(execucao_id: str):
             except Exception:
                 logger.warning("Erro ao limpar temporarios para %s, ignorando", arquivo_nome_seguro)
 
+    logger.info("Listando Excels da pasta EXT do Google Drive")
+    arquivos_excel = google_drive.pdfs(
+        folder_id=entrada_ext_id,
+        pdf_type=XLSX_MIME_TYPE,
+    )
+    logger.info("Excels encontrados na pasta EXT do Google Drive: %s", len(arquivos_excel))
+
+    for arquivo_drive in arquivos_excel:
+        arquivo_nome = arquivo_drive.get("name", "DESCONHECIDO")
+        if not arquivo_nome.lower().endswith(".xlsx"):
+            continue
+        try:
+            arquivo_id = arquivo_drive["id"]
+            try:
+                dados_nome = interpretar_nome_extrato(arquivo_nome, extensoes=(".xlsx",))
+            except ValueError as erro_nome:
+                if nome_indica_sem_movimentacao(arquivo_nome):
+                    nomes_invalidos_notificacao.append(
+                        f"{arquivo_nome} - nome fora do padrao: {erro_nome}"
+                    )
+                continue
+
+            if not dados_nome.sem_movimentacao:
+                logger.info(
+                    "Excel com movimentacao ainda nao possui layout de conversao; mantido na EXT: %s",
+                    arquivo_nome,
+                )
+                continue
+
+            processados += 1
+            arquivo_nome = dados_nome.nome_limpo
+            logger.info("Processando Excel sem movimentacao: %s", arquivo_nome)
+            resultado_sm = arquivar_pdf_sem_movimentacao(
+                google_drive=google_drive,
+                pasta_raiz_id=extratos_id,
+                pasta_emp_id=emp_raiz_id,
+                temp_dir=temp_dir,
+                arquivo_id=arquivo_id,
+                nome_arquivo=arquivo_nome,
+                empresas=empresas,
+            )
+            if resultado_sm:
+                pdfs_sem_movimentacao_notificacao.append(resultado_sm["notificacao"])
+                sem_movimentacao += 1
+                documentos_para_baixa.append({
+                    "empresa_id": resultado_sm["empresa_id"],
+                    "mes": dados_nome.mes,
+                    "ano": dados_nome.ano,
+                    "competencia": dados_nome.competencia,
+                    "codigo_documento": dados_nome.codigo_documento,
+                    "banco": dados_nome.banco,
+                    "agencia": dados_nome.agencia,
+                    "conta": dados_nome.conta,
+                    "arquivo_nome": arquivo_nome,
+                    "pasta_destino": resultado_sm["pasta_destino"],
+                    "quantidade_arquivos": 1,
+                    "status": "Enviado",
+                    "data_recebimento": resultado_sm["momento"].strftime("%Y-%m-%d"),
+                })
+            else:
+                erros_processamento_notificacao.append(
+                    f"{arquivo_nome} - empresa ou pasta nao encontrada; mantido na EXT"
+                )
+        except Exception:
+            logger.exception("Erro ao processar Excel: %s", arquivo_nome)
+            erros_processamento_notificacao.append(
+                f"{arquivo_nome} - erro inesperado; mantido na EXT"
+            )
+
     logger.info("Atualizando controle no portal SGE para %s documento(s)", len(documentos_para_baixa))
     atualizados_sge = 0
     erros_sge = 0
@@ -1709,7 +1783,7 @@ def _executar_conversao(execucao_id: str):
             "google_drive": google_drive,
             "pasta_raiz_id": extratos_id,
             "execucao_id": execucao_id,
-            "tipo": "SEM_ARQUIVOS" if not arquivos else "CONCLUSAO",
+            "tipo": "SEM_ARQUIVOS" if not arquivos and not arquivos_excel else "CONCLUSAO",
             "status_execucao": "SUCESSO COM ALERTAS" if possui_alertas else "SUCESSO",
             "total_processados": processados,
             "total_convertidos": convertidos,
