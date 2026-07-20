@@ -193,20 +193,6 @@ class DocsServiceTest(unittest.TestCase):
             ("PUBLICO", ["196_BRITO", "MOV", "CONT", "26", "06", "EST"]),
         )
 
-    def test_monta_destino_docs_marcadores_minusculos_mesano(self):
-        # cadastro do SGE com marcadores em minusculo e "MOV {mes}{ano}"
-        resultado = docs.montar_destino_docs(
-            destino_template="\\\\SRVARQ\\PUBLICO\\MOV {mes}{ano}\\CONT\\{empresa}\\REL",
-            empresa_chave="22_SILVA",
-            ano="26",
-            mes="06",
-        )
-
-        self.assertEqual(
-            resultado,
-            ("PUBLICO", ["MOV 0626", "CONT", "22_SILVA", "REL"]),
-        )
-
     def test_carrega_caminhos_documentos_api(self):
         resposta = unittest.mock.Mock()
         resposta.status_code = 200

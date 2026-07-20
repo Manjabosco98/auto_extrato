@@ -143,21 +143,13 @@ def montar_destino_docs(
     A raiz e a pasta de topo dentro de SRVARQ ("EMP" ou "PUBLICO"); sem
     prefixo reconhecido, assume "EMP" (ex.: template iniciando em {EMPRESA}).
     """
-    # Substitui os marcadores independente de caixa (o cadastro do SGE pode vir
-    # com {EMPRESA}/{ano}/{Mes} etc.). {MESANO}/{ANOMES} viram mes+ano/ano+mes.
-    substituicoes = {
-        "EMPRESA": empresa_chave,
-        "MESANO": f"{mes}{ano}",
-        "ANOMES": f"{ano}{mes}",
-        "ANO": ano,
-        "MES": mes,
-        "MÊS": mes,
-    }
-    destino = destino_template
-    for marcador, valor in substituicoes.items():
-        destino = re.sub(
-            r"\{" + marcador + r"\}", lambda _match, v=valor: v, destino, flags=re.IGNORECASE
-        )
+    destino = (
+        destino_template
+        .replace("{EMPRESA}", empresa_chave)
+        .replace("{ANO}", ano)
+        .replace("{MES}", mes)
+        .replace("{MÊS}", mes)
+    )
     destino = destino.replace("\\", "/").strip("/")
     partes = [parte for parte in destino.split("/") if parte]
 
