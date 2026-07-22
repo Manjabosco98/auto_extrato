@@ -2019,6 +2019,139 @@ class ConversaoPasswordTest(unittest.TestCase):
         # nao deve ter refeito o POST (sem match -> sem retry)
         self.assertEqual(mock_post.call_count, 1)
 
+    def test_baixar_controle_409_resolve_por_instancia_id(self):
+        # Caso real (empresa 458, competencia 2026-06): o SGE usa o MESMO
+        # instancia_codigo "458-4-19267" para as duas aplicacoes da conta
+        # 1926-7, entao o codigo leva a 409 e so o instancia_id (UUID) resolve.
+        resp_400 = MagicMock()
+        resp_400.status_code = 400
+        resp_400.text = ""
+        resp_400.json.return_value = {
+            "error": {
+                "message": "Este documento exige instancia. Informe 'instancia_codigo' ou 'instancia_id' valido.",
+                "details": {
+                    "instancias_disponiveis": [
+                        {"codigo": "458-4-19232", "descricao": "EXTAPL-SICOOB- A:RDC AUT- C:1923-2"},
+                        {"codigo": "458-4-19232", "descricao": "EXTAPL-SICOOB- A:RDC FLEX- C:1923-2"},
+                        {"codigo": "458-4-19267", "descricao": "EXTAPL-SICOOB- A:RDC FLEX- C:1926-7"},
+                        {"codigo": "458-4-19267", "descricao": "EXTAPL-SICOOB-A:RDC AUT-C:1926-7"},
+                    ],
+                },
+            }
+        }
+        resp_409 = MagicMock()
+        resp_409.status_code = 409
+        resp_409.text = ""
+        resp_409.json.return_value = {
+            "error": {
+                "message": "Multiplas instancias correspondem ao 'instancia_codigo' informado.",
+                "details": {
+                    "candidatas": [
+                        {
+                            "id": "ead06ff3-55d9-4007-ad16-111001ba0dbc",
+                            "codigo": "458-4-19267",
+                            "descricao": "EXTAPL-SICOOB- A:RDC FLEX- C:1926-7",
+                            "banco": "BANCO SICOOB",
+                            "conta": "1926-7",
+                        },
+                        {
+                            "id": "52f5b5a4-3a58-419a-9532-4391c73753d0",
+                            "codigo": "458-4-19267",
+                            "descricao": "EXTAPL-SICOOB-A:RDC AUT-C:1926-7",
+                            "banco": "BANCO SICOOB",
+                            "conta": "1926-7",
+                        },
+                    ],
+                },
+            }
+        }
+        resp_ok = MagicMock()
+        resp_ok.status_code = 200
+        resp_ok.text = '{"action":"updated"}'
+
+        with patch.object(
+            supabase_api.requests, "post", side_effect=[resp_400, resp_409, resp_ok]
+        ) as mock_post:
+            sucesso, detalhe = supabase_api.baixar_controle_supabase(
+                empresa_codigo="458",
+                codigo_documento="EXTAPL",
+                competencia="06-2026",
+                banco="SICOOB",
+                agencia="RDC AUT",
+                conta="1926-7",
+                nome_arquivo="0626_EXTAPL_SICOOB_COLEGIO WR_AG RDC AUT_CC 1926-7.pdf",
+                local_arquivo="Google Drive",
+                quantidade_arquivos=1,
+            )
+
+        self.assertTrue(sucesso)
+        self.assertIsNone(detalhe)
+        self.assertEqual(mock_post.call_count, 3)
+        # 2o POST tenta o codigo; o 3o troca por instancia_id (UUID do RDC AUT)
+        self.assertEqual(
+            mock_post.call_args_list[1].kwargs["json"]["instancia_codigo"],
+            "458-4-19267",
+        )
+        payload_final = mock_post.call_args_list[2].kwargs["json"]
+        self.assertEqual(
+            payload_final["instancia_id"], "52f5b5a4-3a58-419a-9532-4391c73753d0"
+        )
+        self.assertNotIn("instancia_codigo", payload_final)
+
+    def test_baixar_controle_409_sem_candidata_compativel_falha_com_detalhe(self):
+        resp_409 = MagicMock()
+        resp_409.status_code = 409
+        resp_409.text = ""
+        resp_409.json.return_value = {
+            "error": {
+                "details": {
+                    "candidatas": [
+                        {
+                            "id": "aaa",
+                            "codigo": "458-4-19267",
+                            "descricao": "EXTAPL-SICOOB- A:RDC FLEX- C:1926-7",
+                        },
+                        {
+                            "id": "bbb",
+                            "codigo": "458-4-19267",
+                            "descricao": "EXTAPL-SICOOB-A:RDC AUT-C:1926-7",
+                        },
+                    ],
+                },
+            }
+        }
+
+        with patch.object(supabase_api.requests, "post", return_value=resp_409) as mock_post:
+            sucesso, detalhe = supabase_api.baixar_controle_supabase(
+                empresa_codigo="458",
+                codigo_documento="EXTAPL",
+                competencia="06-2026",
+                banco="SICOOB",
+                agencia="",  # sem agencia nao ha como escolher entre as duas
+                conta="1926-7",
+                nome_arquivo="0626_EXTAPL_SICOOB_COLEGIO WR_CC 1926-7.pdf",
+                local_arquivo="Google Drive",
+                quantidade_arquivos=1,
+            )
+
+        self.assertFalse(sucesso)
+        self.assertEqual(mock_post.call_count, 1)
+        self.assertIn("instancia ambigua", detalhe)
+        # a mensagem agora lista as candidatas (a chave e "candidatas", nao "candidatos")
+        self.assertIn("RDC FLEX", detalhe)
+        self.assertIn("RDC AUT", detalhe)
+
+    def test_agencia_da_descricao_com_prefixo_de_texto_livre(self):
+        # descricao_documento do GET /controle vem prefixada por texto livre
+        desc = (
+            "EXTRATOS BANCARIOS - APLICACOES FINANCEIRAS - PDF/OFX - "
+            "EXTAPL-SICOOB-A:RDC AUT-C:1926-7"
+        )
+        self.assertEqual(
+            supabase_api._chave_agencia(supabase_api._agencia_da_descricao(desc)),
+            "RDCAUT",
+        )
+
     def test_match_instancia_banco_vazio_retorna_none(self):
         instancias = [{"codigo": "3", "descricao": "EXTBAN-BANCO ITAU - C: 98313-2"}]
         self.assertIsNone(supabase_api._match_instancia(instancias, "", ""))

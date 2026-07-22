@@ -238,11 +238,16 @@ def _agencia_da_descricao(desc: str) -> str:
     """Retorna o trecho de agencia ("A:...") da descricao da instancia.
 
     Cobre os dois formatos gravados no SGE: "... - A:0001-9 - C: 1265692-5" e
-    "...- A:RDC FLEX- C:1926-7". Retorna "" quando a descricao nao traz agencia.
+    "...- A:RDC FLEX- C:1926-7". Usa a ULTIMA ocorrencia de "A:" antes da conta
+    porque a descricao pode vir prefixada por texto livre ("Extratos Bancarios
+    - Aplicacoes Financeiras - PDF/OFX - EXTAPL-SICOOB-A:RDC AUT-C:1926-7").
+    Retorna "" quando a descricao nao traz agencia.
     """
-    if "A:" not in desc:
-        return ""
-    return desc.split("A:", 1)[1].split("C:", 1)[0]
+    cabeca, separador, _ = desc.rpartition("C:")
+    if not separador:
+        cabeca = desc
+    _, separador, agencia = cabeca.rpartition("A:")
+    return agencia if separador else ""
 
 
 def _chave_agencia(valor: str) -> str:
@@ -440,21 +445,57 @@ def _detalhe_400_baixa(
     return f"{nome_arquivo}: falha 400 na baixa SGE (empresa {empresa_codigo})"
 
 
+def _candidatas_409(response) -> list[dict]:
+    """Extrai as candidatas do 409 'instancia_codigo ambiguo'.
+
+    Cada candidata traz ``id`` (UUID da instancia), ``codigo``, ``descricao``,
+    ``banco`` e ``conta``. O SGE nomeia a chave como ``candidatas``; aceitamos
+    ``candidatos`` por seguranca.
+    """
+    corpo = _corpo_json(response)
+    if not isinstance(corpo, dict):
+        return []
+    detalhes = corpo.get("error", corpo)
+    detalhes = detalhes.get("details", {}) if isinstance(detalhes, dict) else {}
+    if not isinstance(detalhes, dict):
+        return []
+    lista = detalhes.get("candidatas") or detalhes.get("candidatos") or []
+    return lista if isinstance(lista, list) else []
+
+
+def _instancia_id_das_candidatas(
+    candidatas: list[dict], banco: str, agencia: str, conta: str
+) -> str | None:
+    """Escolhe o instancia_id (UUID) da candidata que casa banco/agencia/conta.
+
+    Reaproveita ``_match_instancia`` tratando o UUID como "codigo" — e o UUID,
+    nao o instancia_codigo, que identifica a instancia sem ambiguidade.
+    """
+    return _match_instancia(
+        [
+            {"codigo": c.get("id"), "descricao": c.get("descricao")}
+            for c in candidatas
+            if isinstance(c, dict) and c.get("id")
+        ],
+        banco,
+        conta,
+        agencia,
+    )
+
+
 def _detalhe_409_baixa(
-    response, empresa_codigo: str, banco: str, conta: str, nome_arquivo: str
+    response,
+    empresa_codigo: str,
+    banco: str,
+    conta: str,
+    nome_arquivo: str,
+    agencia: str = "",
 ) -> str:
     """Mensagem para o 409 'instancia_codigo ambiguo' do endpoint corrigido."""
-    corpo = _corpo_json(response)
-    candidatos = []
-    if isinstance(corpo, dict):
-        detalhes = corpo.get("error", corpo)
-        detalhes = detalhes.get("details", {}) if isinstance(detalhes, dict) else {}
-        if isinstance(detalhes, dict):
-            candidatos = detalhes.get("candidatos", []) or []
     return (
         f"{nome_arquivo}: instancia ambigua no SGE (empresa {empresa_codigo}, "
-        f"banco={banco or '-'} conta={conta or '-'}). "
-        f"Candidatas: {_descrever_candidatas(candidatos) or 'nao informadas'}. "
+        f"banco={banco or '-'} agencia={agencia or '-'} conta={conta or '-'}). "
+        f"Candidatas: {_descrever_candidatas(_candidatas_409(response)) or 'nao informadas'}. "
         "Informe conta/instancia para desambiguar."
     )
 
@@ -526,7 +567,7 @@ def baixar_controle_supabase(
             if instancias:
                 instancia_codigo = _match_instancia(instancias, banco, conta, agencia)
                 if instancia_codigo:
-                    payload["instancia_codigo"] = instancia_codigo
+                    payload = {**payload, "instancia_codigo": instancia_codigo}
                     logger.info(
                         "Retry com instancia_codigo=%s para empresa=%s banco=%s",
                         instancia_codigo,
@@ -547,6 +588,36 @@ def baixar_controle_supabase(
                     logger.warning(detalhe)
                     return False, detalhe
 
+        # 409: o SGE repete o mesmo instancia_codigo em instancias distintas da
+        # mesma conta (ex.: 458-4-19267 serve tanto para "A:RDC AUT" quanto para
+        # "A:RDC FLEX"), entao o codigo nunca desambigua — so o instancia_id
+        # (UUID), que vem nas candidatas do proprio 409.
+        if response.status_code == 409:
+            instancia_id = _instancia_id_das_candidatas(
+                _candidatas_409(response), banco, agencia, conta
+            )
+            if instancia_id:
+                payload = {
+                    chave: valor
+                    for chave, valor in payload.items()
+                    if chave != "instancia_codigo"
+                }
+                payload["instancia_id"] = instancia_id
+                logger.info(
+                    "Retry com instancia_id=%s para empresa=%s banco=%s agencia=%s",
+                    instancia_id,
+                    empresa_codigo,
+                    banco,
+                    agencia,
+                )
+                response = requests.post(url, json=payload, headers=headers, timeout=30)
+                resposta_texto = (response.text or "")[:500]
+                logger.info(
+                    "Resposta SGECONT baixa retry instancia_id: status=%s body=%s",
+                    response.status_code,
+                    resposta_texto,
+                )
+
         if response.status_code == 404:
             detalhe = _detalhe_404_baixa(
                 response, empresa_codigo, nome_arquivo, codigo_documento, competencia
@@ -556,7 +627,7 @@ def baixar_controle_supabase(
 
         if response.status_code == 409:
             detalhe = _detalhe_409_baixa(
-                response, empresa_codigo, banco, conta, nome_arquivo
+                response, empresa_codigo, banco, conta, nome_arquivo, agencia
             )
             logger.warning(detalhe)
             return False, detalhe
