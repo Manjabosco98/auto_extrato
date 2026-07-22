@@ -16,6 +16,7 @@ from src.app.gdrive.settings import (
 )
 from src.app.supabase.supabase_api import (
     baixar_controle_supabase,
+    buscar_id_empresa_supabase,
     carregar_caminhos_documentos_api,
 )
 from src.services.chat_notifications import registrar_e_enviar_notificacao
@@ -404,14 +405,16 @@ def _processar_item_docs(
     empresas,
     raizes_ids: dict[str, str],
     registros_historico: list[dict[str, object]],
-    documentos_para_baixa: list[dict[str, object]],
     documentos_notificacao: list[str],
     pendencias_notificacao: list[str],
+    erros_sge_notificacao: list[str],
+    *,
+    fazer_baixa_sge: bool = False,
 ) -> str:
     """Processa um arquivo OU pasta DOCS.
 
     Identifica o codigo pelo nome (MMAA_CODIGO_CLIENTE), resolve o destino na
-    planilha de caminhos, move para a pasta da empresa e prepara a baixa no SGE.
+    planilha de caminhos e, opcionalmente, tenta dar baixa no SGE antes de mover.
     Para pastas, a quantidade de arquivos e a contagem de itens dentro dela.
 
     Quando o item nao pode ser tratado (nome fora do padrao, codigo nao
@@ -475,6 +478,53 @@ def _processar_item_docs(
             raiz_nome=raiz_nome,
         )
 
+        if fazer_baixa_sge:
+            competencia = f'{dados_nome["mes"]}-20{dados_nome["ano"]}'
+            id_existente = buscar_id_empresa_supabase(
+                empresa_codigo=str(empresa_id),
+                competencia=competencia,
+                codigo_documento=codigo,
+            )
+            if not id_existente:
+                logger.warning(
+                    "Controle nao cadastrado no SGE: empresa=%s competencia=%s cod_doc=%s — %s mantido em DOCS",
+                    empresa_id,
+                    competencia,
+                    codigo,
+                    nome,
+                )
+                pendencias_notificacao.append(
+                    f"{nome} - empresa/pasta nao cadastrada no SGE; mantido em DOCS"
+                )
+                return "ignorado"
+
+            local = f"Google Drive / {pasta_destino_historico}"
+            sucesso, detalhe_erro = baixar_controle_supabase(
+                empresa_codigo=str(empresa_id),
+                codigo_documento=codigo,
+                competencia=competencia,
+                banco=dados_nome["banco"],
+                agencia=dados_nome["agencia"],
+                conta=dados_nome["conta"],
+                nome_arquivo=nome,
+                local_arquivo=local,
+                quantidade_arquivos=quantidade,
+                status="Enviado",
+                data_recebimento=agora_historico().strftime("%Y-%m-%d"),
+            )
+            if not sucesso:
+                logger.warning(
+                    "Baixa SGE falhou para %s: %s — mantido em DOCS",
+                    nome,
+                    detalhe_erro,
+                )
+                if detalhe_erro:
+                    erros_sge_notificacao.append(detalhe_erro)
+                pendencias_notificacao.append(
+                    f"{nome} - baixa no SGE falhou ({detalhe_erro or 'erro desconhecido'}); mantido em DOCS"
+                )
+                return "ignorado"
+
         logger.info(
             "Movendo %s DOCS para: %s",
             "pasta" if is_pasta else "documento",
@@ -492,22 +542,7 @@ def _processar_item_docs(
                 "nome_arquivo": nome,
                 "pasta_destino": pasta_destino_historico,
                 "data_hora_movimento": momento_movimento.strftime("%Y-%m-%d %H:%M:%S"),
-                "status_sge": "",
-            }
-        )
-        documentos_para_baixa.append(
-            {
-                "empresa_id": empresa_id,
-                "competencia": f'{dados_nome["mes"]}-20{dados_nome["ano"]}',
-                "codigo_documento": dados_nome["codigo"],
-                "banco": dados_nome["banco"],
-                "agencia": dados_nome["agencia"],
-                "conta": dados_nome["conta"],
-                "arquivo_nome": nome,
-                "pasta_destino": pasta_destino_historico,
-                "quantidade_arquivos": quantidade,
-                "indice_historico": len(registros_historico) - 1,
-                "data_recebimento": momento_movimento.strftime("%Y-%m-%d"),
+                "status_sge": "Baixado" if fazer_baixa_sge else "",
             }
         )
         documentos_notificacao.append(f"{nome} - {pasta_destino_historico}")
@@ -584,8 +619,8 @@ def executar_docs() -> dict[str, int]:
     erros = 0
     registros_historico: list[dict[str, object]] = []
     documentos_notificacao: list[str] = []
-    documentos_para_baixa: list[dict[str, object]] = []
     pendencias_notificacao: list[str] = []
+    erros_sge_notificacao: list[str] = []
 
     itens = [(a, False) for a in arquivos] + [(p, True) for p in pastas]
     for item, is_pasta in itens:
@@ -598,9 +633,10 @@ def executar_docs() -> dict[str, int]:
             empresas=empresas,
             raizes_ids=raizes_ids,
             registros_historico=registros_historico,
-            documentos_para_baixa=documentos_para_baixa,
             documentos_notificacao=documentos_notificacao,
             pendencias_notificacao=pendencias_notificacao,
+            erros_sge_notificacao=erros_sge_notificacao,
+            fazer_baixa_sge=True,
         )
         if resultado == "movido":
             movidos += 1
@@ -608,41 +644,6 @@ def executar_docs() -> dict[str, int]:
             ignorados += 1
         else:
             erros += 1
-
-    logger.info("Atualizando controle no portal SGE para %s documento(s)", len(documentos_para_baixa))
-    atualizados_sge = 0
-    erros_sge = 0
-    erros_sge_notificacao: list[str] = []
-    sem_baixa_nao_cadastrada: list[str] = []
-
-    for doc in documentos_para_baixa:
-        try:
-            local = f'Google Drive / {doc["pasta_destino"]}'
-            sucesso, detalhe_erro = baixar_controle_supabase(
-                empresa_codigo=str(doc["empresa_id"]),
-                codigo_documento=doc["codigo_documento"],
-                competencia=doc["competencia"],
-                banco=doc["banco"],
-                agencia=doc["agencia"],
-                conta=doc["conta"],
-                nome_arquivo=doc["arquivo_nome"],
-                local_arquivo=local,
-                quantidade_arquivos=doc.get("quantidade_arquivos", 1),
-                status="Enviado",
-                data_recebimento=doc["data_recebimento"],
-            )
-            if sucesso:
-                atualizados_sge += 1
-                registros_historico[doc["indice_historico"]]["status_sge"] = "Baixado"
-            else:
-                erros_sge += 1
-                registros_historico[doc["indice_historico"]]["status_sge"] = "Erro"
-                if detalhe_erro:
-                    erros_sge_notificacao.append(detalhe_erro)
-        except Exception:
-            erros_sge += 1
-            registros_historico[doc["indice_historico"]]["status_sge"] = "Erro"
-            logger.exception("Erro ao atualizar controle no SGE: %s", doc["arquivo_nome"])
 
     registrar_historico_docs(
         google_drive=google_drive,
@@ -655,23 +656,20 @@ def executar_docs() -> dict[str, int]:
         google_drive=google_drive,
         pasta_raiz_id=raiz_id,
         execucao_id=execucao_id,
-        atualizados_sge=atualizados_sge,
-        empresas_nao_cadastradas_sge=sem_baixa_nao_cadastrada,
-        erros_sge=erros_sge,
+        erros_sge=len(erros_sge_notificacao),
         erros_sge_detalhe=erros_sge_notificacao,
         pendencias=pendencias_notificacao,
     )
 
     logger.info(
         "Fluxo DOCS concluido. Processados=%s Movidos=%s Ignorados=%s Erros=%s "
-        "Pendencias=%s AtualizadosSGE=%s ErrosSGE=%s",
+        "Pendencias=%s ErrosSGE=%s",
         processados,
         movidos,
         ignorados,
         erros,
         len(pendencias_notificacao),
-        atualizados_sge,
-        erros_sge,
+        len(erros_sge_notificacao),
     )
 
     return {
@@ -680,8 +678,7 @@ def executar_docs() -> dict[str, int]:
         "ignorados": ignorados,
         "erros": erros,
         "pendencias": len(pendencias_notificacao),
-        "atualizados_sge": atualizados_sge,
-        "erros_sge": erros_sge,
+        "erros_sge": len(erros_sge_notificacao),
     }
 
 

@@ -1109,6 +1109,13 @@ def arquivar_pdf_sem_movimentacao(
     arquivo_id: str,
     nome_arquivo: str,
     empresas: dict[str, tuple[object, str]] | None = None,
+    *,
+    fazer_baixa_sge: bool = False,
+    codigo_documento: str = "",
+    competencia: str = "",
+    banco: str = "",
+    agencia: str = "",
+    conta: str = "",
 ) -> dict | None:
     cliente = extrair_cliente_nome_arquivo(nome_arquivo)
     empresa_id, empresa_nome = buscar_empresa_por_cliente(cliente, empresas=empresas)
@@ -1129,6 +1136,44 @@ def arquivar_pdf_sem_movimentacao(
         return None
 
     momento = agora_historico()
+
+    if fazer_baixa_sge:
+        id_existente = buscar_id_empresa_supabase(
+            empresa_codigo=str(empresa_id),
+            competencia=competencia,
+            codigo_documento=codigo_documento,
+        )
+        if not id_existente:
+            logger.warning(
+                "Controle nao cadastrado no SGE: empresa=%s competencia=%s cod_doc=%s — %s mantido na EXT",
+                empresa_id,
+                competencia,
+                codigo_documento,
+                nome_arquivo,
+            )
+            return None
+        local = f"Google Drive / {pasta_destino_historico}"
+        sucesso, detalhe_erro = baixar_controle_supabase(
+            empresa_codigo=str(empresa_id),
+            codigo_documento=codigo_documento,
+            competencia=competencia,
+            banco=banco,
+            agencia=agencia,
+            conta=conta,
+            nome_arquivo=nome_arquivo,
+            local_arquivo=local,
+            quantidade_arquivos=1,
+            status="Enviado",
+            data_recebimento=momento.strftime("%Y-%m-%d"),
+        )
+        if not sucesso:
+            logger.warning(
+                "Baixa SGE falhou para %s: %s — mantido na EXT",
+                nome_arquivo,
+                detalhe_erro,
+            )
+            return None
+
     logger.info("Movendo arquivo sem movimentacao para pasta destino EMP: %s", nome_arquivo)
     google_drive.move_file(
         file_id=arquivo_id,
@@ -1231,7 +1276,6 @@ def _executar_conversao(execucao_id: str):
     layouts_invalidos_notificacao = []
     erros_processamento_notificacao = []
     documentos_convertidos = []
-    documentos_para_baixa = []
 
     for arquivo_drive in arquivos:
         arquivo_nome_seguro = arquivo_drive.get("name", "DESCONHECIDO")
@@ -1363,28 +1407,19 @@ def _executar_conversao(execucao_id: str):
                     arquivo_id=arquivo_id,
                     nome_arquivo=arquivo_nome,
                     empresas=empresas,
+                    fazer_baixa_sge=True,
+                    codigo_documento=dados_nome.codigo_documento,
+                    competencia=dados_nome.competencia,
+                    banco=dados_nome.banco,
+                    agencia=dados_nome.agencia,
+                    conta=dados_nome.conta,
                 )
                 if resultado_sm:
                     pdfs_sem_movimentacao_notificacao.append(resultado_sm["notificacao"])
                     sem_movimentacao += 1
-                    documentos_para_baixa.append({
-                        "empresa_id": resultado_sm["empresa_id"],
-                        "mes": dados_nome.mes,
-                        "ano": dados_nome.ano,
-                        "competencia": dados_nome.competencia,
-                        "codigo_documento": dados_nome.codigo_documento,
-                        "banco": dados_nome.banco,
-                        "agencia": dados_nome.agencia,
-                        "conta": dados_nome.conta,
-                        "arquivo_nome": arquivo_nome,
-                        "pasta_destino": resultado_sm["pasta_destino"],
-                        "quantidade_arquivos": 1,
-                        "status": "Enviado",
-                        "data_recebimento": resultado_sm["momento"].strftime("%Y-%m-%d"),
-                    })
                 else:
                     erros_processamento_notificacao.append(
-                        f"{arquivo_nome} - empresa ou pasta nao encontrada; mantido na EXT"
+                        f"{arquivo_nome} - baixa no SGE falhou ou empresa/pasta nao encontrada; mantido na EXT"
                     )
                 continue
 
@@ -1460,28 +1495,19 @@ def _executar_conversao(execucao_id: str):
                     arquivo_id=arquivo_id,
                     nome_arquivo=arquivo_nome,
                     empresas=empresas,
+                    fazer_baixa_sge=True,
+                    codigo_documento=dados_nome.codigo_documento,
+                    competencia=dados_nome.competencia,
+                    banco=dados_nome.banco,
+                    agencia=dados_nome.agencia,
+                    conta=dados_nome.conta,
                 )
                 if resultado_sm:
                     pdfs_sem_movimentacao_notificacao.append(resultado_sm["notificacao"])
                     sem_movimentacao += 1
-                    documentos_para_baixa.append({
-                        "empresa_id": resultado_sm["empresa_id"],
-                        "mes": dados_nome.mes,
-                        "ano": dados_nome.ano,
-                        "competencia": dados_nome.competencia,
-                        "codigo_documento": dados_nome.codigo_documento,
-                        "banco": dados_nome.banco,
-                        "agencia": dados_nome.agencia,
-                        "conta": dados_nome.conta,
-                        "arquivo_nome": arquivo_nome,
-                        "pasta_destino": resultado_sm["pasta_destino"],
-                        "quantidade_arquivos": 1,
-                        "status": "Enviado",
-                        "data_recebimento": resultado_sm["momento"].strftime("%Y-%m-%d"),
-                    })
                 else:
                     erros_processamento_notificacao.append(
-                        f"{arquivo_nome} - empresa ou pasta nao encontrada; mantido na EXT"
+                        f"{arquivo_nome} - baixa no SGE falhou ou empresa/pasta nao encontrada; mantido na EXT"
                     )
                 continue
 
@@ -1527,6 +1553,51 @@ def _executar_conversao(execucao_id: str):
             del df_totalizado
             momento_conversao = agora_historico()
 
+            # Tentar baixa no SGE antes de enviar/mover arquivos
+            id_existente = buscar_id_empresa_supabase(
+                empresa_codigo=str(empresa_id),
+                competencia=dados_nome.competencia,
+                codigo_documento=dados_nome.codigo_documento,
+            )
+            if not id_existente:
+                logger.warning(
+                    "Controle nao cadastrado no SGE: empresa=%s competencia=%s cod_doc=%s — %s mantido na EXT",
+                    empresa_id,
+                    dados_nome.competencia,
+                    dados_nome.codigo_documento,
+                    arquivo_nome,
+                )
+                erros_processamento_notificacao.append(
+                    f"{arquivo_nome} - empresa/pasta nao cadastrada no SGE; mantido na EXT"
+                )
+                continue
+
+            local = f"Google Drive / {pasta_destino_historico}"
+            sucesso_baixa, detalhe_erro = baixar_controle_supabase(
+                empresa_codigo=str(empresa_id),
+                codigo_documento=dados_nome.codigo_documento,
+                competencia=dados_nome.competencia,
+                banco=dados_nome.banco,
+                agencia=dados_nome.agencia,
+                conta=dados_nome.conta,
+                nome_arquivo=arquivo_nome,
+                local_arquivo=local,
+                quantidade_arquivos=3,
+                status="Enviado",
+                data_recebimento=momento_conversao.strftime("%Y-%m-%d"),
+            )
+            if not sucesso_baixa:
+                logger.warning(
+                    "Baixa SGE falhou para %s: %s — mantido na EXT",
+                    arquivo_nome,
+                    detalhe_erro,
+                )
+                erros_processamento_notificacao.append(
+                    f"{arquivo_nome} - baixa no SGE falhou ({detalhe_erro or 'erro desconhecido'}); mantido na EXT"
+                )
+                continue
+
+            # Baixa OK — enviar arquivos gerados e mover PDF
             logger.info("Enviando XLSM para o Google Drive: %s", dest_lancamento.name)
             enviar_ou_atualizar_arquivo(
                 google_drive=google_drive,
@@ -1581,22 +1652,6 @@ def _executar_conversao(execucao_id: str):
                 "arquivo_nome": arquivo_nome,
                 "pasta_destino": pasta_destino_historico,
                 "momento": momento_conversao,
-            })
-
-            documentos_para_baixa.append({
-                "empresa_id": empresa_id,
-                "mes": dados_nome.mes,
-                "ano": dados_nome.ano,
-                "competencia": dados_nome.competencia,
-                "codigo_documento": dados_nome.codigo_documento,
-                "banco": dados_nome.banco,
-                "agencia": dados_nome.agencia,
-                "conta": dados_nome.conta,
-                "arquivo_nome": arquivo_nome,
-                "pasta_destino": pasta_destino_historico,
-                "quantidade_arquivos": 3,
-                "status": "Enviado",
-                "data_recebimento": momento_conversao.strftime("%Y-%m-%d"),
             })
 
             convertidos += 1
@@ -1670,28 +1725,19 @@ def _executar_conversao(execucao_id: str):
                 arquivo_id=arquivo_id,
                 nome_arquivo=arquivo_nome,
                 empresas=empresas,
+                fazer_baixa_sge=True,
+                codigo_documento=dados_nome.codigo_documento,
+                competencia=dados_nome.competencia,
+                banco=dados_nome.banco,
+                agencia=dados_nome.agencia,
+                conta=dados_nome.conta,
             )
             if resultado_sm:
                 pdfs_sem_movimentacao_notificacao.append(resultado_sm["notificacao"])
                 sem_movimentacao += 1
-                documentos_para_baixa.append({
-                    "empresa_id": resultado_sm["empresa_id"],
-                    "mes": dados_nome.mes,
-                    "ano": dados_nome.ano,
-                    "competencia": dados_nome.competencia,
-                    "codigo_documento": dados_nome.codigo_documento,
-                    "banco": dados_nome.banco,
-                    "agencia": dados_nome.agencia,
-                    "conta": dados_nome.conta,
-                    "arquivo_nome": arquivo_nome,
-                    "pasta_destino": resultado_sm["pasta_destino"],
-                    "quantidade_arquivos": 1,
-                    "status": "Enviado",
-                    "data_recebimento": resultado_sm["momento"].strftime("%Y-%m-%d"),
-                })
             else:
                 erros_processamento_notificacao.append(
-                    f"{arquivo_nome} - empresa ou pasta nao encontrada; mantido na EXT"
+                    f"{arquivo_nome} - baixa no SGE falhou ou empresa/pasta nao encontrada; mantido na EXT"
                 )
         except Exception:
             logger.exception("Erro ao processar Excel: %s", arquivo_nome)
@@ -1699,58 +1745,10 @@ def _executar_conversao(execucao_id: str):
                 f"{arquivo_nome} - erro inesperado; mantido na EXT"
             )
 
-    logger.info("Atualizando controle no portal SGE para %s documento(s)", len(documentos_para_baixa))
-    atualizados_sge = 0
-    erros_sge = 0
-    erros_sge_notificacao: list[str] = []
-    sem_baixa_nao_cadastrada: list[str] = []
-
-    for doc in documentos_para_baixa:
-        try:
-            id_existente = buscar_id_empresa_supabase(
-                empresa_codigo=str(doc["empresa_id"]),
-                competencia=doc["competencia"],
-                codigo_documento=doc["codigo_documento"],
-            )
-            if not id_existente:
-                logger.warning(
-                    "Controle nao cadastrado no SGE: empresa=%s competencia=%s cod_doc=%s — ignorado",
-                    doc["empresa_id"],
-                    doc["competencia"],
-                    doc["codigo_documento"],
-                )
-                sem_baixa_nao_cadastrada.append(
-                    f"{doc['arquivo_nome']} — competencia {doc['competencia']}"
-                )
-                continue
-            local = f"Google Drive / {doc['pasta_destino']}"
-            sucesso, detalhe_erro = baixar_controle_supabase(
-                empresa_codigo=str(doc["empresa_id"]),
-                codigo_documento=doc["codigo_documento"],
-                competencia=doc["competencia"],
-                banco=doc["banco"],
-                agencia=doc["agencia"],
-                conta=doc["conta"],
-                nome_arquivo=doc["arquivo_nome"],
-                local_arquivo=local,
-                quantidade_arquivos=doc["quantidade_arquivos"],
-                status=doc["status"],
-                data_recebimento=doc["data_recebimento"],
-            )
-            if sucesso:
-                atualizados_sge += 1
-            else:
-                erros_sge += 1
-                if detalhe_erro:
-                    erros_sge_notificacao.append(detalhe_erro)
-        except Exception:
-            erros_sge += 1
-            logger.exception("Erro ao atualizar controle no SGE: %s", doc["arquivo_nome"])
-
     notificacao_kwargs = {
         "pdfs_sem_movimentacao": pdfs_sem_movimentacao_notificacao,
         "pdfs_nao_legiveis": pdfs_nao_legiveis_notificacao,
-        "atualizados_sge": atualizados_sge,
+        "atualizados_sge": convertidos + sem_movimentacao,
     }
     if convertidos_ia_notificacao:
         notificacao_kwargs["convertidos_ia"] = convertidos_ia_notificacao
@@ -1762,16 +1760,10 @@ def _executar_conversao(execucao_id: str):
         notificacao_kwargs["layouts_nao_reconhecidos"] = layouts_invalidos_notificacao
     if erros_processamento_notificacao:
         notificacao_kwargs["erros_processamento"] = erros_processamento_notificacao
-    if erros_sge_notificacao:
-        notificacao_kwargs["erros_sge_detalhe"] = erros_sge_notificacao
-    if sem_baixa_nao_cadastrada:
-        notificacao_kwargs["empresas_nao_cadastradas_sge"] = sem_baixa_nao_cadastrada
 
     possui_alertas = any(
         (
             invalidos,
-            erros_sge,
-            sem_baixa_nao_cadastrada,
             nomes_invalidos_notificacao,
             erros_senha_notificacao,
             layouts_invalidos_notificacao,
@@ -1790,7 +1782,7 @@ def _executar_conversao(execucao_id: str):
             "total_sem_movimentacao": sem_movimentacao,
             "total_invalidos": invalidos,
             "total_desbloqueados": desbloqueados,
-            "erros_sge": erros_sge,
+            "erros_sge": 0,
         }
     )
 
@@ -1803,8 +1795,7 @@ def _executar_conversao(execucao_id: str):
         (
             "Fluxo de conversao concluido. "
             "Processados=%s Convertidos=%s SemMovimentacao=%s Invalidos=%s "
-            "Desbloqueados=%s ErrosProcessamento=%s "
-            "AtualizadosSGE=%s ErrosSGE=%s"
+            "Desbloqueados=%s ErrosProcessamento=%s"
         ),
         processados,
         convertidos,
@@ -1812,8 +1803,6 @@ def _executar_conversao(execucao_id: str):
         invalidos,
         desbloqueados,
         len(erros_processamento_notificacao),
-        atualizados_sge,
-        erros_sge,
     )
 
 

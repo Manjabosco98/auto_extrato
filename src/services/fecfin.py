@@ -21,6 +21,7 @@ from src.app.gdrive.settings import (
 )
 from src.app.supabase.supabase_api import (
     baixar_controle_supabase,
+    buscar_id_empresa_supabase,
     carregar_caminhos_documentos_api,
 )
 from src.schemas.fecfin.registry import dispatch_fecwin
@@ -286,7 +287,53 @@ def executar_fecfin() -> dict[str, int]:
                 raiz_nome=raiz_nome,
             )
 
-            # Gerar e enviar os lancamentos [LANC] por banco
+            # Tentar baixa no SGE antes de mover/enviar arquivos
+            momento = agora_historico()
+            id_existente = buscar_id_empresa_supabase(
+                empresa_codigo=str(empresa_id),
+                competencia=f"{mes}-20{ano}",
+                codigo_documento=FECFIN_CODIGO,
+            )
+            if not id_existente:
+                logger.warning(
+                    "Controle nao cadastrado no SGE: empresa=%s competencia=%s — %s mantido na EXT",
+                    empresa_id,
+                    f"{mes}-20{ano}",
+                    fecfin_nome,
+                )
+                empresas_nao_encontradas.append(f"{fecfin_nome} - empresa/pasta nao cadastrada no SGE")
+                continue
+
+            quantidade_lanc = sum(
+                1 for banco_nome, df_banco in resultados
+                if df_banco is not None and not df_banco.empty
+            )
+            quantidade_total = 1 + quantidade_lanc
+            sucesso, detalhe = baixar_controle_supabase(
+                empresa_codigo=str(empresa_id),
+                codigo_documento=FECFIN_CODIGO,
+                competencia=f"{mes}-20{ano}",
+                banco="",
+                agencia="",
+                conta="",
+                nome_arquivo=fecfin_nome,
+                local_arquivo=f"Google Drive / {pasta_destino_historico}",
+                quantidade_arquivos=quantidade_total,
+                status="Enviado",
+                data_recebimento=momento.strftime("%Y-%m-%d"),
+            )
+            if not sucesso:
+                logger.warning(
+                    "Baixa SGE falhou para %s: %s — mantido na EXT",
+                    fecfin_nome,
+                    detalhe,
+                )
+                erros_sge += 1
+                if detalhe:
+                    erros_sge_detalhe.append(detalhe)
+                continue
+
+            # Baixa OK — gerar e enviar os lancamentos [LANC] por banco
             for banco_nome, df_banco in resultados:
                 if df_banco is None or df_banco.empty:
                     logger.warning("FECFIN %s - banco %s sem dados", fecfin_nome, banco_nome)
@@ -308,30 +355,8 @@ def executar_fecfin() -> dict[str, int]:
             # Mover o FECFIN original para a pasta da empresa
             google_drive.move_file(file_id=fecfin_id, folder_id_destino=pasta_destino_id)
             movidos += 1
-            momento = agora_historico()
             arquivos_notificacao.append(f"{fecfin_nome} - {pasta_destino_historico}")
-
-            # Baixa FECFIN (sem instancia)
-            quantidade = 1 + len(lancs_locais)
-            sucesso, detalhe = baixar_controle_supabase(
-                empresa_codigo=str(empresa_id),
-                codigo_documento=FECFIN_CODIGO,
-                competencia=f"{mes}-20{ano}",
-                banco="",
-                agencia="",
-                conta="",
-                nome_arquivo=fecfin_nome,
-                local_arquivo=f"Google Drive / {pasta_destino_historico}",
-                quantidade_arquivos=quantidade,
-                status="Enviado",
-                data_recebimento=momento.strftime("%Y-%m-%d"),
-            )
-            if sucesso:
-                atualizados_sge += 1
-            else:
-                erros_sge += 1
-                if detalhe:
-                    erros_sge_detalhe.append(detalhe)
+            atualizados_sge += 1
 
         except Exception:
             erros += 1

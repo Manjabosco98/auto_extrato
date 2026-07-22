@@ -912,6 +912,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 patch.object(conversao.shutil, "copy2", side_effect=copy_modelo),
                 patch.object(conversao, "registrar_historico_conversao", side_effect=registrar_historico),
                 patch.object(conversao, "buscar_id_empresa_supabase", return_value="uuid-empresa-23"),
+                patch.object(conversao, "baixar_controle_supabase", return_value=(True, None)),
                 patch.object(conversao, "enviar_notificacao_google_chat", side_effect=enviar_notificacao),
             ):
                 pdf_extractor.return_value.extract.return_value = (["texto extraido"], 1)
@@ -1250,7 +1251,7 @@ class ConversaoPasswordTest(unittest.TestCase):
         notificacao.assert_called_once()
         self.assertEqual(
             notificacao.call_args.kwargs["erros_processamento"],
-            ["0526_EXTBAN_ITAU_SM_CIAL_AG 1_CC 45440-7.pdf - empresa ou pasta nao encontrada; mantido na EXT"],
+            ["0526_EXTBAN_ITAU_SM_CIAL_AG 1_CC 45440-7.pdf - baixa no SGE falhou ou empresa/pasta nao encontrada; mantido na EXT"],
         )
         self.assertEqual(
             notificacao.call_args.kwargs["status_execucao"],
