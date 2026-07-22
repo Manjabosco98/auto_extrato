@@ -234,8 +234,54 @@ def _chave_banco(texto: str) -> str:
     return re.sub(r"[^A-Z0-9]", "", sem_acento)
 
 
-def _match_instancia(instancias: list[dict], banco: str, conta: str) -> str | None:
-    """Encontra o instancia_codigo que bate com banco e conta.
+def _agencia_da_descricao(desc: str) -> str:
+    """Retorna o trecho de agencia ("A:...") da descricao da instancia.
+
+    Cobre os dois formatos gravados no SGE: "... - A:0001-9 - C: 1265692-5" e
+    "...- A:RDC FLEX- C:1926-7". Retorna "" quando a descricao nao traz agencia.
+    """
+    if "A:" not in desc:
+        return ""
+    return desc.split("A:", 1)[1].split("C:", 1)[0]
+
+
+def _chave_agencia(valor: str) -> str:
+    """Chave de agencia: alfanumerica e sem zeros a esquerda ('0001-9' -> '19')."""
+    return _chave_banco(valor).lstrip("0")
+
+
+def _desempatar_por_agencia(
+    candidatos: list[tuple[str, str]], agencia: str
+) -> str | None:
+    """Escolhe entre instancias que ja casaram banco (e conta) usando a agencia.
+
+    A mesma conta pode ter mais de uma instancia quando o que as separa e a
+    agencia — caso das aplicacoes SICOOB "A:RDC AUT" e "A:RDC FLEX", ambas na
+    conta 1926-7. Sem criterio de desempate, retorna None: escolher a primeira
+    daria baixa na instancia errada.
+    """
+    if not candidatos:
+        return None
+    if len(candidatos) == 1:
+        return candidatos[0][0]
+
+    agencia_key = _chave_agencia(agencia)
+    if agencia_key:
+        por_agencia = [
+            codigo
+            for codigo, desc in candidatos
+            if _chave_agencia(_agencia_da_descricao(desc)) == agencia_key
+        ]
+        if len(por_agencia) == 1:
+            return por_agencia[0]
+
+    return None
+
+
+def _match_instancia(
+    instancias: list[dict], banco: str, conta: str, agencia: str = ""
+) -> str | None:
+    """Encontra o instancia_codigo que bate com banco, conta e agencia.
 
     Cada instancia tem: {"codigo": "7-12656925", "descricao": "EXTBAN-BANCO INTER - A:0001-9 - C: 1265692-5"}
     """
@@ -254,7 +300,8 @@ def _match_instancia(instancias: list[dict], banco: str, conta: str) -> str | No
     # Fallback so para instancia do banco SEM conta na descricao (ex.: "KAMINO",
     # "BTG PACTUAL"). Se a instancia tem uma conta DIFERENTE, nao serve como
     # fallback — senao a baixa cairia numa conta errada do mesmo banco.
-    fallback_sem_conta = None
+    candidatos: list[tuple[str, str]] = []
+    fallback_sem_conta: list[tuple[str, str]] = []
     for inst in instancias:
         codigo = str(inst.get("codigo", "")).strip()
         desc = str(inst.get("descricao", "")).upper()
@@ -263,9 +310,10 @@ def _match_instancia(instancias: list[dict], banco: str, conta: str) -> str | No
         if banco_key not in _chave_banco(desc):
             continue
 
-        # Sem conta no arquivo, retornar primeira instancia deste banco.
+        # Sem conta no arquivo, toda instancia do banco e candidata.
         if not conta_clean:
-            return codigo
+            candidatos.append((codigo, desc))
+            continue
 
         # Conta da instancia (ignorando zeros a esquerda), se houver.
         desc_conta_clean = ""
@@ -274,13 +322,13 @@ def _match_instancia(instancias: list[dict], banco: str, conta: str) -> str | No
 
         if desc_conta_clean:
             if desc_conta_clean == conta_clean:
-                return codigo
+                candidatos.append((codigo, desc))
             # conta diferente: nao casa e nao vira fallback
-        elif fallback_sem_conta is None:
+        else:
             # instancia do banco sem conta na descricao
-            fallback_sem_conta = codigo
+            fallback_sem_conta.append((codigo, desc))
 
-    return fallback_sem_conta
+    return _desempatar_por_agencia(candidatos or fallback_sem_conta, agencia)
 
 
 def _detalhe_404_baixa(
@@ -357,11 +405,17 @@ def _descrever_candidatas(itens: list[dict], limite: int = 5) -> str:
 
 
 def _detalhe_instancia_indeterminada(
-    empresa_codigo: str, banco: str, conta: str, nome_arquivo: str, instancias: list[dict]
+    empresa_codigo: str,
+    banco: str,
+    conta: str,
+    nome_arquivo: str,
+    instancias: list[dict],
+    agencia: str = "",
 ) -> str:
     return (
         f"{nome_arquivo}: documento exige instancia no SGE (empresa {empresa_codigo}), "
-        f"mas nao foi possivel determinar por banco={banco or '-'} conta={conta or '-'}. "
+        f"mas nao foi possivel determinar por banco={banco or '-'} "
+        f"agencia={agencia or '-'} conta={conta or '-'}. "
         f"Candidatas: {_descrever_candidatas(instancias) or 'nenhuma'}"
     )
 
@@ -470,7 +524,7 @@ def baixar_controle_supabase(
         if response.status_code == 400:
             instancias = _instancias_disponiveis(response)
             if instancias:
-                instancia_codigo = _match_instancia(instancias, banco, conta)
+                instancia_codigo = _match_instancia(instancias, banco, conta, agencia)
                 if instancia_codigo:
                     payload["instancia_codigo"] = instancia_codigo
                     logger.info(
@@ -488,7 +542,7 @@ def baixar_controle_supabase(
                     )
                 else:
                     detalhe = _detalhe_instancia_indeterminada(
-                        empresa_codigo, banco, conta, nome_arquivo, instancias
+                        empresa_codigo, banco, conta, nome_arquivo, instancias, agencia
                     )
                     logger.warning(detalhe)
                     return False, detalhe

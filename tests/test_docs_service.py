@@ -245,6 +245,7 @@ class DocsServiceTest(unittest.TestCase):
                 patch.object(docs, "carregar_caminhos_documentos_api", return_value=CAMINHOS_PADRAO),
                 patch.object(docs, "carregar_empresas_ativas", return_value={"BRITO": (196, "BRITO")}),
                 patch.object(docs, "enviar_notificacao_docs_google_chat") as notificacao,
+                patch.object(docs, "buscar_id_empresa_supabase", return_value="uuid-196"),
                 patch.object(docs, "baixar_controle_supabase", return_value=(True, None)),
                 patch.object(docs, "agora_historico", return_value=docs.datetime(2026, 6, 16, 12, 30, 5)),
             ):
@@ -256,7 +257,6 @@ class DocsServiceTest(unittest.TestCase):
             "ignorados": 0,
             "erros": 0,
             "pendencias": 0,
-            "atualizados_sge": 1,
             "erros_sge": 0,
         })
         self.assertIn(("root-folder", "DOCS"), fake_drive.folders)
@@ -296,8 +296,7 @@ class DocsServiceTest(unittest.TestCase):
             call_args[0],
             ["0626_JURATPAS_BRITO.docx - EMP/196_BRITO/MOV/CONT/26/06/REL"],
         )
-        self.assertEqual(call_kwargs["atualizados_sge"], 1)
-        self.assertEqual(call_kwargs["empresas_nao_cadastradas_sge"], [])
+        self.assertEqual(call_kwargs["pendencias"], [])
         self.assertEqual(call_kwargs["erros_sge"], 0)
         self.assertEqual(call_kwargs["erros_sge_detalhe"], [])
         self.assertIs(call_kwargs["google_drive"], fake_drive)
@@ -323,7 +322,6 @@ class DocsServiceTest(unittest.TestCase):
             "ignorados": 1,
             "erros": 0,
             "pendencias": 1,
-            "atualizados_sge": 0,
             "erros_sge": 0,
         })
         self.assertEqual(fake_drive.moved, [])
@@ -331,8 +329,7 @@ class DocsServiceTest(unittest.TestCase):
         notificacao.assert_called_once()
         call_args, call_kwargs = notificacao.call_args
         self.assertEqual(call_args[0], [])
-        self.assertEqual(call_kwargs["atualizados_sge"], 0)
-        self.assertEqual(call_kwargs["empresas_nao_cadastradas_sge"], [])
+        self.assertEqual(len(call_kwargs["pendencias"]), 1)
         self.assertEqual(call_kwargs["erros_sge"], 0)
         self.assertEqual(call_kwargs["erros_sge_detalhe"], [])
         self.assertIs(call_kwargs["google_drive"], fake_drive)
@@ -418,6 +415,7 @@ class DocsServiceTest(unittest.TestCase):
                 ),
                 patch.object(docs, "carregar_empresas_ativas", return_value={"CEMAF OPE": (156, "CEMAF OPE")}),
                 patch.object(docs, "enviar_notificacao_docs_google_chat"),
+                patch.object(docs, "buscar_id_empresa_supabase", return_value="uuid-156"),
                 patch.object(docs, "baixar_controle_supabase", return_value=(True, None)) as mock_baixa,
                 patch.object(docs, "agora_historico", return_value=docs.datetime(2026, 6, 26, 8, 40, 0)),
             ):
@@ -427,7 +425,7 @@ class DocsServiceTest(unittest.TestCase):
                 resultado = docs.executar_docs()
 
         self.assertEqual(resultado["movidos"], 1)
-        self.assertEqual(resultado["atualizados_sge"], 1)
+        self.assertEqual(resultado["erros_sge"], 0)
         # a pasta inteira foi movida para o destino do codigo NFSENT
         self.assertEqual(fake_drive.moved, [("pasta-1", "id-NFSENT")])
         # baixa: codigo NFSENT, sem instancia, e Arquivos = 3 (itens dentro da pasta)
@@ -459,6 +457,7 @@ class DocsServiceTest(unittest.TestCase):
                 ),
                 patch.object(docs, "carregar_empresas_ativas", return_value={"BRITO": (196, "BRITO")}),
                 patch.object(docs, "enviar_notificacao_docs_google_chat"),
+                patch.object(docs, "buscar_id_empresa_supabase", return_value="uuid-196"),
                 patch.object(docs, "baixar_controle_supabase", return_value=(True, None)),
                 patch.object(docs, "agora_historico", return_value=docs.datetime(2026, 6, 16, 12, 30, 5)),
             ):
@@ -596,6 +595,7 @@ class DocsServiceTest(unittest.TestCase):
                     },
                 ),
                 patch.object(docs, "enviar_notificacao_docs_google_chat"),
+                patch.object(docs, "buscar_id_empresa_supabase", return_value="uuid-510"),
                 patch.object(docs, "baixar_controle_supabase", return_value=(True, None)) as mock_baixa,
                 patch.object(docs, "agora_historico", return_value=docs.datetime(2026, 6, 26, 8, 40, 0)),
             ):
@@ -637,19 +637,23 @@ class DocsServiceTest(unittest.TestCase):
                 patch.object(docs, "carregar_caminhos_documentos_api", return_value=CAMINHOS_PADRAO),
                 patch.object(docs, "carregar_empresas_ativas", return_value={"BRITO": (196, "BRITO")}),
                 patch.object(docs, "enviar_notificacao_docs_google_chat") as notificacao,
-                patch.object(docs, "baixar_controle_supabase", return_value=(False, "Empresa 196 nao dada baixa: nao esta cadastrada na plataforma SGECONT")),
+                patch.object(docs, "buscar_id_empresa_supabase", return_value=None),
+                patch.object(docs, "baixar_controle_supabase") as mock_baixa,
                 patch.object(docs, "agora_historico", return_value=docs.datetime(2026, 6, 16, 12, 30, 5)),
             ):
                 resultado = docs.executar_docs()
 
-        self.assertEqual(resultado["movidos"], 1)
-        self.assertEqual(resultado["atualizados_sge"], 0)
-        self.assertEqual(resultado["erros_sge"], 1)
-        self.assertEqual(fake_drive.history_rows[-1][-1], "Erro")
+        # controle inexistente no SGE: nem tenta a baixa e nao move o arquivo
+        mock_baixa.assert_not_called()
+        self.assertEqual(resultado["movidos"], 0)
+        self.assertEqual(resultado["ignorados"], 1)
+        self.assertEqual(resultado["pendencias"], 1)
+        self.assertEqual(fake_drive.moved, [])
+        self.assertEqual(fake_drive.history_rows, [])
         notificacao.assert_called_once()
         call_kwargs = notificacao.call_args[1]
-        self.assertEqual(call_kwargs["erros_sge"], 1)
-        self.assertEqual(call_kwargs["erros_sge_detalhe"], ["Empresa 196 nao dada baixa: nao esta cadastrada na plataforma SGECONT"])
+        self.assertEqual(call_kwargs["erros_sge"], 0)
+        self.assertIn("nao cadastrada no SGE", call_kwargs["pendencias"][0])
 
     def test_executar_docs_erro_api_sge(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -665,19 +669,23 @@ class DocsServiceTest(unittest.TestCase):
                 patch.object(docs, "carregar_caminhos_documentos_api", return_value=CAMINHOS_PADRAO),
                 patch.object(docs, "carregar_empresas_ativas", return_value={"BRITO": (196, "BRITO")}),
                 patch.object(docs, "enviar_notificacao_docs_google_chat") as notificacao,
+                patch.object(docs, "buscar_id_empresa_supabase", return_value="uuid-196"),
                 patch.object(docs, "baixar_controle_supabase", return_value=(False, "Empresa 196 nao cadastrada")),
                 patch.object(docs, "agora_historico", return_value=docs.datetime(2026, 6, 16, 12, 30, 5)),
             ):
                 resultado = docs.executar_docs()
 
-        self.assertEqual(resultado["movidos"], 1)
-        self.assertEqual(resultado["atualizados_sge"], 0)
+        # baixa recusada pelo SGE: arquivo fica em DOCS e o motivo vai pro Chat
+        self.assertEqual(resultado["movidos"], 0)
+        self.assertEqual(resultado["ignorados"], 1)
         self.assertEqual(resultado["erros_sge"], 1)
-        self.assertEqual(fake_drive.history_rows[-1][-1], "Erro")
+        self.assertEqual(fake_drive.moved, [])
+        self.assertEqual(fake_drive.history_rows, [])
         notificacao.assert_called_once()
         call_kwargs = notificacao.call_args[1]
         self.assertEqual(call_kwargs["erros_sge"], 1)
         self.assertEqual(call_kwargs["erros_sge_detalhe"], ["Empresa 196 nao cadastrada"])
+        self.assertIn("Empresa 196 nao cadastrada", call_kwargs["pendencias"][0])
 
     def test_notificacao_docs_google_chat_com_sge(self):
         with patch.object(docs, "registrar_e_enviar_notificacao", return_value=True) as mock_registrar:

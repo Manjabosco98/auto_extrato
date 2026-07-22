@@ -2073,6 +2073,62 @@ class ConversaoPasswordTest(unittest.TestCase):
             "462-122254",
         )
 
+    def test_match_instancia_desempata_por_agencia_mesma_conta(self):
+        # Caso real (empresa 458, COLEGIO WR): duas aplicacoes SICOOB na MESMA
+        # conta 1926-7, separadas so pela agencia (RDC AUT x RDC FLEX).
+        instancias = [
+            {"codigo": "458-4-19267-FLEX", "descricao": "EXTAPL-SICOOB- A:RDC FLEX- C:1926-7"},
+            {"codigo": "458-4-19267-AUT", "descricao": "EXTAPL-SICOOB-A:RDC AUT-C:1926-7"},
+        ]
+        self.assertEqual(
+            supabase_api._match_instancia(instancias, "SICOOB", "1926-7", "RDC AUT"),
+            "458-4-19267-AUT",
+        )
+        self.assertEqual(
+            supabase_api._match_instancia(instancias, "SICOOB", "1926-7", "RDC FLEX"),
+            "458-4-19267-FLEX",
+        )
+
+    def test_match_instancia_ambigua_sem_agencia_retorna_none(self):
+        # Sem agencia no nome do arquivo nao ha como escolher entre as duas;
+        # retornar None mantem o arquivo parado em vez de baixar na errada.
+        instancias = [
+            {"codigo": "458-4-19267-FLEX", "descricao": "EXTAPL-SICOOB- A:RDC FLEX- C:1926-7"},
+            {"codigo": "458-4-19267-AUT", "descricao": "EXTAPL-SICOOB-A:RDC AUT-C:1926-7"},
+        ]
+        self.assertIsNone(
+            supabase_api._match_instancia(instancias, "SICOOB", "1926-7")
+        )
+
+    def test_match_instancia_desempate_agencia_numerica_com_zeros(self):
+        instancias = [
+            {"codigo": "1", "descricao": "EXTBAN-BANCO INTER - A:0001-9 - C: 1265692-5"},
+            {"codigo": "2", "descricao": "EXTBAN-BANCO INTER - A:0002-7 - C: 1265692-5"},
+        ]
+        self.assertEqual(
+            supabase_api._match_instancia(instancias, "INTER", "1265692-5", "1-9"),
+            "1",
+        )
+
+    def test_agencia_da_descricao_dois_formatos(self):
+        self.assertEqual(
+            supabase_api._chave_agencia(
+                supabase_api._agencia_da_descricao("EXTAPL-SICOOB- A:RDC FLEX- C:1926-7")
+            ),
+            "RDCFLEX",
+        )
+        self.assertEqual(
+            supabase_api._chave_agencia(
+                supabase_api._agencia_da_descricao(
+                    "EXTBAN-BANCO INTER - A:0001-9 - C: 1265692-5"
+                )
+            ),
+            "19",
+        )
+        self.assertEqual(
+            supabase_api._agencia_da_descricao("EXTBAN-BANCO KAMINO"), ""
+        )
+
     def test_chave_banco_remove_espaco_e_acento(self):
         self.assertEqual(supabase_api._chave_banco("C6 BANK"), "C6BANK")
         self.assertEqual(supabase_api._chave_banco("Banco C6 Bank"), "BANCOC6BANK")
