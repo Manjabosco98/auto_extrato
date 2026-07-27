@@ -251,7 +251,9 @@ def _agencia_da_descricao(desc: str) -> str:
     if separador:
         return agencia
 
-    encontrado = re.search(r"\bAG[\s:]+([0-9][0-9.\s-]*)", desc.upper())
+    encontrado = re.search(
+        r"(?:^|[^A-Z0-9])AG[\s:_-]+([0-9][0-9.\s-]*)", desc.upper()
+    )
     return encontrado.group(1).strip() if encontrado else ""
 
 
@@ -267,7 +269,9 @@ def _conta_da_descricao(desc: str) -> str:
     if "C:" in desc:
         return re.sub(r"[^0-9]", "", desc.split("C:")[-1]).lstrip("0")
 
-    encontrado = re.search(r"\bCC[\s:]+([0-9][0-9.\s-]*)", desc.upper())
+    encontrado = re.search(
+        r"(?:^|[^A-Z0-9])CC[\s:_-]+([0-9][0-9.\s-]*)", desc.upper()
+    )
     if encontrado:
         return re.sub(r"[^0-9]", "", encontrado.group(1)).lstrip("0")
     return ""

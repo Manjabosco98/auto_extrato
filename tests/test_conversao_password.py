@@ -2249,8 +2249,8 @@ class ConversaoPasswordTest(unittest.TestCase):
         # formato "A:... - C:..." dos extratos. Com mais de uma conta ITAU a
         # baixa ficava indeterminada e o arquivo parava em DOCS.
         instancias = [
-            {"codigo": "3-16-132888", "descricao": "INFRENDTRI ITAU_CIAL AG 4372 CC 13288-8"},
-            {"codigo": "3-16-999999", "descricao": "INFRENDTRI ITAU_CIAL AG 1234 CC 99999-9"},
+            {"codigo": "3-16-132888", "descricao": "INFRENDTRI_ITAU_CIAL_AG 4372_CC 13288-8"},
+            {"codigo": "3-16-999999", "descricao": "INFRENDTRI_ITAU_CIAL_AG 1234_CC 99999-9"},
         ]
         self.assertEqual(
             supabase_api._match_instancia(instancias, "ITAU", "13288-8", "4372"),
@@ -2261,7 +2261,7 @@ class ConversaoPasswordTest(unittest.TestCase):
         # A conta na descricao agora e lida tambem no formato "CC ...", entao
         # conta diferente deixa de virar fallback do banco.
         instancias = [
-            {"codigo": "3-16-999999", "descricao": "INFRENDTRI ITAU_CIAL AG 1234 CC 99999-9"},
+            {"codigo": "3-16-999999", "descricao": "INFRENDTRI_ITAU_CIAL_AG 1234_CC 99999-9"},
         ]
         self.assertIsNone(
             supabase_api._match_instancia(instancias, "ITAU", "13288-8", "4372")
@@ -2276,12 +2276,16 @@ class ConversaoPasswordTest(unittest.TestCase):
             supabase_api._conta_da_descricao("INFRENDTRI ITAU_CIAL AG 4372 CC 13288-8"),
             "132888",
         )
+        self.assertEqual(
+            supabase_api._conta_da_descricao("INFRENDTRI_ITAU_CIAL_AG 4372_CC 13288-8"),
+            "132888",
+        )
         self.assertEqual(supabase_api._conta_da_descricao("EXTBAN-BANCO KAMINO"), "")
 
     def test_agencia_da_descricao_formato_ag(self):
         self.assertEqual(
             supabase_api._chave_agencia(
-                supabase_api._agencia_da_descricao("INFRENDTRI ITAU_CIAL AG 4372 CC 13288-8")
+                supabase_api._agencia_da_descricao("INFRENDTRI_ITAU_CIAL_AG 4372_CC 13288-8")
             ),
             "4372",
         )
