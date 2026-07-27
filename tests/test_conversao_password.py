@@ -2243,6 +2243,49 @@ class ConversaoPasswordTest(unittest.TestCase):
             "1",
         )
 
+    def test_match_instancia_descricao_no_formato_ag_cc(self):
+        # Caso real (empresa 3, CIAL): a instancia do INFRENDTRI e gravada no
+        # SGE espelhando o nome do arquivo ("AG 4372 CC 13288-8"), e nao no
+        # formato "A:... - C:..." dos extratos. Com mais de uma conta ITAU a
+        # baixa ficava indeterminada e o arquivo parava em DOCS.
+        instancias = [
+            {"codigo": "3-16-132888", "descricao": "INFRENDTRI ITAU_CIAL AG 4372 CC 13288-8"},
+            {"codigo": "3-16-999999", "descricao": "INFRENDTRI ITAU_CIAL AG 1234 CC 99999-9"},
+        ]
+        self.assertEqual(
+            supabase_api._match_instancia(instancias, "ITAU", "13288-8", "4372"),
+            "3-16-132888",
+        )
+
+    def test_match_instancia_formato_ag_cc_nao_casa_conta_diferente(self):
+        # A conta na descricao agora e lida tambem no formato "CC ...", entao
+        # conta diferente deixa de virar fallback do banco.
+        instancias = [
+            {"codigo": "3-16-999999", "descricao": "INFRENDTRI ITAU_CIAL AG 1234 CC 99999-9"},
+        ]
+        self.assertIsNone(
+            supabase_api._match_instancia(instancias, "ITAU", "13288-8", "4372")
+        )
+
+    def test_conta_da_descricao_dois_formatos(self):
+        self.assertEqual(
+            supabase_api._conta_da_descricao("EXTBAN-BANCO INTER - A:0001-9 - C: 1265692-5"),
+            "12656925",
+        )
+        self.assertEqual(
+            supabase_api._conta_da_descricao("INFRENDTRI ITAU_CIAL AG 4372 CC 13288-8"),
+            "132888",
+        )
+        self.assertEqual(supabase_api._conta_da_descricao("EXTBAN-BANCO KAMINO"), "")
+
+    def test_agencia_da_descricao_formato_ag(self):
+        self.assertEqual(
+            supabase_api._chave_agencia(
+                supabase_api._agencia_da_descricao("INFRENDTRI ITAU_CIAL AG 4372 CC 13288-8")
+            ),
+            "4372",
+        )
+
     def test_agencia_da_descricao_dois_formatos(self):
         self.assertEqual(
             supabase_api._chave_agencia(

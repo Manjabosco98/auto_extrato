@@ -235,19 +235,42 @@ def _chave_banco(texto: str) -> str:
 
 
 def _agencia_da_descricao(desc: str) -> str:
-    """Retorna o trecho de agencia ("A:...") da descricao da instancia.
+    """Retorna o trecho de agencia da descricao da instancia.
 
-    Cobre os dois formatos gravados no SGE: "... - A:0001-9 - C: 1265692-5" e
-    "...- A:RDC FLEX- C:1926-7". Usa a ULTIMA ocorrencia de "A:" antes da conta
-    porque a descricao pode vir prefixada por texto livre ("Extratos Bancarios
-    - Aplicacoes Financeiras - PDF/OFX - EXTAPL-SICOOB-A:RDC AUT-C:1926-7").
-    Retorna "" quando a descricao nao traz agencia.
+    Cobre os formatos gravados no SGE: "... - A:0001-9 - C: 1265692-5",
+    "...- A:RDC FLEX- C:1926-7" e o estilo do nome do arquivo
+    "INFRENDTRI ITAU_CIAL AG 4372 CC 13288-8". Usa a ULTIMA ocorrencia de "A:"
+    antes da conta porque a descricao pode vir prefixada por texto livre
+    ("Extratos Bancarios - Aplicacoes Financeiras - PDF/OFX -
+    EXTAPL-SICOOB-A:RDC AUT-C:1926-7"). Retorna "" quando nao traz agencia.
     """
     cabeca, separador, _ = desc.rpartition("C:")
     if not separador:
         cabeca = desc
     _, separador, agencia = cabeca.rpartition("A:")
-    return agencia if separador else ""
+    if separador:
+        return agencia
+
+    encontrado = re.search(r"\bAG[\s:]+([0-9][0-9.\s-]*)", desc.upper())
+    return encontrado.group(1).strip() if encontrado else ""
+
+
+def _conta_da_descricao(desc: str) -> str:
+    """Digitos da conta na descricao da instancia (sem zeros a esquerda).
+
+    Dois formatos convivem no SGE: "- C: 1265692-5" (extratos bancarios) e
+    "CC 13288-8", que espelha o nome do arquivo (caso do INFRENDTRI). Sem o
+    segundo formato a instancia so casaria pelo fallback "unica do banco", que
+    falha assim que a empresa tem mais de uma conta no mesmo banco.
+    Retorna "" quando a descricao nao traz conta.
+    """
+    if "C:" in desc:
+        return re.sub(r"[^0-9]", "", desc.split("C:")[-1]).lstrip("0")
+
+    encontrado = re.search(r"\bCC[\s:]+([0-9][0-9.\s-]*)", desc.upper())
+    if encontrado:
+        return re.sub(r"[^0-9]", "", encontrado.group(1)).lstrip("0")
+    return ""
 
 
 def _chave_agencia(valor: str) -> str:
@@ -321,9 +344,7 @@ def _match_instancia(
             continue
 
         # Conta da instancia (ignorando zeros a esquerda), se houver.
-        desc_conta_clean = ""
-        if "C:" in desc:
-            desc_conta_clean = re.sub(r"[^0-9]", "", desc.split("C:")[-1]).lstrip("0")
+        desc_conta_clean = _conta_da_descricao(desc)
 
         if desc_conta_clean:
             if desc_conta_clean == conta_clean:
