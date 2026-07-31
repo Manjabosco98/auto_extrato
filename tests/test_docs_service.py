@@ -336,6 +336,43 @@ class DocsServiceTest(unittest.TestCase):
         self.assertEqual(call_kwargs["pasta_raiz_id"], "root-folder")
         self.assertTrue(call_kwargs["execucao_id"].startswith("DOCS-"))
 
+    def test_executar_docs_pasta_do_cliente_ausente_reporta_motivo(self):
+        # Empresa cadastrada no SGE mas sem pasta ID_NOME em EMP: a pendencia
+        # precisa dizer QUAL pasta falta, nao "erro ao mover/processar".
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_drive = FakeDriveDocs(temp_dir)
+
+            with (
+                patch.object(docs, "GoogleDriveAuth", return_value=fake_drive),
+                patch.object(docs, "GOOGLE_DRIVE_FOLDER_ID", "root-folder"),
+                patch.object(docs, "GOOGLE_DRIVE_EMP_FOLDER_ID", "srvarq-folder"),
+                patch.object(docs, "carregar_caminhos_documentos_api", return_value=CAMINHOS_PADRAO),
+                patch.object(docs, "carregar_empresas_ativas", return_value={"BRITO": (196, "BRITO")}),
+                patch.object(docs, "enviar_notificacao_docs_google_chat") as notificacao,
+                patch.object(docs, "buscar_id_empresa_supabase") as mock_busca_sge,
+                patch.object(docs, "baixar_controle_supabase") as mock_baixa,
+            ):
+                resultado = docs.executar_docs()
+
+        self.assertEqual(resultado, {
+            "processados": 1,
+            "movidos": 0,
+            "ignorados": 0,
+            "erros": 1,
+            "pendencias": 1,
+            "erros_sge": 0,
+        })
+        self.assertEqual(fake_drive.moved, [])
+        # o destino e resolvido antes da baixa: nada e enviado ao SGE
+        mock_busca_sge.assert_not_called()
+        mock_baixa.assert_not_called()
+
+        pendencia = notificacao.call_args[1]["pendencias"][0]
+        self.assertIn("0626_JURATPAS_BRITO.docx", pendencia)
+        self.assertIn("196_BRITO", pendencia)
+        self.assertIn("nao encontrada em EMP", pendencia)
+        self.assertNotIn("erro ao mover/processar", pendencia)
+
     def test_notificacao_docs_google_chat_payload(self):
         with patch.object(docs, "registrar_e_enviar_notificacao", return_value=True) as mock_registrar:
             resultado = docs.enviar_notificacao_docs_google_chat(

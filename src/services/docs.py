@@ -547,6 +547,14 @@ def _processar_item_docs(
         )
         documentos_notificacao.append(f"{nome} - {pasta_destino_historico}")
         return "movido"
+    except ValueError as erro:
+        # Falha previsivel do destino (ex.: pasta do cliente ainda nao criada em
+        # EMP). A mensagem ja explica o que revisar, entao vai inteira para a
+        # notificacao: sem isso a pendencia chega ao Chat como "erro ao
+        # mover/processar" e o motivo real fica so no log.
+        logger.warning("Destino DOCS nao resolvido para %s: %s", nome, erro)
+        pendencias_notificacao.append(f"{nome} - {erro}")
+        return "erro"
     except Exception:
         logger.exception("Erro ao mover documento DOCS: %s", nome)
         pendencias_notificacao.append(f"{nome} - erro ao mover/processar")
