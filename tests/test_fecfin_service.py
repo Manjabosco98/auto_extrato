@@ -694,6 +694,7 @@ class ExecutarFecfinBaixaTest(unittest.TestCase):
              patch.object(fecfin_service, "dispatch_fecwin", return_value=[("ITAU", df)]), \
              patch.object(fecfin_service.shutil, "copy2"), \
              patch.object(fecfin_service, "planilha_lancamento"), \
+             patch.object(fecfin_service, "buscar_id_empresa_supabase", return_value="uuid-114"), \
              patch.object(fecfin_service, "baixar_controle_supabase", return_value=(True, None)) as mock_baixa, \
              patch.object(fecfin_service, "enviar_notificacao_fecfin_google_chat"):
             resultado = fecfin_service.executar_fecfin()

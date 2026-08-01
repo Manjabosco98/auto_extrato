@@ -36,6 +36,14 @@ services:
   nginx:
     image: nginx:alpine
     container_name: autoextrato-nginx
+    # ssl.conf faz proxy_pass para o host "evolution-api" (WhatsApp). Sem um
+    # registro que resolva esse nome o nginx nem sobe ("host not found in
+    # upstream") e o autoextrato cai junto. O container evolution-api NAO roda
+    # mais neste droplet, entao o IP abaixo nao atende: os vhosts do WhatsApp
+    # respondem 504. Mantido so para o nginx iniciar. Ao restaurar o Evolution,
+    # coloque-o na autoextrato-network e troque isto pelo nome do servico.
+    extra_hosts:
+      - "evolution-api:172.19.0.4"
     restart: unless-stopped
     ports:
       - "80:80"
