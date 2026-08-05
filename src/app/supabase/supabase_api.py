@@ -3,6 +3,7 @@ import os
 import re
 import time
 import unicodedata
+from dataclasses import dataclass
 from datetime import date
 
 import requests
@@ -34,6 +35,15 @@ _CACHE_EMPRESAS: dict[str, tuple[str, str]] | None = None
 _CACHE_EMPRESAS_TS: float = 0
 _CACHE_EMPRESAS_TTL: int = 300
 
+# Registros lidos por consulta de controle. Um documento tem no maximo uma
+# linha por instancia da empresa na competencia, entao 200 cobre com folga.
+LIMITE_REGISTROS_CONTROLE = 200
+
+# Status do SGE que representam documento ja resolvido: dar baixa de novo
+# sobrescreveria nome do arquivo, quantidade, local e data de recebimento ja
+# gravados. Fora deste conjunto sobra "Nao Enviado", que e o que espera baixa.
+STATUS_JA_BAIXADO = {"ENVIADO", "NAOAPLICAVEL", "ENCERRADA"}
+
 
 def _normalizar_nome_empresa(valor) -> str:
     return " ".join(str(valor or "").strip().upper().split())
@@ -47,20 +57,26 @@ def _converter_competencia(competencia: str) -> str:
     return competencia
 
 
-def buscar_id_empresa_supabase(
+def _listar_registros_controle(
     empresa_codigo: str,
     competencia: str,
     codigo_documento: str,
     *,
-    url: str = SUPABASE_CONTROLE_GET_URL,
-    key: str = SUPABASE_CONTROLE_KEY,
-) -> str | None:
-    """GET /controle - busca id_empresa (UUID) pelo codigo da empresa."""
+    limite: int,
+    url: str,
+    key: str,
+) -> list[dict]:
+    """GET /controle - registros de controle da empresa/competencia/documento.
+
+    Retorna lista vazia tambem quando a consulta falha: para os fluxos, "nao
+    consegui perguntar ao SGE" tem o mesmo desfecho de "nao ha registro" —
+    nenhuma baixa e feita e o arquivo fica onde esta.
+    """
     params = {
         "empresa_codigo": empresa_codigo,
         "competencia": _converter_competencia(competencia),
         "codigo_documento": codigo_documento,
-        "limit": 1,
+        "limit": limite,
     }
     headers = {
         "Authorization": f"Bearer {key}",
@@ -68,7 +84,7 @@ def buscar_id_empresa_supabase(
 
     try:
         logger.info(
-            "Buscando id_empresa no SGE: empresa=%s competencia=%s cod_doc=%s",
+            "Consultando controle no SGE: empresa=%s competencia=%s cod_doc=%s",
             empresa_codigo,
             competencia,
             codigo_documento,
@@ -83,46 +99,65 @@ def buscar_id_empresa_supabase(
 
         if response.status_code < 200 or response.status_code >= 300:
             logger.error(
-                "Falha ao buscar id_empresa no SGE: status=%s body=%s",
+                "Falha ao consultar controle no SGE: status=%s body=%s",
                 response.status_code,
                 resposta_texto,
             )
-            return None
+            return []
 
-        data = response.json()
-        registros = data.get("data", [])
-
-        if not registros:
-            logger.warning(
-                "Nenhum registro encontrado no SGE: empresa=%s competencia=%s cod_doc=%s",
-                empresa_codigo,
-                competencia,
-                codigo_documento,
-            )
-            return None
-
-        id_empresa = registros[0].get("id_empresa")
-
-        if not id_empresa:
-            logger.warning(
-                "Registro encontrado mas id_empresa ausente: empresa=%s competencia=%s",
-                empresa_codigo,
-                competencia,
-            )
-            return None
-
-        logger.info(
-            "id_empresa encontrado: %s para empresa=%s",
-            id_empresa,
-            empresa_codigo,
-        )
-        return str(id_empresa)
+        registros = response.json().get("data", [])
+        return registros if isinstance(registros, list) else []
     except Exception:
         logger.exception(
-            "Erro ao buscar id_empresa no SGE: empresa=%s",
+            "Erro ao consultar controle no SGE: empresa=%s",
             empresa_codigo,
         )
+        return []
+
+
+def buscar_id_empresa_supabase(
+    empresa_codigo: str,
+    competencia: str,
+    codigo_documento: str,
+    *,
+    url: str = SUPABASE_CONTROLE_GET_URL,
+    key: str = SUPABASE_CONTROLE_KEY,
+) -> str | None:
+    """GET /controle - busca id_empresa (UUID) pelo codigo da empresa."""
+    registros = _listar_registros_controle(
+        empresa_codigo,
+        competencia,
+        codigo_documento,
+        limite=1,
+        url=url,
+        key=key,
+    )
+
+    if not registros:
+        logger.warning(
+            "Nenhum registro encontrado no SGE: empresa=%s competencia=%s cod_doc=%s",
+            empresa_codigo,
+            competencia,
+            codigo_documento,
+        )
         return None
+
+    id_empresa = registros[0].get("id_empresa")
+
+    if not id_empresa:
+        logger.warning(
+            "Registro encontrado mas id_empresa ausente: empresa=%s competencia=%s",
+            empresa_codigo,
+            competencia,
+        )
+        return None
+
+    logger.info(
+        "id_empresa encontrado: %s para empresa=%s",
+        id_empresa,
+        empresa_codigo,
+    )
+    return str(id_empresa)
 
 
 def atualizar_controle_supabase(
@@ -221,17 +256,23 @@ _ALIAS_BANCO = {
 }
 
 
-def _chave_banco(texto: str) -> str:
-    """Chave de comparacao de banco: maiuscula, sem acento e sem nao-alfanumerico.
+def _chave_texto(texto) -> str:
+    """Chave de comparacao: maiuscula, sem acento e sem nao-alfanumerico.
 
     Torna o match insensivel a espacos e pontuacao, resolvendo casos como
-    "C6BANK" (nome do arquivo) x "BANCO C6 BANK" (descricao da instancia).
+    "C6BANK" (nome do arquivo) x "BANCO C6 BANK" (descricao da instancia) e
+    "Nao Aplicavel" x "Não Aplicável" (status do SGE).
     """
     sem_acento = "".join(
         c for c in unicodedata.normalize("NFKD", str(texto).upper())
         if not unicodedata.combining(c)
     )
     return re.sub(r"[^A-Z0-9]", "", sem_acento)
+
+
+def status_ja_baixado(status) -> bool:
+    """True quando o status do SGE ja representa baixa (ou decisao) gravada."""
+    return _chave_texto(status) in STATUS_JA_BAIXADO
 
 
 def _agencia_da_descricao(desc: str) -> str:
@@ -279,7 +320,7 @@ def _conta_da_descricao(desc: str) -> str:
 
 def _chave_agencia(valor: str) -> str:
     """Chave de agencia: alfanumerica e sem zeros a esquerda ('0001-9' -> '19')."""
-    return _chave_banco(valor).lstrip("0")
+    return _chave_texto(valor).lstrip("0")
 
 
 def _desempatar_por_agencia(
@@ -324,7 +365,7 @@ def _match_instancia(
     # Chave alfanumerica do banco (+ alias). Sem banco nao ha como casar
     # instancia (ex.: documentos que nao sao extrato bancario); retornar None
     # evita casar uma instancia arbitraria.
-    banco_key = _chave_banco(banco)
+    banco_key = _chave_texto(banco)
     banco_key = _ALIAS_BANCO.get(banco_key, banco_key)
     if not banco_key:
         return None
@@ -339,7 +380,7 @@ def _match_instancia(
         desc = str(inst.get("descricao", "")).upper()
 
         # Verificar se o banco esta na descricao (insensivel a espaco/acento)
-        if banco_key not in _chave_banco(desc):
+        if banco_key not in _chave_texto(desc):
             continue
 
         # Sem conta no arquivo, toda instancia do banco e candidata.
@@ -522,6 +563,156 @@ def _detalhe_409_baixa(
         f"banco={banco or '-'} agencia={agencia or '-'} conta={conta or '-'}). "
         f"Candidatas: {_descrever_candidatas(_candidatas_409(response)) or 'nao informadas'}. "
         "Informe conta/instancia para desambiguar."
+    )
+
+
+@dataclass(frozen=True)
+class SituacaoControle:
+    """Situacao do registro de controle do SGE para um documento.
+
+    ``cadastrado`` responde "existe registro para baixar?"; ``ja_baixado``
+    responde "esse registro ja tem baixa?" — os fluxos precisam das duas antes
+    de chamar ``baixar_controle_supabase``.
+    """
+
+    cadastrado: bool
+    id_empresa: str | None = None
+    status_envio: str = ""
+    nome_arquivo: str = ""
+    data_recebimento: str = ""
+    instancia_descricao: str = ""
+
+    @property
+    def ja_baixado(self) -> bool:
+        return status_ja_baixado(self.status_envio)
+
+    def resumo(self) -> str:
+        """Descricao curta da baixa existente, para log e notificacao."""
+        partes = [f"status '{self.status_envio}'"]
+        if self.nome_arquivo:
+            partes.append(f"arquivo '{self.nome_arquivo}'")
+        if self.data_recebimento:
+            partes.append(f"recebido em {self.data_recebimento}")
+        if self.instancia_descricao:
+            partes.append(f"instancia '{self.instancia_descricao}'")
+        return ", ".join(partes)
+
+
+def _registro_da_instancia(
+    registros: list[dict], banco: str, agencia: str, conta: str
+) -> dict | None:
+    """Escolhe, entre os registros de controle, o que corresponde ao arquivo.
+
+    Documento sem instancia (FECFIN e afins) tem registro unico, com
+    ``instancia_id`` nulo. Com instancia (extratos), o casamento reusa a mesma
+    logica banco+agencia+conta da baixa, sobre a descricao da instancia que a
+    propria API devolve. Retorna None quando nao da para afirmar qual registro
+    e o do arquivo — adivinhar aqui levaria a checar a baixa da conta errada.
+    """
+    if not banco and not conta:
+        sem_instancia = [r for r in registros if not r.get("instancia_id")]
+        if len(sem_instancia) == 1:
+            return sem_instancia[0]
+        return registros[0] if len(registros) == 1 else None
+
+    id_alvo = _match_instancia(
+        [
+            {"codigo": r.get("id"), "descricao": r.get("instancia_descricao") or ""}
+            for r in registros
+            if r.get("id")
+        ],
+        banco,
+        conta,
+        agencia,
+    )
+    if not id_alvo:
+        return None
+    return next((r for r in registros if str(r.get("id")) == str(id_alvo)), None)
+
+
+def consultar_situacao_controle(
+    empresa_codigo: str,
+    competencia: str,
+    codigo_documento: str,
+    *,
+    banco: str = "",
+    agencia: str = "",
+    conta: str = "",
+    url: str = SUPABASE_CONTROLE_GET_URL,
+    key: str = SUPABASE_CONTROLE_KEY,
+) -> SituacaoControle:
+    """GET /controle - diz se o documento esta cadastrado e se ja foi baixado.
+
+    Uma consulta so responde as duas perguntas que os fluxos fazem antes da
+    baixa. A segunda existe porque ``POST /controle/baixa`` sobrescreve o
+    registro sem olhar o status: sem esta checagem, reprocessar um arquivo
+    apagaria a baixa anterior (nome do arquivo, quantidade, local e data).
+    """
+    registros = _listar_registros_controle(
+        empresa_codigo,
+        competencia,
+        codigo_documento,
+        limite=LIMITE_REGISTROS_CONTROLE,
+        url=url,
+        key=key,
+    )
+
+    # O filtro de codigo_documento da API e "contem": consultar MEDPRUD tambem
+    # traz as linhas de COMPMEDPRUD. So o codigo exato interessa.
+    alvo = str(codigo_documento).strip().upper()
+    registros = [
+        r
+        for r in registros
+        if str(r.get("codigo_documento") or "").strip().upper() == alvo
+    ]
+
+    if not registros:
+        logger.warning(
+            "Nenhum registro encontrado no SGE: empresa=%s competencia=%s cod_doc=%s",
+            empresa_codigo,
+            competencia,
+            codigo_documento,
+        )
+        return SituacaoControle(cadastrado=False)
+
+    id_empresa = next(
+        (str(r["id_empresa"]) for r in registros if r.get("id_empresa")), None
+    )
+    if not id_empresa:
+        logger.warning(
+            "Registro encontrado mas id_empresa ausente: empresa=%s competencia=%s",
+            empresa_codigo,
+            competencia,
+        )
+        return SituacaoControle(cadastrado=False)
+
+    registro = _registro_da_instancia(registros, banco, agencia, conta)
+    if registro is None:
+        # Instancia indeterminada por aqui: so trata como baixado se TODAS as
+        # linhas do documento ja estiverem baixadas — qualquer que seja a certa,
+        # a baixa sobrescreveria uma delas. Havendo alguma pendente, segue e
+        # deixa o proprio POST /controle/baixa resolver a instancia.
+        baixados = [r for r in registros if status_ja_baixado(r.get("status_envio"))]
+        if len(baixados) != len(registros):
+            return SituacaoControle(cadastrado=True, id_empresa=id_empresa)
+        logger.info(
+            "Instancia nao identificada para empresa=%s cod_doc=%s banco=%s conta=%s, "
+            "mas todos os %s registro(s) da competencia ja estao baixados",
+            empresa_codigo,
+            codigo_documento,
+            banco or "-",
+            conta or "-",
+            len(registros),
+        )
+        registro = baixados[0]
+
+    return SituacaoControle(
+        cadastrado=True,
+        id_empresa=id_empresa,
+        status_envio=str(registro.get("status_envio") or ""),
+        nome_arquivo=str(registro.get("nome_arquivo") or ""),
+        data_recebimento=str(registro.get("data_recebimento") or ""),
+        instancia_descricao=str(registro.get("instancia_descricao") or ""),
     )
 
 

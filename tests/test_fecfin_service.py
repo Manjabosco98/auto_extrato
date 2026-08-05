@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
 from src.api.endpoints import fecfin as fecfin_endpoint
+from src.app.supabase import supabase_api
 from src.schemas.fecfin.registry import dispatch_fecwin
 
 
@@ -694,7 +695,7 @@ class ExecutarFecfinBaixaTest(unittest.TestCase):
              patch.object(fecfin_service, "dispatch_fecwin", return_value=[("ITAU", df)]), \
              patch.object(fecfin_service.shutil, "copy2"), \
              patch.object(fecfin_service, "planilha_lancamento"), \
-             patch.object(fecfin_service, "buscar_id_empresa_supabase", return_value="uuid-114"), \
+             patch.object(fecfin_service, "consultar_situacao_controle", return_value=supabase_api.SituacaoControle(cadastrado=True, id_empresa="uuid-114")), \
              patch.object(fecfin_service, "baixar_controle_supabase", return_value=(True, None)) as mock_baixa, \
              patch.object(fecfin_service, "enviar_notificacao_fecfin_google_chat"):
             resultado = fecfin_service.executar_fecfin()
@@ -708,6 +709,65 @@ class ExecutarFecfinBaixaTest(unittest.TestCase):
         self.assertEqual(kwargs["empresa_codigo"], "114")
         self.assertEqual(kwargs["banco"], "")
         self.assertEqual(kwargs["conta"], "")
+
+    def test_fecfin_ja_baixado_preserva_baixa_e_move(self):
+        # FECFIN ja baixado: nao sobrescreve o SGE, mas gera os [LANC] e move o
+        # arquivo para a pasta da empresa.
+        from src.services import fecfin as fecfin_service
+        from openpyxl import Workbook
+
+        df = pd.DataFrame(
+            [["01/06/2026", "PIX", 100.0, "C"]],
+            columns=["DATA", "DESCRIÇÃO", "VALOR", "TIPO"],
+        )
+
+        drive = MagicMock()
+        drive.get_or_create_folder.return_value = {"id": "ext"}
+        drive.list_children.return_value = [
+            {"id": "f1", "name": "0626_FECFIN_DAFF.xlsx", "mimeType": fecfin_service.XLSX_MIME_TYPE}
+        ]
+
+        def _download(file_id, destino_local):
+            Workbook().save(destino_local)
+            return str(destino_local)
+
+        drive.download.side_effect = _download
+
+        situacao = supabase_api.SituacaoControle(
+            cadastrado=True,
+            id_empresa="uuid-114",
+            status_envio="Enviado",
+            nome_arquivo="0626_FECFIN_DAFF.xlsx",
+            data_recebimento="2026-07-02",
+        )
+
+        with patch.object(fecfin_service, "GoogleDriveAuth", return_value=drive), \
+             patch.object(fecfin_service, "resolver_pasta_emp_base", return_value="emp"), \
+             patch.object(fecfin_service, "carregar_empresas_ativas", return_value={"DAFF": ("114", "DAFF LTDA")}), \
+             patch.object(fecfin_service, "buscar_empresa_por_cliente", return_value=("114", "DAFF LTDA")), \
+             patch.object(fecfin_service, "_carregar_destino_fecfin", return_value="SRVARQ\\EMP\\{EMPRESA}\\MOV\\CONT\\{ANO}\\{MES}\\EXT"), \
+             patch.object(fecfin_service, "nome_pasta_empresa", return_value="114_DAFF LTDA"), \
+             patch.object(fecfin_service, "montar_destino_docs", return_value=("EMP", ["114_DAFF LTDA", "MOV", "CONT", "26", "06", "EXT"])), \
+             patch.object(fecfin_service, "resolver_pasta_destino_docs", return_value=("dest", "EMP/114_DAFF LTDA/MOV/CONT/26/06/EXT")), \
+             patch.object(fecfin_service, "dispatch_fecwin", return_value=[("ITAU", df)]), \
+             patch.object(fecfin_service.shutil, "copy2"), \
+             patch.object(fecfin_service, "planilha_lancamento"), \
+             patch.object(fecfin_service, "consultar_situacao_controle", return_value=situacao), \
+             patch.object(fecfin_service, "baixar_controle_supabase") as mock_baixa, \
+             patch.object(fecfin_service, "enviar_notificacao_fecfin_google_chat") as notificacao:
+            resultado = fecfin_service.executar_fecfin()
+
+        mock_baixa.assert_not_called()
+        self.assertEqual(resultado["atualizados_sge"], 0)
+        self.assertEqual(resultado["baixas_preservadas"], 1)
+        self.assertEqual(resultado["movidos"], 1)
+        self.assertEqual(resultado["lancamentos"], 1)
+        drive.move_file.assert_called_once()
+
+        preservadas = notificacao.call_args.kwargs["baixas_preservadas"]
+        self.assertEqual(len(preservadas), 1)
+        self.assertIn("0626_FECFIN_DAFF.xlsx", preservadas[0])
+        self.assertIn("2026-07-02", preservadas[0])
 
 
 def _criar_excel_ce_part(

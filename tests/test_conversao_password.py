@@ -832,7 +832,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                     ),
                 ) as remover_senha,
                 patch.object(conversao, "PDFExtractor") as pdf_extractor,
-                patch.object(conversao, "buscar_id_empresa_supabase", return_value="uuid-empresa-23"),
+                patch.object(conversao, "consultar_situacao_controle", return_value=supabase_api.SituacaoControle(cadastrado=True, id_empresa="uuid-empresa-23")),
                 patch.object(conversao, "baixar_controle_supabase", return_value=(True, None)),
                 patch.object(conversao, "enviar_notificacao_google_chat"),
             ):
@@ -911,7 +911,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 patch.object(conversao, "planilha_lancamento"),
                 patch.object(conversao.shutil, "copy2", side_effect=copy_modelo),
                 patch.object(conversao, "registrar_historico_conversao", side_effect=registrar_historico),
-                patch.object(conversao, "buscar_id_empresa_supabase", return_value="uuid-empresa-23"),
+                patch.object(conversao, "consultar_situacao_controle", return_value=supabase_api.SituacaoControle(cadastrado=True, id_empresa="uuid-empresa-23")),
                 patch.object(conversao, "baixar_controle_supabase", return_value=(True, None)),
                 patch.object(conversao, "enviar_notificacao_google_chat", side_effect=enviar_notificacao),
             ):
@@ -1000,7 +1000,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 patch.object(conversao, "GoogleDriveAuth", return_value=fake_drive),
                 patch.object(conversao, "carregar_empresas_ativas", return_value={"AMP ENG": (23, "AMP ENG")}),
                 patch.object(conversao, "pdf_possui_senha", return_value=False),
-                patch.object(conversao, "buscar_id_empresa_supabase", return_value="uuid-empresa-23"),
+                patch.object(conversao, "consultar_situacao_controle", return_value=supabase_api.SituacaoControle(cadastrado=True, id_empresa="uuid-empresa-23")),
                 patch.object(conversao, "baixar_controle_supabase", return_value=(True, None)),
                 patch.object(conversao, "enviar_notificacao_google_chat"),
             ):
@@ -1095,7 +1095,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 patch.object(conversao, "planilha_lancamento"),
                 patch.object(conversao.shutil, "copy2", side_effect=copy_modelo),
                 patch.object(conversao, "registrar_historico_conversao"),
-                patch.object(conversao, "buscar_id_empresa_supabase", return_value="uuid-empresa-23"),
+                patch.object(conversao, "consultar_situacao_controle", return_value=supabase_api.SituacaoControle(cadastrado=True, id_empresa="uuid-empresa-23")),
                 patch.object(conversao, "baixar_controle_supabase", return_value=(True, None)),
                 patch.object(conversao, "enviar_notificacao_google_chat"),
             ):
@@ -1126,7 +1126,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 patch.object(conversao, "carregar_empresas_ativas", return_value={"CIAL": (123, "CIAL")}),
                 patch.object(conversao, "pdf_possui_senha", return_value=False),
                 patch.object(conversao, "PDFExtractor") as pdf_extractor,
-                patch.object(conversao, "buscar_id_empresa_supabase", return_value="uuid-empresa-123"),
+                patch.object(conversao, "consultar_situacao_controle", return_value=supabase_api.SituacaoControle(cadastrado=True, id_empresa="uuid-empresa-123")),
                 patch.object(conversao, "baixar_controle_supabase", return_value=(True, None)) as mock_baixa,
                 patch.object(conversao, "enviar_notificacao_google_chat") as notificacao,
             ):
@@ -1168,7 +1168,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 patch.object(conversao, "GoogleDriveAuth", return_value=fake_drive),
                 patch.object(conversao, "carregar_empresas_ativas", return_value={"ABDALLA": (77, "ABDALLA")}),
                 patch.object(conversao, "PDFExtractor") as pdf_extractor,
-                patch.object(conversao, "buscar_id_empresa_supabase", return_value="uuid-empresa-77"),
+                patch.object(conversao, "consultar_situacao_controle", return_value=supabase_api.SituacaoControle(cadastrado=True, id_empresa="uuid-empresa-77")),
                 patch.object(conversao, "baixar_controle_supabase", return_value=(True, None)) as mock_baixa,
                 patch.object(conversao, "enviar_notificacao_google_chat") as notificacao,
             ):
@@ -1334,7 +1334,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 patch.object(conversao, "planilha_lancamento"),
                 patch.object(conversao.shutil, "copy2", side_effect=copy_modelo),
                 patch.object(conversao, "registrar_historico_conversao"),
-                patch.object(conversao, "buscar_id_empresa_supabase", return_value="uuid-empresa-123"),
+                patch.object(conversao, "consultar_situacao_controle", return_value=supabase_api.SituacaoControle(cadastrado=True, id_empresa="uuid-empresa-123")),
                 patch.object(conversao, "baixar_controle_supabase", return_value=(True, None)),
                 patch.object(conversao, "enviar_notificacao_google_chat") as notificacao,
             ):
@@ -1373,7 +1373,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 patch.object(conversao, "pdf_possui_senha", return_value=False),
                 patch.object(conversao, "PDFExtractor") as pdf_extractor,
                 patch.object(conversao, "dispatch", return_value=pd.DataFrame()),
-                patch.object(conversao, "buscar_id_empresa_supabase", return_value="uuid-empresa-123"),
+                patch.object(conversao, "consultar_situacao_controle", return_value=supabase_api.SituacaoControle(cadastrado=True, id_empresa="uuid-empresa-123")),
                 patch.object(conversao, "baixar_controle_supabase", return_value=(True, None)) as mock_baixa,
                 patch.object(conversao, "enviar_notificacao_google_chat") as notificacao,
             ):
@@ -1501,7 +1501,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 patch.object(conversao, "dispatch", return_value=df),
                 patch.object(conversao, "planilha_lancamento"),
                 patch.object(conversao.shutil, "copy2", side_effect=copy_modelo),
-                patch.object(conversao, "buscar_id_empresa_supabase", return_value="uuid-empresa-23"),
+                patch.object(conversao, "consultar_situacao_controle", return_value=supabase_api.SituacaoControle(cadastrado=True, id_empresa="uuid-empresa-23")),
                 patch.object(conversao, "baixar_controle_supabase", return_value=(True, None)) as mock_sge,
                 patch.object(conversao, "enviar_notificacao_google_chat") as notificacao,
             ):
@@ -1524,6 +1524,97 @@ class ConversaoPasswordTest(unittest.TestCase):
         notificacao.assert_called_once()
         notificacao_kwargs = notificacao.call_args[1]
         self.assertEqual(notificacao_kwargs["atualizados_sge"], 1)
+
+    def test_documento_ja_baixado_preserva_baixa_e_converte(self):
+        # Reprocessar um extrato ja baixado nao pode sobrescrever o registro do
+        # SGE; o PDF ainda assim e convertido e sai da EXT.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_drive = FakeDrive(
+                temp_dir,
+                root_pdfs=[
+                    {
+                        "id": "pdf-1",
+                        "name": "0526_EXTBAN_C6BANK_CAMARGOS_AG 1_CC 123.pdf",
+                        "mimeType": "application/pdf",
+                    }
+                ],
+                existing_folders={("id-EMP", "23_CAMARGOS")},
+            )
+
+            def copy_modelo(origem, destino):
+                Path(destino).write_bytes(b"modelo")
+
+            df = pd.DataFrame(
+                [{"DATA": "01/05/2026", "VALOR": 10.0, "TIPO": "C", "DESCRIÇÃO": "PIX"}]
+            )
+            situacao = supabase_api.SituacaoControle(
+                cadastrado=True,
+                id_empresa="uuid-empresa-23",
+                status_envio="Enviado",
+                nome_arquivo="0526_EXTBAN_C6BANK_CAMARGOS_AG 1_CC 123.pdf",
+                data_recebimento="2026-06-01",
+            )
+
+            with (
+                patch.object(conversao, "GoogleDriveAuth", return_value=fake_drive),
+                patch.object(conversao, "carregar_empresas_ativas", return_value={"CAMARGOS": (23, "CAMARGOS")}),
+                patch.object(conversao, "pdf_possui_senha", return_value=False),
+                patch.object(conversao, "PDFExtractor") as pdf_extractor,
+                patch.object(conversao, "dispatch", return_value=df),
+                patch.object(conversao, "planilha_lancamento"),
+                patch.object(conversao.shutil, "copy2", side_effect=copy_modelo),
+                patch.object(conversao, "consultar_situacao_controle", return_value=situacao),
+                patch.object(conversao, "baixar_controle_supabase") as mock_sge,
+                patch.object(conversao, "enviar_notificacao_google_chat") as notificacao,
+            ):
+                pdf_extractor.return_value.extract.return_value = (["texto extraido"], 1)
+                conversao.executar_conversao()
+
+        mock_sge.assert_not_called()
+        self.assertIn(("pdf-1", "id-EXT"), fake_drive.moved)
+
+        notificacao_kwargs = notificacao.call_args[1]
+        self.assertEqual(notificacao_kwargs["atualizados_sge"], 0)
+        preservadas = notificacao_kwargs["baixas_preservadas"]
+        self.assertEqual(len(preservadas), 1)
+        self.assertIn("0526_EXTBAN_C6BANK_CAMARGOS_AG 1_CC 123.pdf", preservadas[0])
+        self.assertIn("Enviado", preservadas[0])
+
+    def test_sem_movimentacao_ja_baixado_preserva_baixa_e_arquiva(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_drive = FakeDrive(
+                temp_dir,
+                root_pdfs=[
+                    {
+                        "id": "pdf-sm",
+                        "name": "0526_EXTBAN_ITAU_SM_CIAL_AG 1_CC 45440-7.pdf",
+                        "mimeType": "application/pdf",
+                    }
+                ],
+                existing_folders={("id-EMP", "123_CIAL")},
+            )
+            situacao = supabase_api.SituacaoControle(
+                cadastrado=True,
+                id_empresa="uuid-empresa-123",
+                status_envio="Não Aplicável",
+            )
+
+            with (
+                patch.object(conversao, "GoogleDriveAuth", return_value=fake_drive),
+                patch.object(conversao, "carregar_empresas_ativas", return_value={"CIAL": (123, "CIAL")}),
+                patch.object(conversao, "pdf_possui_senha", return_value=False),
+                patch.object(conversao, "consultar_situacao_controle", return_value=situacao),
+                patch.object(conversao, "baixar_controle_supabase") as mock_baixa,
+                patch.object(conversao, "enviar_notificacao_google_chat") as notificacao,
+            ):
+                conversao.executar_conversao()
+
+        mock_baixa.assert_not_called()
+        self.assertIn(("pdf-sm", "id-EXT"), fake_drive.moved)
+
+        notificacao_kwargs = notificacao.call_args[1]
+        self.assertEqual(notificacao_kwargs["atualizados_sge"], 0)
+        self.assertEqual(len(notificacao_kwargs["baixas_preservadas"]), 1)
 
     def test_falha_sge_nao_quebra_fluxo(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1554,7 +1645,7 @@ class ConversaoPasswordTest(unittest.TestCase):
                 patch.object(conversao, "dispatch", return_value=df),
                 patch.object(conversao, "planilha_lancamento"),
                 patch.object(conversao.shutil, "copy2", side_effect=copy_modelo),
-                patch.object(conversao, "buscar_id_empresa_supabase", return_value="uuid-empresa-23"),
+                patch.object(conversao, "consultar_situacao_controle", return_value=supabase_api.SituacaoControle(cadastrado=True, id_empresa="uuid-empresa-23")),
                 patch.object(conversao, "baixar_controle_supabase", return_value=(False, None)),
                 patch.object(conversao, "enviar_notificacao_google_chat") as notificacao,
             ):
@@ -2309,9 +2400,176 @@ class ConversaoPasswordTest(unittest.TestCase):
             supabase_api._agencia_da_descricao("EXTBAN-BANCO KAMINO"), ""
         )
 
-    def test_chave_banco_remove_espaco_e_acento(self):
-        self.assertEqual(supabase_api._chave_banco("C6 BANK"), "C6BANK")
-        self.assertEqual(supabase_api._chave_banco("Banco C6 Bank"), "BANCOC6BANK")
+    def test_chave_texto_remove_espaco_e_acento(self):
+        self.assertEqual(supabase_api._chave_texto("C6 BANK"), "C6BANK")
+        self.assertEqual(supabase_api._chave_texto("Banco C6 Bank"), "BANCOC6BANK")
+        self.assertEqual(supabase_api._chave_texto("Não Aplicável"), "NAOAPLICAVEL")
+
+
+class ConsultarSituacaoControleTest(unittest.TestCase):
+    """Checagem de baixa ja existente antes de sobrescrever o SGE."""
+
+    def _resposta(self, registros):
+        resposta = MagicMock()
+        resposta.status_code = 200
+        resposta.text = "ok"
+        resposta.json.return_value = {"data": registros}
+        return resposta
+
+    def _consultar(self, registros, **kwargs):
+        with patch.object(
+            supabase_api.requests, "get", return_value=self._resposta(registros)
+        ):
+            return supabase_api.consultar_situacao_controle(
+                empresa_codigo="428",
+                competencia="02-2026",
+                codigo_documento=kwargs.pop("codigo_documento", "FECFIN"),
+                **kwargs,
+            )
+
+    def test_sem_registro_nao_esta_cadastrado(self):
+        situacao = self._consultar([])
+        self.assertFalse(situacao.cadastrado)
+        self.assertFalse(situacao.ja_baixado)
+
+    def test_erro_http_nao_esta_cadastrado(self):
+        resposta = MagicMock()
+        resposta.status_code = 500
+        resposta.text = "erro interno"
+
+        with patch.object(supabase_api.requests, "get", return_value=resposta):
+            situacao = supabase_api.consultar_situacao_controle(
+                empresa_codigo="428",
+                competencia="02-2026",
+                codigo_documento="FECFIN",
+            )
+
+        self.assertFalse(situacao.cadastrado)
+
+    def test_documento_sem_instancia_pendente_permite_baixa(self):
+        situacao = self._consultar([
+            {
+                "id": "reg-1",
+                "id_empresa": "uuid-428",
+                "codigo_documento": "FECFIN",
+                "status_envio": "Não Enviado",
+                "instancia_id": None,
+            }
+        ])
+        self.assertTrue(situacao.cadastrado)
+        self.assertFalse(situacao.ja_baixado)
+        self.assertEqual(situacao.id_empresa, "uuid-428")
+
+    def test_documento_sem_instancia_ja_enviado_bloqueia_baixa(self):
+        situacao = self._consultar([
+            {
+                "id": "reg-1",
+                "id_empresa": "uuid-428",
+                "codigo_documento": "FECFIN",
+                "status_envio": "Enviado",
+                "nome_arquivo": "0226_FECFIN_DAFF.xlsx",
+                "data_recebimento": "2026-03-01",
+                "instancia_id": None,
+            }
+        ])
+        self.assertTrue(situacao.ja_baixado)
+        self.assertIn("0226_FECFIN_DAFF.xlsx", situacao.resumo())
+        self.assertIn("2026-03-01", situacao.resumo())
+
+    def test_status_nao_aplicavel_e_encerrada_bloqueiam_baixa(self):
+        # Sao decisoes registradas por uma pessoa no portal; sobrescrever com
+        # "Enviado" apagaria essa decisao.
+        for status in ("Não Aplicável", "Encerrada"):
+            with self.subTest(status=status):
+                situacao = self._consultar([
+                    {
+                        "id": "reg-1",
+                        "id_empresa": "uuid-428",
+                        "codigo_documento": "FECFIN",
+                        "status_envio": status,
+                        "instancia_id": None,
+                    }
+                ])
+                self.assertTrue(situacao.ja_baixado)
+
+    def test_codigo_parecido_nao_conta_como_registro(self):
+        # O filtro codigo_documento da API e "contem": consultar MEDPRUD traz
+        # tambem COMPMEDPRUD, que e outro documento.
+        situacao = self._consultar(
+            [
+                {
+                    "id": "reg-1",
+                    "id_empresa": "uuid-428",
+                    "codigo_documento": "COMPMEDPRUD",
+                    "status_envio": "Enviado",
+                    "instancia_id": None,
+                }
+            ],
+            codigo_documento="MEDPRUD",
+        )
+        self.assertFalse(situacao.cadastrado)
+
+    def _registros_duas_contas(self, status_inter: str, status_itau: str):
+        return [
+            {
+                "id": "reg-inter",
+                "id_empresa": "uuid-428",
+                "codigo_documento": "EXTBAN",
+                "status_envio": status_inter,
+                "nome_arquivo": "0226_EXTBAN_INTER_ACAO.pdf",
+                "instancia_id": "inst-inter",
+                "instancia_descricao": "EXTBAN-BANCO INTER - A:0001-9 - C: 1265692-5",
+            },
+            {
+                "id": "reg-itau",
+                "id_empresa": "uuid-428",
+                "codigo_documento": "EXTBAN",
+                "status_envio": status_itau,
+                "instancia_id": "inst-itau",
+                "instancia_descricao": "EXTBAN-BANCO ITAU - A:4372 - C: 13288-8",
+            },
+        ]
+
+    def test_olha_apenas_a_instancia_do_arquivo(self):
+        # INTER baixado, ITAU pendente: o arquivo do ITAU ainda pode ser baixado.
+        situacao = self._consultar(
+            self._registros_duas_contas("Enviado", "Não Enviado"),
+            codigo_documento="EXTBAN",
+            banco="ITAU",
+            agencia="4372",
+            conta="13288-8",
+        )
+        self.assertFalse(situacao.ja_baixado)
+
+        situacao = self._consultar(
+            self._registros_duas_contas("Enviado", "Não Enviado"),
+            codigo_documento="EXTBAN",
+            banco="INTER",
+            agencia="0001-9",
+            conta="1265692-5",
+        )
+        self.assertTrue(situacao.ja_baixado)
+        self.assertIn("BANCO INTER", situacao.resumo())
+
+    def test_instancia_indeterminada_bloqueia_so_com_tudo_baixado(self):
+        # Banco que nao casa nenhuma instancia: sem saber qual linha e a do
+        # arquivo, so bloqueia quando qualquer uma delas ja estaria sobrescrita.
+        situacao = self._consultar(
+            self._registros_duas_contas("Enviado", "Enviado"),
+            codigo_documento="EXTBAN",
+            banco="SANTANDER",
+            conta="777",
+        )
+        self.assertTrue(situacao.ja_baixado)
+
+        situacao = self._consultar(
+            self._registros_duas_contas("Enviado", "Não Enviado"),
+            codigo_documento="EXTBAN",
+            banco="SANTANDER",
+            conta="777",
+        )
+        self.assertTrue(situacao.cadastrado)
+        self.assertFalse(situacao.ja_baixado)
 
 
 if __name__ == "__main__":

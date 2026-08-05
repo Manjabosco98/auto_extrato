@@ -245,7 +245,7 @@ class DocsServiceTest(unittest.TestCase):
                 patch.object(docs, "carregar_caminhos_documentos_api", return_value=CAMINHOS_PADRAO),
                 patch.object(docs, "carregar_empresas_ativas", return_value={"BRITO": (196, "BRITO")}),
                 patch.object(docs, "enviar_notificacao_docs_google_chat") as notificacao,
-                patch.object(docs, "buscar_id_empresa_supabase", return_value="uuid-196"),
+                patch.object(docs, "consultar_situacao_controle", return_value=supabase_api.SituacaoControle(cadastrado=True, id_empresa="uuid-196")),
                 patch.object(docs, "baixar_controle_supabase", return_value=(True, None)),
                 patch.object(docs, "agora_historico", return_value=docs.datetime(2026, 6, 16, 12, 30, 5)),
             ):
@@ -258,6 +258,7 @@ class DocsServiceTest(unittest.TestCase):
             "erros": 0,
             "pendencias": 0,
             "erros_sge": 0,
+            "baixas_preservadas": 0,
         })
         self.assertIn(("root-folder", "DOCS"), fake_drive.folders)
         self.assertIn(("srvarq-folder", "EMP"), fake_drive.folders)
@@ -323,6 +324,7 @@ class DocsServiceTest(unittest.TestCase):
             "erros": 0,
             "pendencias": 1,
             "erros_sge": 0,
+            "baixas_preservadas": 0,
         })
         self.assertEqual(fake_drive.moved, [])
         self.assertEqual(fake_drive.uploaded, [])
@@ -349,7 +351,7 @@ class DocsServiceTest(unittest.TestCase):
                 patch.object(docs, "carregar_caminhos_documentos_api", return_value=CAMINHOS_PADRAO),
                 patch.object(docs, "carregar_empresas_ativas", return_value={"BRITO": (196, "BRITO")}),
                 patch.object(docs, "enviar_notificacao_docs_google_chat") as notificacao,
-                patch.object(docs, "buscar_id_empresa_supabase") as mock_busca_sge,
+                patch.object(docs, "consultar_situacao_controle") as mock_busca_sge,
                 patch.object(docs, "baixar_controle_supabase") as mock_baixa,
             ):
                 resultado = docs.executar_docs()
@@ -361,6 +363,7 @@ class DocsServiceTest(unittest.TestCase):
             "erros": 1,
             "pendencias": 1,
             "erros_sge": 0,
+            "baixas_preservadas": 0,
         })
         self.assertEqual(fake_drive.moved, [])
         # o destino e resolvido antes da baixa: nada e enviado ao SGE
@@ -452,7 +455,7 @@ class DocsServiceTest(unittest.TestCase):
                 ),
                 patch.object(docs, "carregar_empresas_ativas", return_value={"CEMAF OPE": (156, "CEMAF OPE")}),
                 patch.object(docs, "enviar_notificacao_docs_google_chat"),
-                patch.object(docs, "buscar_id_empresa_supabase", return_value="uuid-156"),
+                patch.object(docs, "consultar_situacao_controle", return_value=supabase_api.SituacaoControle(cadastrado=True, id_empresa="uuid-156")),
                 patch.object(docs, "baixar_controle_supabase", return_value=(True, None)) as mock_baixa,
                 patch.object(docs, "agora_historico", return_value=docs.datetime(2026, 6, 26, 8, 40, 0)),
             ):
@@ -494,7 +497,7 @@ class DocsServiceTest(unittest.TestCase):
                 ),
                 patch.object(docs, "carregar_empresas_ativas", return_value={"BRITO": (196, "BRITO")}),
                 patch.object(docs, "enviar_notificacao_docs_google_chat"),
-                patch.object(docs, "buscar_id_empresa_supabase", return_value="uuid-196"),
+                patch.object(docs, "consultar_situacao_controle", return_value=supabase_api.SituacaoControle(cadastrado=True, id_empresa="uuid-196")),
                 patch.object(docs, "baixar_controle_supabase", return_value=(True, None)),
                 patch.object(docs, "agora_historico", return_value=docs.datetime(2026, 6, 16, 12, 30, 5)),
             ):
@@ -632,7 +635,7 @@ class DocsServiceTest(unittest.TestCase):
                     },
                 ),
                 patch.object(docs, "enviar_notificacao_docs_google_chat"),
-                patch.object(docs, "buscar_id_empresa_supabase", return_value="uuid-510"),
+                patch.object(docs, "consultar_situacao_controle", return_value=supabase_api.SituacaoControle(cadastrado=True, id_empresa="uuid-510")),
                 patch.object(docs, "baixar_controle_supabase", return_value=(True, None)) as mock_baixa,
                 patch.object(docs, "agora_historico", return_value=docs.datetime(2026, 6, 26, 8, 40, 0)),
             ):
@@ -674,7 +677,7 @@ class DocsServiceTest(unittest.TestCase):
                 patch.object(docs, "carregar_caminhos_documentos_api", return_value=CAMINHOS_PADRAO),
                 patch.object(docs, "carregar_empresas_ativas", return_value={"BRITO": (196, "BRITO")}),
                 patch.object(docs, "enviar_notificacao_docs_google_chat") as notificacao,
-                patch.object(docs, "buscar_id_empresa_supabase", return_value=None),
+                patch.object(docs, "consultar_situacao_controle", return_value=supabase_api.SituacaoControle(cadastrado=False)),
                 patch.object(docs, "baixar_controle_supabase") as mock_baixa,
                 patch.object(docs, "agora_historico", return_value=docs.datetime(2026, 6, 16, 12, 30, 5)),
             ):
@@ -706,7 +709,7 @@ class DocsServiceTest(unittest.TestCase):
                 patch.object(docs, "carregar_caminhos_documentos_api", return_value=CAMINHOS_PADRAO),
                 patch.object(docs, "carregar_empresas_ativas", return_value={"BRITO": (196, "BRITO")}),
                 patch.object(docs, "enviar_notificacao_docs_google_chat") as notificacao,
-                patch.object(docs, "buscar_id_empresa_supabase", return_value="uuid-196"),
+                patch.object(docs, "consultar_situacao_controle", return_value=supabase_api.SituacaoControle(cadastrado=True, id_empresa="uuid-196")),
                 patch.object(docs, "baixar_controle_supabase", return_value=(False, "Empresa 196 nao cadastrada")),
                 patch.object(docs, "agora_historico", return_value=docs.datetime(2026, 6, 16, 12, 30, 5)),
             ):
@@ -723,6 +726,49 @@ class DocsServiceTest(unittest.TestCase):
         self.assertEqual(call_kwargs["erros_sge"], 1)
         self.assertEqual(call_kwargs["erros_sge_detalhe"], ["Empresa 196 nao cadastrada"])
         self.assertIn("Empresa 196 nao cadastrada", call_kwargs["pendencias"][0])
+
+    def test_executar_docs_ja_baixado_preserva_baixa_e_move(self):
+        # Documento ja baixado no SGE: a baixa nao pode ser sobrescrita, mas o
+        # arquivo segue para a pasta da empresa em vez de ficar preso em DOCS.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_drive = FakeDriveDocs(
+                temp_dir,
+                existing_folders={("id-EMP", "196_BRITO")},
+            )
+            situacao = supabase_api.SituacaoControle(
+                cadastrado=True,
+                id_empresa="uuid-196",
+                status_envio="Enviado",
+                nome_arquivo="0626_JURATPAS_BRITO.docx",
+                data_recebimento="2026-06-10",
+            )
+
+            with (
+                patch.object(docs, "GoogleDriveAuth", return_value=fake_drive),
+                patch.object(docs, "GOOGLE_DRIVE_FOLDER_ID", "root-folder"),
+                patch.object(docs, "GOOGLE_DRIVE_EMP_FOLDER_ID", "srvarq-folder"),
+                patch.object(docs, "carregar_caminhos_documentos_api", return_value=CAMINHOS_PADRAO),
+                patch.object(docs, "carregar_empresas_ativas", return_value={"BRITO": (196, "BRITO")}),
+                patch.object(docs, "enviar_notificacao_docs_google_chat") as notificacao,
+                patch.object(docs, "consultar_situacao_controle", return_value=situacao),
+                patch.object(docs, "baixar_controle_supabase") as mock_baixa,
+                patch.object(docs, "agora_historico", return_value=docs.datetime(2026, 6, 16, 12, 30, 5)),
+            ):
+                resultado = docs.executar_docs()
+
+        mock_baixa.assert_not_called()
+        self.assertEqual(resultado["movidos"], 1)
+        self.assertEqual(resultado["baixas_preservadas"], 1)
+        self.assertEqual(resultado["erros_sge"], 0)
+        self.assertEqual(fake_drive.moved, [("doc-1", "id-REL")])
+        self.assertEqual(fake_drive.history_rows[1][-1], "Baixa ja existente")
+
+        call_kwargs = notificacao.call_args[1]
+        self.assertEqual(call_kwargs["pendencias"], [])
+        preservadas = call_kwargs["baixas_preservadas"]
+        self.assertEqual(len(preservadas), 1)
+        self.assertIn("0626_JURATPAS_BRITO.docx", preservadas[0])
+        self.assertIn("2026-06-10", preservadas[0])
 
     def test_notificacao_docs_google_chat_com_sge(self):
         with patch.object(docs, "registrar_e_enviar_notificacao", return_value=True) as mock_registrar:

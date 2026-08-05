@@ -16,8 +16,8 @@ from src.app.gdrive.settings import (
 )
 from src.app.supabase.supabase_api import (
     baixar_controle_supabase,
-    buscar_id_empresa_supabase,
     carregar_caminhos_documentos_api,
+    consultar_situacao_controle,
 )
 from src.services.chat_notifications import registrar_e_enviar_notificacao
 from src.services.conversao import (
@@ -303,11 +303,13 @@ def formatar_mensagem_docs_google_chat(
     erros_sge: int = 0,
     erros_sge_detalhe: list[str] | None = None,
     pendencias: list[str] | None = None,
+    baixas_preservadas: list[str] | None = None,
 ) -> str:
     momento = momento or agora_historico()
     data = momento.strftime("%d/%m/%y")
     hora = momento.strftime("%H:%M")
     pendencias = pendencias or []
+    baixas_preservadas = baixas_preservadas or []
     blocos = []
 
     if nomes_documentos:
@@ -327,6 +329,13 @@ def formatar_mensagem_docs_google_chat(
     if atualizados_sge is not None and atualizados_sge > 0:
         blocos.append(
             f"Baixa dada no portal SGE: {atualizados_sge} documento(s) atualizado(s)"
+        )
+
+    if baixas_preservadas:
+        lista_preservadas = "\n".join(baixas_preservadas)
+        blocos.append(
+            "Ja baixados no SGE (baixa preservada, itens movidos para a pasta da empresa):\n\n"
+            f"{lista_preservadas}"
         )
 
     if erros_sge > 0:
@@ -354,6 +363,7 @@ def enviar_notificacao_docs_google_chat(
     erros_sge: int = 0,
     erros_sge_detalhe: list[str] | None = None,
     pendencias: list[str] | None = None,
+    baixas_preservadas: list[str] | None = None,
     google_drive=None,
     pasta_raiz_id: str = "",
     execucao_id: str = "",
@@ -371,6 +381,7 @@ def enviar_notificacao_docs_google_chat(
         erros_sge=erros_sge,
         erros_sge_detalhe=erros_sge_detalhe,
         pendencias=pendencias,
+        baixas_preservadas=baixas_preservadas,
     )
 
     return registrar_e_enviar_notificacao(
@@ -408,6 +419,7 @@ def _processar_item_docs(
     documentos_notificacao: list[str],
     pendencias_notificacao: list[str],
     erros_sge_notificacao: list[str],
+    baixas_preservadas_notificacao: list[str] | None = None,
     *,
     fazer_baixa_sge: bool = False,
 ) -> str:
@@ -415,6 +427,8 @@ def _processar_item_docs(
 
     Identifica o codigo pelo nome (MMAA_CODIGO_CLIENTE), resolve o destino na
     planilha de caminhos e, opcionalmente, tenta dar baixa no SGE antes de mover.
+    Documento ja baixado no SGE tem a baixa preservada (nao sobrescrita) e o
+    item e movido mesmo assim, registrado em ``baixas_preservadas_notificacao``.
     Para pastas, a quantidade de arquivos e a contagem de itens dentro dela.
 
     Quando o item nao pode ser tratado (nome fora do padrao, codigo nao
@@ -424,6 +438,9 @@ def _processar_item_docs(
     Retorna 'movido', 'ignorado' ou 'erro'.
     """
     nome = item["name"]
+    baixas_preservadas_notificacao = (
+        [] if baixas_preservadas_notificacao is None else baixas_preservadas_notificacao
+    )
     logger.info("Processando %s DOCS: %s", "pasta" if is_pasta else "documento", nome)
 
     try:
@@ -460,6 +477,8 @@ def _processar_item_docs(
         )
         return "ignorado"
 
+    baixa_preservada = False
+
     try:
         quantidade = _contar_arquivos_pasta(google_drive, item["id"]) if is_pasta else 1
 
@@ -480,12 +499,15 @@ def _processar_item_docs(
 
         if fazer_baixa_sge:
             competencia = f'{dados_nome["mes"]}-20{dados_nome["ano"]}'
-            id_existente = buscar_id_empresa_supabase(
+            situacao = consultar_situacao_controle(
                 empresa_codigo=str(empresa_id),
                 competencia=competencia,
                 codigo_documento=codigo,
+                banco=dados_nome["banco"],
+                agencia=dados_nome["agencia"],
+                conta=dados_nome["conta"],
             )
-            if not id_existente:
+            if not situacao.cadastrado:
                 logger.warning(
                     "Controle nao cadastrado no SGE: empresa=%s competencia=%s cod_doc=%s — %s mantido em DOCS",
                     empresa_id,
@@ -498,32 +520,42 @@ def _processar_item_docs(
                 )
                 return "ignorado"
 
-            local = f"Google Drive / {pasta_destino_historico}"
-            sucesso, detalhe_erro = baixar_controle_supabase(
-                empresa_codigo=str(empresa_id),
-                codigo_documento=codigo,
-                competencia=competencia,
-                banco=dados_nome["banco"],
-                agencia=dados_nome["agencia"],
-                conta=dados_nome["conta"],
-                nome_arquivo=nome,
-                local_arquivo=local,
-                quantidade_arquivos=quantidade,
-                status="Enviado",
-                data_recebimento=agora_historico().strftime("%Y-%m-%d"),
-            )
-            if not sucesso:
-                logger.warning(
-                    "Baixa SGE falhou para %s: %s — mantido em DOCS",
+            # Documento ja baixado: preservar a baixa existente e so mover o
+            # item, senao ele ficaria parado em DOCS a cada execucao.
+            baixa_preservada = situacao.ja_baixado
+            if baixa_preservada:
+                logger.info(
+                    "Baixa ja existente no SGE para %s (%s); baixa preservada",
                     nome,
-                    detalhe_erro,
+                    situacao.resumo(),
                 )
-                if detalhe_erro:
-                    erros_sge_notificacao.append(detalhe_erro)
-                pendencias_notificacao.append(
-                    f"{nome} - baixa no SGE falhou ({detalhe_erro or 'erro desconhecido'}); mantido em DOCS"
+            else:
+                local = f"Google Drive / {pasta_destino_historico}"
+                sucesso, detalhe_erro = baixar_controle_supabase(
+                    empresa_codigo=str(empresa_id),
+                    codigo_documento=codigo,
+                    competencia=competencia,
+                    banco=dados_nome["banco"],
+                    agencia=dados_nome["agencia"],
+                    conta=dados_nome["conta"],
+                    nome_arquivo=nome,
+                    local_arquivo=local,
+                    quantidade_arquivos=quantidade,
+                    status="Enviado",
+                    data_recebimento=agora_historico().strftime("%Y-%m-%d"),
                 )
-                return "ignorado"
+                if not sucesso:
+                    logger.warning(
+                        "Baixa SGE falhou para %s: %s — mantido em DOCS",
+                        nome,
+                        detalhe_erro,
+                    )
+                    if detalhe_erro:
+                        erros_sge_notificacao.append(detalhe_erro)
+                    pendencias_notificacao.append(
+                        f"{nome} - baixa no SGE falhou ({detalhe_erro or 'erro desconhecido'}); mantido em DOCS"
+                    )
+                    return "ignorado"
 
         logger.info(
             "Movendo %s DOCS para: %s",
@@ -542,10 +574,16 @@ def _processar_item_docs(
                 "nome_arquivo": nome,
                 "pasta_destino": pasta_destino_historico,
                 "data_hora_movimento": momento_movimento.strftime("%Y-%m-%d %H:%M:%S"),
-                "status_sge": "Baixado" if fazer_baixa_sge else "",
+                "status_sge": (
+                    "Baixa ja existente"
+                    if baixa_preservada
+                    else "Baixado" if fazer_baixa_sge else ""
+                ),
             }
         )
         documentos_notificacao.append(f"{nome} - {pasta_destino_historico}")
+        if baixa_preservada:
+            baixas_preservadas_notificacao.append(f"{nome} - {situacao.resumo()}")
         return "movido"
     except ValueError as erro:
         # Falha previsivel do destino (ex.: pasta do cliente ainda nao criada em
@@ -629,6 +667,7 @@ def executar_docs() -> dict[str, int]:
     documentos_notificacao: list[str] = []
     pendencias_notificacao: list[str] = []
     erros_sge_notificacao: list[str] = []
+    baixas_preservadas_notificacao: list[str] = []
 
     itens = [(a, False) for a in arquivos] + [(p, True) for p in pastas]
     for item, is_pasta in itens:
@@ -644,6 +683,7 @@ def executar_docs() -> dict[str, int]:
             documentos_notificacao=documentos_notificacao,
             pendencias_notificacao=pendencias_notificacao,
             erros_sge_notificacao=erros_sge_notificacao,
+            baixas_preservadas_notificacao=baixas_preservadas_notificacao,
             fazer_baixa_sge=True,
         )
         if resultado == "movido":
@@ -667,17 +707,19 @@ def executar_docs() -> dict[str, int]:
         erros_sge=len(erros_sge_notificacao),
         erros_sge_detalhe=erros_sge_notificacao,
         pendencias=pendencias_notificacao,
+        baixas_preservadas=baixas_preservadas_notificacao,
     )
 
     logger.info(
         "Fluxo DOCS concluido. Processados=%s Movidos=%s Ignorados=%s Erros=%s "
-        "Pendencias=%s ErrosSGE=%s",
+        "Pendencias=%s ErrosSGE=%s BaixasPreservadas=%s",
         processados,
         movidos,
         ignorados,
         erros,
         len(pendencias_notificacao),
         len(erros_sge_notificacao),
+        len(baixas_preservadas_notificacao),
     )
 
     return {
@@ -687,6 +729,7 @@ def executar_docs() -> dict[str, int]:
         "erros": erros,
         "pendencias": len(pendencias_notificacao),
         "erros_sge": len(erros_sge_notificacao),
+        "baixas_preservadas": len(baixas_preservadas_notificacao),
     }
 
 
