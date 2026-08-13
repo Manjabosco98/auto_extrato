@@ -31,7 +31,12 @@ src/schemas/fecfin/
 ├── base.py              # FecfinHandler — classe base abstrata
 ├── registry.py          # register() + dispatch_fecwin()
 ├── conta_azul.py        # Layout: Conta Azul (1 aba)
-└── multibanco.py        # Layout: CEMAF multi-banco (4 abas)
+├── ce_part.py           # Layouts *PART: CE, CEMAF, ADP, ALOHA, ACR, AD 52 (detecta pelo nome do arquivo)
+├── multibanco.py        # Layout: CEMAF multi-banco (4 abas)
+├── midia.py             # Layout: colunas fixas (Mídia)
+├── geral.py             # Layout: Geral (header na linha 4, separa por coluna Banco)
+├── up380.py             # Layout: UP380 / Kamino
+└── kmc.py               # Layout: KMC / A. Monteiro (1 aba por competência, separa por coluna BANCO)
 
 src/services/fecfin.py   # Serviço独立 (executar_fecfin)
 src/api/endpoints/fecfin.py  # Endpoint da API

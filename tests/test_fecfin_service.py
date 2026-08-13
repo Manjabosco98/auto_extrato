@@ -2013,5 +2013,191 @@ class FecfinAd52Test(unittest.TestCase):
         self.assertEqual(df.iloc[0]["DATA"], "15/06/2026")
 
 
+_COLUNAS_KMC = [
+    "OBRA", "DESCRIÇÃO", "NF", "CATEGORIA",
+    "CODIGO PLANO DE CONTAS", "BANCO", "ENTRADA", "SAÍDA", "DATA",
+]
+
+
+def _criar_excel_kmc(
+    dados: list[list],
+    aba: str = "07-2026",
+    abas_extras: dict[str, list[list]] | None = None,
+) -> io.BytesIO:
+    """Cria um Excel in-memory com layout KMC.
+
+    Cada aba tem a linha 0 vazia, a linha 1 com os rótulos, a linha 2 com
+    o ``Saldo anterior ->`` e os dados a partir da linha 3.  As colunas 0-5
+    reproduzem o bloco lateral "PLANO DE CONTAS" da planilha real.
+    """
+    def _montar(linhas: list[list]) -> pd.DataFrame:
+        lateral = [None] * 6
+        vazia = [None] * (len(lateral) + len(_COLUNAS_KMC))
+        cabecalho = lateral + _COLUNAS_KMC
+        saldo = lateral + ["Saldo anterior ->"] + [None] * (len(_COLUNAS_KMC) - 1)
+        return pd.DataFrame([vazia, cabecalho, saldo] + [lateral + linha for linha in linhas])
+
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        _montar(dados).to_excel(writer, index=False, header=False, sheet_name=aba)
+        for nome_aba, linhas in (abas_extras or {}).items():
+            _montar(linhas).to_excel(writer, index=False, header=False, sheet_name=nome_aba)
+    buf.seek(0)
+    return buf
+
+
+class FecfinKmcTest(unittest.TestCase):
+    def _linha(self, obra="-", descricao="DESC", nf=None, categoria="Cat",
+               banco="Sicoob - KMC", entrada=None, saida=None, data="2026-07-01"):
+        return [obra, descricao, nf, categoria, "1.1", banco, entrada, saida, data]
+
+    def test_matches_detecta_kmc(self):
+        buf = _criar_excel_kmc([self._linha(saida=100.0)])
+        with pd.ExcelFile(buf) as xls:
+            from src.schemas.fecfin.kmc import Kmc
+            self.assertTrue(Kmc().matches(xls, file_stem="0726_FECFIN_KMC"))
+
+    def test_matches_ignora_outro_layout(self):
+        buf = _criar_excel_conta_azul([
+            ["2026-07-01", "PIX", "FORNECEDOR", 100.0, "Banco A"],
+        ])
+        with pd.ExcelFile(buf) as xls:
+            from src.schemas.fecfin.kmc import Kmc
+            self.assertFalse(Kmc().matches(xls, file_stem="0726_FECFIN_KMC"))
+
+    def test_matches_ignora_abas_nao_competencia(self):
+        buf = _criar_excel_kmc([self._linha(saida=100.0)], aba="DRE-07-2026")
+        with pd.ExcelFile(buf) as xls:
+            from src.schemas.fecfin.kmc import Kmc
+            self.assertFalse(Kmc().matches(xls, file_stem="0726_FECFIN_KMC"))
+
+    def test_parse_kmc_um_banco(self):
+        buf = _criar_excel_kmc([
+            self._linha(descricao="PIX RECEBIDO", entrada=1000.0),
+            self._linha(descricao="TARIFA", saida=54.99, data="2026-07-02"),
+        ])
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, "0726_FECFIN_KMC")
+
+        self.assertEqual(len(resultados), 1)
+        banco, df = resultados[0]
+        self.assertEqual(banco, "SICOOB")
+        self.assertEqual(list(df.columns), ["DATA", "DESCRIÇÃO", "VALOR", "TIPO"])
+        self.assertEqual(len(df), 2)
+        self.assertEqual(df.iloc[0]["TIPO"], "C")
+        self.assertEqual(df.iloc[1]["TIPO"], "D")
+        self.assertEqual(df.iloc[0]["VALOR"], 1000.0)
+        self.assertEqual(df.iloc[1]["VALOR"], 54.99)
+
+    def test_parse_kmc_usa_aba_da_competencia(self):
+        buf = _criar_excel_kmc(
+            [self._linha(descricao="JULHO", saida=10.0)],
+            abas_extras={"06-2026": [self._linha(descricao="JUNHO", saida=20.0, data="2026-06-01")]},
+        )
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, "0626_FECFIN_KMC")
+
+        _, df = resultados[0]
+        self.assertEqual(len(df), 1)
+        self.assertEqual(df.iloc[0]["DESCRIÇÃO"], "JUNHO")
+        self.assertEqual(df.iloc[0]["DATA"], "01/06/2026")
+
+    def test_parse_kmc_sem_competencia_no_nome_usa_ultima_aba(self):
+        buf = _criar_excel_kmc(
+            [self._linha(descricao="JUNHO", saida=20.0, data="2026-06-01")],
+            aba="06-2026",
+            abas_extras={"07-2026": [self._linha(descricao="JULHO", saida=10.0)]},
+        )
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, "FECFIN_KMC")
+
+        _, df = resultados[0]
+        self.assertEqual(df.iloc[0]["DESCRIÇÃO"], "JULHO")
+
+    def test_parse_kmc_ignora_linhas_sem_banco(self):
+        buf = _criar_excel_kmc([
+            self._linha(descricao="PAGAMENTO BANCO", saida=100.0),
+            self._linha(descricao="CARTÃO DE CRÉDITO", banco=None, saida=200.0),
+            self._linha(descricao="LUCRO LÍQUIDO", banco=None),
+        ])
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, "0726_FECFIN_KMC")
+
+        _, df = resultados[0]
+        self.assertEqual(len(df), 1)
+        self.assertEqual(df.iloc[0]["DESCRIÇÃO"], "PAGAMENTO BANCO")
+
+    def test_parse_kmc_preenche_datas_mescladas(self):
+        buf = _criar_excel_kmc([
+            self._linha(descricao="PRIMEIRA", saida=10.0, data="2026-07-03"),
+            self._linha(descricao="SEGUNDA", saida=20.0, data=None),
+            self._linha(descricao="TERCEIRA", saida=30.0, data=None),
+        ])
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, "0726_FECFIN_KMC")
+
+        _, df = resultados[0]
+        self.assertEqual(list(df["DATA"]), ["03/07/2026"] * 3)
+
+    def test_parse_kmc_data_formatada(self):
+        buf = _criar_excel_kmc([self._linha(saida=10.0, data="2026-07-15")])
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, "0726_FECFIN_KMC")
+
+        _, df = resultados[0]
+        self.assertEqual(df.iloc[0]["DATA"], "15/07/2026")
+
+    def test_parse_kmc_descricao_preserva_numeros(self):
+        buf = _criar_excel_kmc([
+            self._linha(
+                obra="Obra - 170 - Acompanhamento Fazenda",
+                descricao="Locação de equipamentos",
+                nf=1043.0,
+                saida=470.12,
+            ),
+        ])
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, "0726_FECFIN_KMC")
+
+        _, df = resultados[0]
+        descricao = df.iloc[0]["DESCRIÇÃO"]
+        self.assertEqual(
+            descricao,
+            "OBRA - 170 - ACOMPANHAMENTO FAZENDA NF 1043 LOCAÇÃO DE EQUIPAMENTOS",
+        )
+
+    def test_parse_kmc_descricao_sem_nan_obra_vazia_e_pipe(self):
+        buf = _criar_excel_kmc([
+            self._linha(obra="-", descricao="Reembolso | Obra 150", nf=None, saida=10.0),
+        ])
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, "0726_FECFIN_KMC")
+
+        _, df = resultados[0]
+        descricao = df.iloc[0]["DESCRIÇÃO"]
+        self.assertEqual(descricao, "REEMBOLSO OBRA 150")
+        self.assertNotIn("nan", descricao.lower())
+        self.assertNotIn("|", descricao)
+
+    def test_parse_kmc_dois_bancos(self):
+        buf = _criar_excel_kmc([
+            self._linha(descricao="SICOOB", saida=10.0),
+            self._linha(descricao="CAIXA", banco="Caixa - KMC", entrada=20.0),
+        ])
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, "0726_FECFIN_KMC")
+
+        self.assertEqual(len(resultados), 2)
+        self.assertEqual({banco for banco, _ in resultados}, {"SICOOB", "CAIXA"})
+
+    def test_parse_kmc_valor_absoluto(self):
+        buf = _criar_excel_kmc([self._linha(saida=1275.41)])
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, "0726_FECFIN_KMC")
+
+        _, df = resultados[0]
+        self.assertTrue((df["VALOR"] > 0).all())
+
+
 if __name__ == "__main__":
     unittest.main()
