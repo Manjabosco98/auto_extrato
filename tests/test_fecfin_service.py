@@ -11,6 +11,8 @@ from openpyxl import Workbook
 
 from src.api.endpoints import fecfin as fecfin_endpoint
 from src.app.supabase import supabase_api
+from src.schemas.fecfin import registry
+from src.schemas.fecfin.base import FecfinHandler
 from src.schemas.fecfin.registry import dispatch_fecwin
 
 
@@ -692,7 +694,7 @@ class ExecutarFecfinBaixaTest(unittest.TestCase):
              patch.object(fecfin_service, "nome_pasta_empresa", return_value="114_DAFF LTDA"), \
              patch.object(fecfin_service, "montar_destino_docs", return_value=("EMP", ["114_DAFF LTDA", "MOV", "CONT", "26", "06", "EXT"])), \
              patch.object(fecfin_service, "resolver_pasta_destino_docs", return_value=("dest", "EMP/114_DAFF LTDA/MOV/CONT/26/06/EXT")), \
-             patch.object(fecfin_service, "dispatch_fecwin", return_value=[("ITAU", df)]), \
+             patch.object(fecfin_service, "dispatch_fecwin_detalhado", return_value=registry.ResultadoDispatch(resultados=[("ITAU", df)])), \
              patch.object(fecfin_service.shutil, "copy2"), \
              patch.object(fecfin_service, "planilha_lancamento"), \
              patch.object(fecfin_service, "consultar_situacao_controle", return_value=supabase_api.SituacaoControle(cadastrado=True, id_empresa="uuid-114")), \
@@ -749,7 +751,7 @@ class ExecutarFecfinBaixaTest(unittest.TestCase):
              patch.object(fecfin_service, "nome_pasta_empresa", return_value="114_DAFF LTDA"), \
              patch.object(fecfin_service, "montar_destino_docs", return_value=("EMP", ["114_DAFF LTDA", "MOV", "CONT", "26", "06", "EXT"])), \
              patch.object(fecfin_service, "resolver_pasta_destino_docs", return_value=("dest", "EMP/114_DAFF LTDA/MOV/CONT/26/06/EXT")), \
-             patch.object(fecfin_service, "dispatch_fecwin", return_value=[("ITAU", df)]), \
+             patch.object(fecfin_service, "dispatch_fecwin_detalhado", return_value=registry.ResultadoDispatch(resultados=[("ITAU", df)])), \
              patch.object(fecfin_service.shutil, "copy2"), \
              patch.object(fecfin_service, "planilha_lancamento"), \
              patch.object(fecfin_service, "consultar_situacao_controle", return_value=situacao), \
@@ -1702,6 +1704,34 @@ class FecfinCemaf60Test(unittest.TestCase):
         self.assertEqual(df.iloc[1]["TIPO"], "D")
         self.assertEqual(df.iloc[1]["VALOR"], 25.0)
 
+    def test_parse_cemaf_60_sicoob_sem_coluna_obs_int(self):
+        """A planilha de 07/2026 veio sem a coluna "OBS / INT".
+
+        Antes o KeyError derrubava a unica aba com lancamentos e o arquivo
+        era notificado como "sem layout reconhecido".
+        """
+        colunas = ["DATA", "TIPO", "DOC", "HISTÓRICO", "ENTRADA", "SAÍDA", "SALDO", "OBS"]
+        padding = [[""] * len(colunas)]
+        dados = padding + [colunas] + [
+            ["10/07/2026", "", "", "AD CONSTRUTORA", 500, 0, 503.6, "EMP ENTRE TERCEIROS"],
+            ["10/07/2026", "NFS", "29", "WESLEY BENTO", 0, 500, 3.6, "PAGAMENTO A FORNECEDOR"],
+        ]
+        buf, stem = _criar_excel_cemaf_60({"SICOOB - 15619-1": (colunas, dados)})
+
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, stem)
+
+        self.assertEqual(len(resultados), 1)
+        banco, df = resultados[0]
+        self.assertEqual(banco, "SICOOB")
+        self.assertEqual(len(df), 2)
+        self.assertEqual(df.iloc[0]["TIPO"], "C")
+        self.assertEqual(df.iloc[0]["VALOR"], 500.0)
+        self.assertEqual(df.iloc[1]["TIPO"], "D")
+        self.assertEqual(df.iloc[1]["VALOR"], 500.0)
+        self.assertIn("AD CONSTRUTORA", df.iloc[0]["DESCRIÇÃO"])
+        self.assertIn("EMP ENTRE TERCEIROS", df.iloc[0]["DESCRIÇÃO"])
+
     def test_parse_cemaf_60_caixa(self):
         col_caixa, dados_caixa = self._montar_aba_caixa(
             [["01/06/2026", "RECEBIMENTO", "001", "DOC", "CREDITO", 2000, 0],
@@ -1893,6 +1923,34 @@ class FecfinAd52Test(unittest.TestCase):
         self.assertEqual(df.iloc[0]["VALOR"], 1500.0)
         self.assertEqual(df.iloc[1]["TIPO"], "D")
         self.assertEqual(df.iloc[1]["VALOR"], 25.0)
+
+    def test_parse_ad_52_sicoob_sem_coluna_obs_interna(self):
+        """A planilha de 07/2026 veio sem a coluna "OBS INTERNA".
+
+        Antes o KeyError derrubava a unica aba com lancamentos e o arquivo
+        era notificado como "sem layout reconhecido".
+        """
+        colunas = ["DATA", "TIPO", "DOC", "HISTÓRICO", "ENTRADA", "SAÍDA", "SALDO", "OBS"]
+        padding = [[""] * len(colunas) for _ in range(2)]
+        dados = padding + [colunas] + [
+            ["01/07/2026", "", "129", "SICOOB", 0, 99.9, 3814.55, "TARIFAS BANCÁRIAS"],
+            ["06/07/2026", "", "8104127", "CEMAF", 2900, 0, 6714.55, "EMP ENTRE TERCEIROS"],
+        ]
+        buf, stem = _criar_excel_ad_52({"SICOOB - 11.280-1": (colunas, dados)})
+
+        with pd.ExcelFile(buf) as xls:
+            resultados = dispatch_fecwin(xls, stem)
+
+        self.assertEqual(len(resultados), 1)
+        banco, df = resultados[0]
+        self.assertEqual(banco, "SICOOB")
+        self.assertEqual(len(df), 2)
+        self.assertEqual(df.iloc[0]["TIPO"], "D")
+        self.assertEqual(df.iloc[0]["VALOR"], 99.9)
+        self.assertEqual(df.iloc[1]["TIPO"], "C")
+        self.assertEqual(df.iloc[1]["VALOR"], 2900.0)
+        self.assertIn("TARIFAS BANCÁRIAS", df.iloc[0]["DESCRIÇÃO"])
+        self.assertIn("SICOOB", df.iloc[0]["DESCRIÇÃO"])
 
     def test_parse_ad_52_inter(self):
         col_inter, dados_inter = self._montar_aba_inter(
@@ -2221,6 +2279,72 @@ class FecfinKmcTest(unittest.TestCase):
 
         _, df = resultados[0]
         self.assertTrue((df["VALOR"] > 0).all())
+
+
+class FecfinDispatchDetalhadoTest(unittest.TestCase):
+    """O dispatch nao pode parar no primeiro layout que casa e nao extrai nada."""
+
+    class _HandlerVazio(FecfinHandler):
+        bank = "Vazio"
+
+        def matches(self, xls, file_stem=""):
+            return True
+
+        def parse(self, xls, file_stem):
+            return []
+
+    class _HandlerComDados(FecfinHandler):
+        bank = "ComDados"
+
+        def matches(self, xls, file_stem=""):
+            return True
+
+        def parse(self, xls, file_stem):
+            return [("SICOOB", pd.DataFrame({"VALOR": [1.0]}))]
+
+    def _excel_qualquer(self) -> io.BytesIO:
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+            pd.DataFrame({"A": [1]}).to_excel(writer, index=False, sheet_name="Sheet1")
+        buf.seek(0)
+        return buf
+
+    def _dispatch_com(self, handlers):
+        buf = self._excel_qualquer()
+        with patch.object(registry, "_FECFIN_HANDLERS", handlers):
+            with pd.ExcelFile(buf) as xls:
+                return registry.dispatch_fecwin_detalhado(xls, "0726_FECFIN_TESTE")
+
+    def test_handler_vazio_nao_impede_o_proximo(self):
+        resultado = self._dispatch_com([self._HandlerVazio(), self._HandlerComDados()])
+
+        self.assertTrue(resultado.reconhecido)
+        self.assertEqual(len(resultado.resultados), 1)
+        self.assertEqual(resultado.resultados[0][0], "SICOOB")
+        self.assertEqual(resultado.layouts_tentados, ["_HandlerVazio", "_HandlerComDados"])
+        self.assertEqual(resultado.motivo(), "")
+
+    def test_motivo_quando_layout_casa_mas_nao_extrai(self):
+        resultado = self._dispatch_com([self._HandlerVazio()])
+
+        self.assertFalse(resultado.reconhecido)
+        self.assertIn("_HandlerVazio", resultado.motivo())
+        self.assertIn("nenhuma aba gerou lancamentos", resultado.motivo())
+
+    def test_motivo_quando_nenhum_layout_casa(self):
+        resultado = self._dispatch_com([])
+
+        self.assertFalse(resultado.reconhecido)
+        self.assertEqual(resultado.motivo(), "nenhum layout reconheceu o arquivo")
+
+    def test_dispatch_fecwin_mantem_a_assinatura_de_lista(self):
+        buf = self._excel_qualquer()
+        with patch.object(registry, "_FECFIN_HANDLERS", [self._HandlerComDados()]):
+            with pd.ExcelFile(buf) as xls:
+                resultados = dispatch_fecwin(xls, "0726_FECFIN_TESTE")
+
+        self.assertEqual(len(resultados), 1)
+        self.assertEqual(resultados[0][0], "SICOOB")
 
 
 if __name__ == "__main__":

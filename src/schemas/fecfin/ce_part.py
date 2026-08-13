@@ -49,6 +49,29 @@ def _identificar_tipo_arquivo(file_stem: str) -> str | None:
     return None
 
 
+def _montar_descricao(df: pd.DataFrame, colunas: list[str], aba: str) -> pd.Series:
+    """Concatena as colunas de observacao que a aba realmente tem.
+
+    Os clientes reformatam a planilha entre competencias e omitem colunas de
+    observacao (ex.: AD 52 de 07/2026 sem "OBS INTERNA" e CEMAF 60 de 07/2026
+    sem "OBS / INT"). Exigir a coluna derrubava a aba inteira com KeyError, e
+    o erro engolido virava "layout nao reconhecido" na notificacao.
+    """
+    presentes = [coluna for coluna in colunas if coluna in df.columns]
+    ausentes = [coluna for coluna in colunas if coluna not in df.columns]
+    if ausentes:
+        logger.warning(
+            "Aba %s sem as colunas de observacao %s; descricao montada com %s",
+            aba,
+            ausentes,
+            presentes,
+        )
+    if not presentes:
+        return pd.Series([""] * len(df), index=df.index)
+    # fillna antes do astype: astype(str) mantem NaN como float e o join estoura.
+    return df[presentes].fillna("").astype(str).agg(" ".join, axis=1)
+
+
 def _identificar_bancos(xls: pd.ExcelFile, tipo: str) -> dict[str, str]:
     """Retorna dict {nome_banco: nome_aba} para abas conhecidas."""
     bancos_map = {
@@ -327,10 +350,8 @@ def _processar_sicoob_cemaf60(xls: pd.ExcelFile, aba: str) -> pd.DataFrame:
     df.columns = df.iloc[1]
     df = df[2:].reset_index(drop=True)
 
-    df["DESCRIÇÃO"] = df.apply(
-        lambda x: f'{x["OBS"]} {x["OBS / INT"]} {x["TIPO"]} '
-        f'{x["DOC"]} {x["HISTÓRICO"]}',
-        axis=1,
+    df["DESCRIÇÃO"] = _montar_descricao(
+        df, ["OBS", "OBS / INT", "TIPO", "DOC", "HISTÓRICO"], aba
     )
     df["DESCRIÇÃO"] = (
         df["DESCRIÇÃO"].str.replace("nan", "", regex=False).str.strip().str.upper()
@@ -396,10 +417,8 @@ def _processar_sicoob_ad52(xls: pd.ExcelFile, aba: str) -> pd.DataFrame:
     df.columns = df.iloc[2]
     df = df[3:].reset_index(drop=True)
 
-    df["DESCRIÇÃO"] = df.apply(
-        lambda x: f'{x["OBS"]} {x["OBS INTERNA"]} {x["TIPO"]} '
-        f'{x["DOC"]} {x["HISTÓRICO"]}',
-        axis=1,
+    df["DESCRIÇÃO"] = _montar_descricao(
+        df, ["OBS", "OBS INTERNA", "TIPO", "DOC", "HISTÓRICO"], aba
     )
     df["DESCRIÇÃO"] = (
         df["DESCRIÇÃO"].str.replace("nan", "", regex=False).str.strip().str.upper()
@@ -428,9 +447,8 @@ def _processar_inter_ad52(xls: pd.ExcelFile, aba: str) -> pd.DataFrame:
     df.columns = df.iloc[4]
     df = df[5:].reset_index(drop=True)
 
-    df["DESCRIÇÃO"] = df.apply(
-        lambda x: f'{x["OBS"]} {x["TIPO"]} {x["DOC"]} {x["HISTÓRICO"]}',
-        axis=1,
+    df["DESCRIÇÃO"] = _montar_descricao(
+        df, ["OBS", "TIPO", "DOC", "HISTÓRICO"], aba
     )
     df["DESCRIÇÃO"] = (
         df["DESCRIÇÃO"].str.replace("nan", "", regex=False).str.strip().str.upper()
@@ -459,9 +477,8 @@ def _processar_caixa_ad52(xls: pd.ExcelFile, aba: str) -> pd.DataFrame:
     df.columns = df.iloc[3]
     df = df[4:].reset_index(drop=True)
 
-    df["DESCRIÇÃO"] = df.apply(
-        lambda x: f'{x["HISTÓRICO"]} {x["Nº DOC"]} {x["TIPO"]} {x["OBS"]}',
-        axis=1,
+    df["DESCRIÇÃO"] = _montar_descricao(
+        df, ["HISTÓRICO", "Nº DOC", "TIPO", "OBS"], aba
     )
     df["DESCRIÇÃO"] = (
         df["DESCRIÇÃO"]
@@ -600,6 +617,7 @@ class CePart(FecfinHandler):
         }.get(tipo, _PROCESSADORES_CE_PART)
 
         resultado: list[tuple[str, pd.DataFrame]] = []
+        motivos: list[str] = []
 
         for banco, aba in bancos.items():
             processador = processadores.get(banco)
@@ -607,13 +625,28 @@ class CePart(FecfinHandler):
                 logger.warning(
                     "Banco %s sem processador para %s (aba: %s)", banco, tipo, aba
                 )
+                motivos.append(f"{banco}: sem processador")
                 continue
 
             try:
                 df = processador(xls, aba)
-                if not df.empty:
-                    resultado.append((banco, df))
-            except Exception:
+            except Exception as erro:
                 logger.exception("Erro ao processar aba %s (banco %s)", aba, banco)
+                motivos.append(f"{banco}: {type(erro).__name__} {erro}")
+                continue
+
+            if df.empty:
+                motivos.append(f"{banco}: sem lancamentos")
+                continue
+
+            resultado.append((banco, df))
+
+        if not resultado:
+            logger.warning(
+                "Layout FECFIN %s nao gerou lancamentos para %s. Motivos por aba: %s",
+                tipo,
+                file_stem,
+                "; ".join(motivos) or "nenhuma aba bancaria",
+            )
 
         return resultado

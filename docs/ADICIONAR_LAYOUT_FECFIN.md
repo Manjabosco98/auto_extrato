@@ -228,11 +228,31 @@ class MultiBanco(FecfinHandler):
 
 1. O fluxo de conversão detecta um arquivo Excel com "FECFIN" no nome
 2. Abre o arquivo com `pd.ExcelFile()`
-3. Chama `dispatch_fecwin(xls, file_stem)`
+3. Chama `dispatch_fecwin_detalhado(xls, file_stem)`
 4. O dispatch itera sobre todos os handlers registrados
 5. Chama `matches(xls)` em cada um
 6. O primeiro que retornar `True` é usado para `parse()`
-7. Se nenhum retornar `True`, o arquivo fica na pasta EXT e notifica no chat
+7. Se esse `parse()` não devolver nenhum lançamento, o dispatch **continua**
+   para os handlers seguintes — um layout genérico (ex.: `MultiBanco`, que
+   casa com qualquer aba com SICOOB/CAIXA no nome) não sequestra um arquivo
+   de layout mais específico
+8. Se nada gerar lançamentos, o arquivo fica na pasta EXT e o motivo
+   (`ResultadoDispatch.motivo()`) vai junto na notificação do chat —
+   "nenhum layout reconheceu" e "o layout X reconheceu mas nenhuma aba gerou
+   lançamentos" são situações diferentes
+
+`dispatch_fecwin()` continua existindo e devolve só a lista de resultados.
+
+### Diagnosticando um arquivo que não converteu
+
+```bash
+python scripts/diagnosticar_fecfin.py "caminho/0726_FECFIN_CLIENTE.xlsx"
+```
+
+Mostra o stem normalizado, o tipo identificado, as abas (em `repr`, o que
+expõe NBSP), quais handlers casariam, as primeiras linhas cruas de cada aba
+bancária (para conferir o índice do cabeçalho) e o traceback completo da
+exceção que o `parse()` engole em produção.
 
 ---
 
@@ -243,6 +263,10 @@ class MultiBanco(FecfinHandler):
 - **`parse()`** pode ser mais pesado — leia os dados e transforme
 - Use `try/except` nos processadores individuais de aba para que um
   erro em uma aba não impeça as outras
+- Não acesse colunas de observação com `x["COLUNA"]` dentro de um
+  `df.apply()`: o cliente omite essas colunas de uma competência para outra
+  e o `KeyError` derruba a aba inteira. Use `_montar_descricao()`
+  (`ce_part.py`), que usa só as colunas presentes e loga as que faltaram
 - Filtrar linhas de "SALDO" é responsabilidade do handler
 - O decorator `@register` é obrigatório — sem ele o handler não é
   detectado pelo dispatch
@@ -256,7 +280,8 @@ class MultiBanco(FecfinHandler):
 | Arquivo | Função |
 |---------|--------|
 | `src/schemas/fecfin/base.py` | Classe base `FecfinHandler` |
-| `src/schemas/fecfin/registry.py` | `register()` + `dispatch_fecwin()` |
+| `src/schemas/fecfin/registry.py` | `register()` + `dispatch_fecwin()` + `dispatch_fecwin_detalhado()` |
+| `scripts/diagnosticar_fecfin.py` | Diagnóstico local de um FECFIN que não converteu |
 | `src/schemas/fecfin/__init__.py` | Importa todos os handlers |
 | `src/schemas/__init__.py` | Expõe `dispatch_fecwin` publicamente |
 | `src/services/fecfin.py` | Serviço FECFIN (`executar_fecfin`) |

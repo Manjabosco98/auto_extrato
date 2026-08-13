@@ -24,7 +24,7 @@ from src.app.supabase.supabase_api import (
     carregar_caminhos_documentos_api,
     consultar_situacao_controle,
 )
-from src.schemas.fecfin.registry import dispatch_fecwin
+from src.schemas.fecfin.registry import dispatch_fecwin_detalhado
 from src.services.conversao import (
     GOOGLE_CHAT_SEND_URL,
     GOOGLE_CHAT_SPACE_NAME,
@@ -277,11 +277,15 @@ def executar_fecfin() -> dict[str, int]:
             google_drive.download(file_id=fecfin_id, destino_local=fecfin_local)
 
             with pd.ExcelFile(fecfin_local) as xls:
-                resultados = dispatch_fecwin(xls, fecfin_stem)
+                dispatch = dispatch_fecwin_detalhado(xls, fecfin_stem)
+            resultados = dispatch.resultados
 
             if not resultados:
-                logger.warning("Layout FECFIN nao reconhecido: %s", fecfin_nome)
-                nao_reconhecidos_notificacao.append(fecfin_nome)
+                motivo = dispatch.motivo()
+                logger.warning(
+                    "Layout FECFIN nao reconhecido: %s (%s)", fecfin_nome, motivo
+                )
+                nao_reconhecidos_notificacao.append(f"{fecfin_nome} - {motivo}")
                 continue
 
             empresa_chave = nome_pasta_empresa(empresa_id, empresa_nome)
