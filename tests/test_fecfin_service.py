@@ -1657,6 +1657,18 @@ class FecfinCemaf60Test(unittest.TestCase):
             handler = CePart()
             self.assertTrue(handler.matches(xls, file_stem=stem))
 
+    def test_matches_detecta_cemaf_60_de_julho_com_espaco_nao_separavel(self):
+        col_sicoob, dados_sicoob = self._montar_aba_sicoob(
+            [["01/07/2026", "CREDITO", "", "DOC", "001", "PAGAMENTO", 100, 0]]
+        )
+        buf, _ = _criar_excel_cemaf_60({"SICOOB\u00a0- 15619-1": (col_sicoob, dados_sicoob)})
+
+        with pd.ExcelFile(buf) as xls:
+            from src.schemas.fecfin.ce_part import CePart
+            self.assertTrue(
+                CePart().matches(xls, file_stem="0726_FECFIN_CEMAF\u00a060")
+            )
+
     def test_matches_rejeita_sem_cemaf_60_no_nome(self):
         col_sicoob, dados_sicoob = self._montar_aba_sicoob(
             [["01/06/2026", "CREDITO", "INTERNO", "DOC", "001", "PAGAMENTO", 1000, 0]]
@@ -1836,6 +1848,18 @@ class FecfinAd52Test(unittest.TestCase):
             from src.schemas.fecfin.ce_part import CePart
             handler = CePart()
             self.assertTrue(handler.matches(xls, file_stem=stem))
+
+    def test_matches_detecta_ad_52_de_julho_com_separador_variavel(self):
+        col_sicoob, dados_sicoob = self._montar_aba_sicoob(
+            [["01/07/2026", "SAQUE", "001", "PAGAMENTO", 1000, 0, 1000, "CREDITO", "INTERNO"]]
+        )
+        buf, _ = _criar_excel_ad_52(
+            {"SICOOB\u00a0- 11.280-1": (col_sicoob, dados_sicoob)}
+        )
+
+        with pd.ExcelFile(buf) as xls:
+            from src.schemas.fecfin.ce_part import CePart
+            self.assertTrue(CePart().matches(xls, file_stem="0726_FECFIN_AD_52"))
 
     def test_matches_rejeita_sem_ad_52_no_nome(self):
         col_sicoob, dados_sicoob = self._montar_aba_sicoob(

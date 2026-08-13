@@ -1,4 +1,6 @@
 import logging
+import re
+import unicodedata
 
 import pandas as pd
 
@@ -17,21 +19,32 @@ _BANCOS_CEMAF_60 = {"SICOOB", "CAIXA"}
 _BANCOS_AD_52 = {"SICOOB", "INTER", "CAIXA"}
 
 
+def _normalizar_identificador(valor: str) -> str:
+    """Normaliza nomes vindos do Excel/Drive para comparacao de layout.
+
+    Arquivos copiados ou renomeados no Drive podem conter NBSP e outros
+    separadores visualmente identicos a espacos. A selecao do layout nao deve
+    depender dessa diferenca invisivel.
+    """
+    normalizado = unicodedata.normalize("NFKC", str(valor)).upper()
+    return re.sub(r"[^A-Z0-9]+", " ", normalizado).strip()
+
+
 def _identificar_tipo_arquivo(file_stem: str) -> str | None:
-    stem_upper = file_stem.upper()
-    if "CEMAF PART" in stem_upper:
+    stem_normalizado = _normalizar_identificador(file_stem)
+    if "CEMAF PART" in stem_normalizado:
         return "CEMAF_PART"
-    if "CEMAF 60" in stem_upper:
+    if "CEMAF 60" in stem_normalizado:
         return "CEMAF_60"
-    if "ADP PART" in stem_upper:
+    if "ADP PART" in stem_normalizado:
         return "ADP_PART"
-    if "CE PART" in stem_upper:
+    if "CE PART" in stem_normalizado:
         return "CE_PART"
-    if "ALOHA" in stem_upper:
+    if "ALOHA" in stem_normalizado:
         return "ALOHA"
-    if "ACR" in stem_upper:
+    if "ACR" in stem_normalizado:
         return "ACR"
-    if "AD 52" in stem_upper:
+    if "AD 52" in stem_normalizado:
         return "AD_52"
     return None
 
@@ -49,9 +62,9 @@ def _identificar_bancos(xls: pd.ExcelFile, tipo: str) -> dict[str, str]:
     bancos_alvo = bancos_map.get(tipo, _BANCOS_CE_PART)
     resultado: dict[str, str] = {}
     for aba in xls.sheet_names:
-        aba_upper = str(aba).upper()
+        aba_normalizada = _normalizar_identificador(aba)
         for banco in bancos_alvo:
-            if banco in aba_upper and banco not in resultado:
+            if banco in aba_normalizada and banco not in resultado:
                 resultado[banco] = aba
     return resultado
 
@@ -560,6 +573,13 @@ class CePart(FecfinHandler):
         if not tipo:
             return False
         bancos = _identificar_bancos(xls, tipo)
+        if not bancos:
+            logger.warning(
+                "Layout FECFIN %s identificado pelo nome, mas nenhuma aba bancaria "
+                "foi reconhecida. Abas encontradas: %s",
+                tipo,
+                xls.sheet_names,
+            )
         return len(bancos) > 0
 
     def parse(
