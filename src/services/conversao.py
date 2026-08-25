@@ -10,6 +10,7 @@ from pathlib import Path
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
+import pandas as pd
 import requests
 from googleapiclient.errors import HttpError
 from openpyxl import Workbook, load_workbook
@@ -33,7 +34,7 @@ from src.app.supabase.supabase_api import (
     carregar_empresas_ativas_api,
     consultar_situacao_controle,
 )
-from src.schemas import LayoutNotRecognized, dispatch
+from src.schemas import LayoutNotRecognized, dispatch, dispatch_excel
 from src.schemas.parsers.ia_extractor import extrair_extrato_ia
 from src.schemas.parsers.pdf_extractor import PDFExtractor
 from src.services.chat_notifications import (
@@ -41,7 +42,12 @@ from src.services.chat_notifications import (
     GOOGLE_CHAT_SPACE_NAME,
     registrar_e_enviar_notificacao,
 )
-from src.utils.helpers import planilha_lancamento, remover_senha_pdf, totalizador
+from src.utils.helpers import (
+    corrigir_xls_html_para_xlsx,
+    planilha_lancamento,
+    remover_senha_pdf,
+    totalizador,
+)
 from src.utils.logging_config import setup_logging
 
 
@@ -71,6 +77,7 @@ HISTORICO_HEADERS_COM_HORA_MOVIMENTO = ("ID", "EMP", "DATA", "HORA", "HORA MOVIM
 HISTORICO_HEADERS_SEM_MOVIMENTO = ("ID", "EMP", "DATA", "HORA", "NOME ARQUIVO", "PASTA DESTINO")
 HISTORICO_HEADERS_ANTIGO = ("nome_arquivo", "data_hora_conversao", "pasta_destino")
 MODELO_LANCAMENTOS = Path.cwd() / "data" / "Lancamentos_Contabeis.xlsm"
+EXTENSOES_EXCEL = (".xlsx", ".xls")
 
 
 @dataclass(frozen=True)
@@ -1236,6 +1243,253 @@ def arquivar_pdf_sem_movimentacao(
     }
 
 
+def resolver_excel_legivel(
+    caminho: Path,
+    destino_convertido: Path,
+) -> tuple[Path, Path | None]:
+    """Retorna o caminho do Excel que o pandas consegue abrir.
+
+    Alguns bancos exportam um .xls que na verdade e HTML; nesse caso o
+    arquivo e convertido para xlsx de verdade. O segundo item do retorno e
+    o temporario gerado na conversao (None quando nao houve conversao).
+    """
+    try:
+        with pd.ExcelFile(caminho):
+            return caminho, None
+    except Exception:
+        if caminho.suffix.lower() != ".xls":
+            raise
+
+    logger.info("Excel nao abriu direto; convertendo .xls/HTML: %s", caminho.name)
+    convertido = Path(
+        corrigir_xls_html_para_xlsx(caminho, destino_convertido, deletar_original=False)
+    )
+    return convertido, convertido
+
+
+@dataclass
+class ResultadoFinalizacao:
+    """Desfecho do pipeline pos-parse de um extrato."""
+
+    convertido: bool = False
+    erro: str = ""
+    baixa_preservada: str = ""
+    documento: dict | None = None
+
+
+def finalizar_conversao_extrato(
+    *,
+    google_drive: GoogleDriveAuth,
+    extratos_id: str,
+    emp_raiz_id: str,
+    temp_dir: Path,
+    modelo_lancamento: Path,
+    arquivo_id: str,
+    arquivo_nome: str,
+    dados_nome: NomeExtrato,
+    df,
+    empresas: dict[str, tuple[object, str]] | None = None,
+    nome_original_destino: str | None = None,
+) -> ResultadoFinalizacao:
+    """Gera as planilhas, da baixa no SGE e arquiva o extrato convertido.
+
+    Mesmo pipeline para PDF e Excel: a diferenca esta so no arquivo de
+    origem. ``nome_original_destino`` renomeia o arquivo original depois de
+    move-lo (o Excel de origem tem o mesmo nome da planilha tratada, entao
+    precisa de um sufixo para os dois coexistirem na pasta da empresa).
+    """
+    arquivo_stem = Path(arquivo_nome).stem
+    dest_lancamento = None
+    dest_excel = None
+
+    try:
+        validar_dataframe_extrato(df)
+        empresa_id, empresa_nome = buscar_empresa_por_cliente(
+            dados_nome.empresa,
+            empresas=empresas,
+        )
+
+        try:
+            pasta_destino_id, pasta_destino_historico = resolver_pasta_destino_emp(
+                google_drive=google_drive,
+                pasta_emp_id=emp_raiz_id,
+                arquivo_nome=arquivo_nome,
+                empresa_id=empresa_id,
+                empresa_nome=empresa_nome,
+            )
+        except ValueError:
+            logger.exception(
+                "Nao foi possivel resolver pasta EMP para o extrato. Arquivo mantido na EXT: %s",
+                arquivo_nome,
+            )
+            return ResultadoFinalizacao(
+                erro=f"{arquivo_nome} - empresa ou pasta nao encontrada; mantido na EXT"
+            )
+
+        dest_lancamento = temp_dir / dados_nome.nome_lancamento
+        dest_excel = temp_dir / f"{arquivo_stem}.xlsx"
+
+        inicio_geracao = time.perf_counter()
+        logger.info("Gerando arquivos finais: %s", arquivo_nome)
+
+        logger.info("Copiando modelo de lancamento para: %s", dest_lancamento)
+        shutil.copy2(modelo_lancamento, dest_lancamento)
+
+        logger.info("Preenchendo planilha de lancamento: %s", dest_lancamento)
+        planilha_lancamento(df, dest_lancamento)
+
+        logger.info("Gerando planilha totalizada: %s", dest_excel)
+        df_totalizado = totalizador(df)
+        df_totalizado.to_excel(dest_excel, index=False)
+        del df_totalizado
+        momento_conversao = agora_historico()
+
+        # Tentar baixa no SGE antes de enviar/mover arquivos
+        situacao = consultar_situacao_controle(
+            empresa_codigo=str(empresa_id),
+            competencia=dados_nome.competencia,
+            codigo_documento=dados_nome.codigo_documento,
+            banco=dados_nome.banco,
+            agencia=dados_nome.agencia,
+            conta=dados_nome.conta,
+        )
+        if not situacao.cadastrado:
+            logger.warning(
+                "Controle nao cadastrado no SGE: empresa=%s competencia=%s cod_doc=%s — %s mantido na EXT",
+                empresa_id,
+                dados_nome.competencia,
+                dados_nome.codigo_documento,
+                arquivo_nome,
+            )
+            return ResultadoFinalizacao(
+                erro=f"{arquivo_nome} - empresa/pasta nao cadastrada no SGE; mantido na EXT"
+            )
+
+        # Documento ja baixado: preservar a baixa existente e seguir com a
+        # conversao, senao o arquivo ficaria parado na EXT a cada execucao.
+        baixa_preservada = situacao.ja_baixado
+        if baixa_preservada:
+            logger.info(
+                "Baixa ja existente no SGE para %s (%s); baixa preservada",
+                arquivo_nome,
+                situacao.resumo(),
+            )
+        else:
+            local = f"Google Drive / {pasta_destino_historico}"
+            sucesso_baixa, detalhe_erro = baixar_controle_supabase(
+                empresa_codigo=str(empresa_id),
+                codigo_documento=dados_nome.codigo_documento,
+                competencia=dados_nome.competencia,
+                banco=dados_nome.banco,
+                agencia=dados_nome.agencia,
+                conta=dados_nome.conta,
+                nome_arquivo=arquivo_nome,
+                local_arquivo=local,
+                quantidade_arquivos=3,
+                status="Enviado",
+                data_recebimento=momento_conversao.strftime("%Y-%m-%d"),
+            )
+            if not sucesso_baixa:
+                logger.warning(
+                    "Baixa SGE falhou para %s: %s — mantido na EXT",
+                    arquivo_nome,
+                    detalhe_erro,
+                )
+                return ResultadoFinalizacao(
+                    erro=(
+                        f"{arquivo_nome} - baixa no SGE falhou "
+                        f"({detalhe_erro or 'erro desconhecido'}); mantido na EXT"
+                    )
+                )
+
+        # Baixa OK — enviar arquivos gerados e mover o original.
+        # A ordem importa quando a origem e Excel: o original tem o mesmo
+        # nome da planilha tratada, entao move-lo antes faria o
+        # enviar_ou_atualizar_arquivo encontra-lo e sobrescrever seu conteudo.
+        logger.info("Enviando XLSM para o Google Drive: %s", dest_lancamento.name)
+        enviar_ou_atualizar_arquivo(
+            google_drive=google_drive,
+            caminho_local=dest_lancamento,
+            folder_id_destino=pasta_destino_id,
+            type_file=XLSM_MIME_TYPE,
+            name_drive=dest_lancamento.name,
+        )
+
+        logger.info("Enviando XLSX para o Google Drive: %s", dest_excel.name)
+        enviar_ou_atualizar_arquivo(
+            google_drive=google_drive,
+            caminho_local=dest_excel,
+            folder_id_destino=pasta_destino_id,
+            type_file=XLSX_MIME_TYPE,
+            name_drive=dest_excel.name,
+        )
+        logger.info(
+            "Arquivos finais gerados e enviados: %s | tempo=%.2fs",
+            arquivo_nome,
+            time.perf_counter() - inicio_geracao,
+        )
+
+        logger.info("Movendo arquivo original para pasta destino EMP: %s", arquivo_nome)
+        google_drive.move_file(
+            file_id=arquivo_id,
+            folder_id_destino=pasta_destino_id,
+        )
+        momento_movimento = agora_historico()
+
+        nome_historico = arquivo_nome
+
+        # Renomear so depois do move: uma falha aqui deixa o arquivo fora da
+        # EXT, enquanto renomear antes deixaria na EXT um nome com segmento
+        # extra que interpretar_nome_extrato rejeitaria nas proximas execucoes.
+        if nome_original_destino:
+            google_drive.rename_file(arquivo_id, nome_original_destino)
+            nome_historico = nome_original_destino
+            logger.info(
+                "Arquivo original preservado como: %s", nome_original_destino
+            )
+
+        registrar_historico_conversao(
+            google_drive=google_drive,
+            pasta_raiz_id=extratos_id,
+            temp_dir=temp_dir,
+            nomes_arquivos=[nome_historico, dest_excel.name, dest_lancamento.name],
+            pasta_destino=pasta_destino_historico,
+            data_hora=momento_conversao,
+            data_hora_movimento=momento_movimento,
+            empresa_id=empresa_id,
+            empresa_nome=empresa_nome,
+        )
+
+        logger.info("Extrato convertido com sucesso: %s", arquivo_nome)
+        logger.info("Arquivos enviados para a pasta: %s", pasta_destino_historico)
+
+        return ResultadoFinalizacao(
+            convertido=True,
+            baixa_preservada=situacao.resumo() if baixa_preservada else "",
+            documento={
+                "empresa_id": empresa_id,
+                "mes": dados_nome.mes,
+                "ano": dados_nome.ano,
+                "competencia": dados_nome.competencia,
+                "codigo_documento": dados_nome.codigo_documento,
+                "banco": dados_nome.banco,
+                "agencia": dados_nome.agencia,
+                "conta": dados_nome.conta,
+                "arquivo_nome": arquivo_nome,
+                "pasta_destino": pasta_destino_historico,
+                "momento": momento_conversao,
+            },
+        )
+    finally:
+        try:
+            if dest_lancamento is not None:
+                dest_lancamento.unlink(missing_ok=True)
+            if dest_excel is not None:
+                dest_excel.unlink(missing_ok=True)
+        except Exception:
+            logger.warning("Erro ao limpar planilhas geradas para %s, ignorando", arquivo_nome)
+
+
 def _executar_conversao(execucao_id: str):
     setup_logging()
     logger.info("Iniciando fluxo de conversao")
@@ -1322,8 +1576,6 @@ def _executar_conversao(execucao_id: str):
             pdf_processamento = pdf_local
             pdf = None
             df = None
-            dest_lancamento = None
-            dest_excel = None
 
             logger.info("Processando PDF: %s", arquivo_nome_seguro)
 
@@ -1550,175 +1802,35 @@ def _executar_conversao(execucao_id: str):
                     )
                 continue
 
-            validar_dataframe_extrato(df)
-            empresa_id, empresa_nome = buscar_empresa_por_cliente(
-                dados_nome.empresa,
+            resultado = finalizar_conversao_extrato(
+                google_drive=google_drive,
+                extratos_id=extratos_id,
+                emp_raiz_id=emp_raiz_id,
+                temp_dir=temp_dir,
+                modelo_lancamento=lancamento,
+                arquivo_id=arquivo_id,
+                arquivo_nome=arquivo_nome,
+                dados_nome=dados_nome,
+                df=df,
                 empresas=empresas,
             )
 
-            try:
-                pasta_destino_id, pasta_destino_historico = resolver_pasta_destino_emp(
-                    google_drive=google_drive,
-                    pasta_emp_id=emp_raiz_id,
-                    arquivo_nome=arquivo_nome,
-                    empresa_id=empresa_id,
-                    empresa_nome=empresa_nome,
-                )
-            except ValueError:
-                logger.exception(
-                    "Nao foi possivel resolver pasta EMP para o PDF. Arquivo mantido na EXT: %s",
-                    arquivo_nome,
-                )
-                erros_processamento_notificacao.append(
-                    f"{arquivo_nome} - empresa ou pasta nao encontrada; mantido na EXT"
-                )
+            if not resultado.convertido:
+                erros_processamento_notificacao.append(resultado.erro)
                 continue
 
-            dest_lancamento = temp_dir / dados_nome.nome_lancamento
-            dest_excel = temp_dir / f"{arquivo_stem}.xlsx"
-
-            inicio_geracao = time.perf_counter()
-            logger.info("Gerando arquivos finais: %s", arquivo_nome)
-
-            logger.info("Copiando modelo de lancamento para: %s", dest_lancamento)
-            shutil.copy2(lancamento, dest_lancamento)
-
-            logger.info("Preenchendo planilha de lancamento: %s", dest_lancamento)
-            planilha_lancamento(df, dest_lancamento)
-
-            logger.info("Gerando planilha totalizada: %s", dest_excel)
-            df_totalizado = totalizador(df)
-            df_totalizado.to_excel(dest_excel, index=False)
-            del df_totalizado
-            momento_conversao = agora_historico()
-
-            # Tentar baixa no SGE antes de enviar/mover arquivos
-            situacao = consultar_situacao_controle(
-                empresa_codigo=str(empresa_id),
-                competencia=dados_nome.competencia,
-                codigo_documento=dados_nome.codigo_documento,
-                banco=dados_nome.banco,
-                agencia=dados_nome.agencia,
-                conta=dados_nome.conta,
-            )
-            if not situacao.cadastrado:
-                logger.warning(
-                    "Controle nao cadastrado no SGE: empresa=%s competencia=%s cod_doc=%s — %s mantido na EXT",
-                    empresa_id,
-                    dados_nome.competencia,
-                    dados_nome.codigo_documento,
-                    arquivo_nome,
-                )
-                erros_processamento_notificacao.append(
-                    f"{arquivo_nome} - empresa/pasta nao cadastrada no SGE; mantido na EXT"
-                )
-                continue
-
-            # Documento ja baixado: preservar a baixa existente e seguir com a
-            # conversao, senao o PDF ficaria parado na EXT a cada execucao.
-            baixa_preservada = situacao.ja_baixado
-            if baixa_preservada:
-                logger.info(
-                    "Baixa ja existente no SGE para %s (%s); baixa preservada",
-                    arquivo_nome,
-                    situacao.resumo(),
-                )
-            else:
-                local = f"Google Drive / {pasta_destino_historico}"
-                sucesso_baixa, detalhe_erro = baixar_controle_supabase(
-                    empresa_codigo=str(empresa_id),
-                    codigo_documento=dados_nome.codigo_documento,
-                    competencia=dados_nome.competencia,
-                    banco=dados_nome.banco,
-                    agencia=dados_nome.agencia,
-                    conta=dados_nome.conta,
-                    nome_arquivo=arquivo_nome,
-                    local_arquivo=local,
-                    quantidade_arquivos=3,
-                    status="Enviado",
-                    data_recebimento=momento_conversao.strftime("%Y-%m-%d"),
-                )
-                if not sucesso_baixa:
-                    logger.warning(
-                        "Baixa SGE falhou para %s: %s — mantido na EXT",
-                        arquivo_nome,
-                        detalhe_erro,
-                    )
-                    erros_processamento_notificacao.append(
-                        f"{arquivo_nome} - baixa no SGE falhou ({detalhe_erro or 'erro desconhecido'}); mantido na EXT"
-                    )
-                    continue
-
-            # Baixa OK — enviar arquivos gerados e mover PDF
-            logger.info("Enviando XLSM para o Google Drive: %s", dest_lancamento.name)
-            enviar_ou_atualizar_arquivo(
-                google_drive=google_drive,
-                caminho_local=dest_lancamento,
-                folder_id_destino=pasta_destino_id,
-                type_file=XLSM_MIME_TYPE,
-                name_drive=dest_lancamento.name,
-            )
-
-            logger.info("Enviando XLSX para o Google Drive: %s", dest_excel.name)
-            enviar_ou_atualizar_arquivo(
-                google_drive=google_drive,
-                caminho_local=dest_excel,
-                folder_id_destino=pasta_destino_id,
-                type_file=XLSX_MIME_TYPE,
-                name_drive=dest_excel.name,
-            )
-            logger.info(
-                "Arquivos finais gerados e enviados: %s | tempo=%.2fs",
-                arquivo_nome,
-                time.perf_counter() - inicio_geracao,
-            )
-
-            logger.info("Movendo PDF original para pasta destino EMP: %s", arquivo_nome)
-            google_drive.move_file(
-                file_id=arquivo_id,
-                folder_id_destino=pasta_destino_id,
-            )
-            momento_movimento = agora_historico()
-
-            registrar_historico_conversao(
-                google_drive=google_drive,
-                pasta_raiz_id=extratos_id,
-                temp_dir=temp_dir,
-                nomes_arquivos=[arquivo_nome, dest_excel.name, dest_lancamento.name],
-                pasta_destino=pasta_destino_historico,
-                data_hora=momento_conversao,
-                data_hora_movimento=momento_movimento,
-                empresa_id=empresa_id,
-                empresa_nome=empresa_nome,
-            )
-
-            documentos_convertidos.append({
-                "empresa_id": empresa_id,
-                "mes": dados_nome.mes,
-                "ano": dados_nome.ano,
-                "competencia": dados_nome.competencia,
-                "codigo_documento": dados_nome.codigo_documento,
-                "banco": dados_nome.banco,
-                "agencia": dados_nome.agencia,
-                "conta": dados_nome.conta,
-                "arquivo_nome": arquivo_nome,
-                "pasta_destino": pasta_destino_historico,
-                "momento": momento_conversao,
-            })
-
+            documentos_convertidos.append(resultado.documento)
             convertidos += 1
             extratos_notificacao.append(arquivo_stem)
-            if baixa_preservada:
+            if resultado.baixa_preservada:
                 baixas_preservadas_notificacao.append(
-                    f"{arquivo_nome} - {situacao.resumo()}"
+                    f"{arquivo_nome} - {resultado.baixa_preservada}"
                 )
             logger.info(
                 "PDF processado com sucesso: %s | tempo_total=%.2fs",
                 arquivo_nome,
                 time.perf_counter() - inicio_pdf,
             )
-            logger.info("PDF convertido com sucesso: %s", arquivo_nome)
-            logger.info("Arquivos enviados para a pasta: %s", pasta_destino_historico)
         except Exception:
             logger.exception("Erro ao processar PDF: %s", arquivo_nome_seguro)
             erros_processamento_notificacao.append(
@@ -1728,34 +1840,32 @@ def _executar_conversao(execucao_id: str):
             try:
                 pdf_local.unlink(missing_ok=True)
                 pdf_sem_senha.unlink(missing_ok=True)
-                if dest_lancamento is not None:
-                    dest_lancamento.unlink(missing_ok=True)
-                if dest_excel is not None:
-                    dest_excel.unlink(missing_ok=True)
                 logger.info("Arquivos temporarios limpos para: %s", arquivo_nome_seguro)
 
                 pdf = None
                 df = None
-                dest_lancamento = None
-                dest_excel = None
             except Exception:
                 logger.warning("Erro ao limpar temporarios para %s, ignorando", arquivo_nome_seguro)
 
     logger.info("Listando Excels da pasta EXT do Google Drive")
-    arquivos_excel = google_drive.pdfs(
-        folder_id=entrada_ext_id,
-        pdf_type=XLSX_MIME_TYPE,
-    )
+    arquivos_excel = [
+        *google_drive.pdfs(folder_id=entrada_ext_id, pdf_type=XLSX_MIME_TYPE),
+        *google_drive.pdfs(folder_id=entrada_ext_id, pdf_type=XLS_MIME_TYPE),
+    ]
     logger.info("Excels encontrados na pasta EXT do Google Drive: %s", len(arquivos_excel))
 
     for arquivo_drive in arquivos_excel:
         arquivo_nome = arquivo_drive.get("name", "DESCONHECIDO")
-        if not arquivo_nome.lower().endswith(".xlsx"):
+        if not arquivo_nome.lower().endswith(EXTENSOES_EXCEL):
             continue
+        excel_local = None
+        excel_convertido = None
         try:
             arquivo_id = arquivo_drive["id"]
             try:
-                dados_nome = interpretar_nome_extrato(arquivo_nome, extensoes=(".xlsx",))
+                dados_nome = interpretar_nome_extrato(
+                    arquivo_nome, extensoes=EXTENSOES_EXCEL
+                )
             except ValueError as erro_nome:
                 if nome_indica_sem_movimentacao(arquivo_nome):
                     nomes_invalidos_notificacao.append(
@@ -1763,47 +1873,134 @@ def _executar_conversao(execucao_id: str):
                     )
                 continue
 
-            if not dados_nome.sem_movimentacao:
-                logger.info(
-                    "Excel com movimentacao ainda nao possui layout de conversao; mantido na EXT: %s",
+            processados += 1
+            arquivo_nome = dados_nome.nome_limpo
+
+            if dados_nome.sem_movimentacao:
+                logger.info("Processando Excel sem movimentacao: %s", arquivo_nome)
+                resultado_sm = arquivar_pdf_sem_movimentacao(
+                    google_drive=google_drive,
+                    pasta_raiz_id=extratos_id,
+                    pasta_emp_id=emp_raiz_id,
+                    temp_dir=temp_dir,
+                    arquivo_id=arquivo_id,
+                    nome_arquivo=arquivo_nome,
+                    empresas=empresas,
+                    fazer_baixa_sge=True,
+                    codigo_documento=dados_nome.codigo_documento,
+                    competencia=dados_nome.competencia,
+                    banco=dados_nome.banco,
+                    agencia=dados_nome.agencia,
+                    conta=dados_nome.conta,
+                )
+                if resultado_sm:
+                    pdfs_sem_movimentacao_notificacao.append(resultado_sm["notificacao"])
+                    if resultado_sm["baixa_preservada"]:
+                        baixas_preservadas_notificacao.append(
+                            f"{arquivo_nome} - {resultado_sm['baixa_preservada']}"
+                        )
+                    sem_movimentacao += 1
+                else:
+                    erros_processamento_notificacao.append(
+                        f"{arquivo_nome} - baixa no SGE falhou ou empresa/pasta nao encontrada; mantido na EXT"
+                    )
+                continue
+
+            arquivo_stem = Path(arquivo_nome).stem
+            sufixo = Path(arquivo_nome).suffix
+            logger.info("Processando Excel com movimentacao: %s", arquivo_nome)
+
+            excel_local = temp_dir / f"{arquivo_id}{sufixo}"
+            google_drive.download(file_id=arquivo_id, destino_local=excel_local)
+
+            try:
+                excel_leitura, excel_convertido = resolver_excel_legivel(
+                    excel_local,
+                    temp_dir / f"{arquivo_id}_convertido.xlsx",
+                )
+                with pd.ExcelFile(excel_leitura) as xls:
+                    df = dispatch_excel(xls, arquivo_stem)
+            except Exception as erro_layout:
+                # Excel nao tem o fallback de IA dos PDFs: sem layout, o
+                # arquivo fica na EXT em vez de ir para 00_INVALIDOS.
+                logger.warning(
+                    "Layout Excel nao reconhecido para %s: %s",
                     arquivo_nome,
+                    erro_layout,
+                )
+                erros_processamento_notificacao.append(
+                    f"{arquivo_nome} - layout Excel nao reconhecido; mantido na EXT"
                 )
                 continue
 
-            processados += 1
-            arquivo_nome = dados_nome.nome_limpo
-            logger.info("Processando Excel sem movimentacao: %s", arquivo_nome)
-            resultado_sm = arquivar_pdf_sem_movimentacao(
-                google_drive=google_drive,
-                pasta_raiz_id=extratos_id,
-                pasta_emp_id=emp_raiz_id,
-                temp_dir=temp_dir,
-                arquivo_id=arquivo_id,
-                nome_arquivo=arquivo_nome,
-                empresas=empresas,
-                fazer_baixa_sge=True,
-                codigo_documento=dados_nome.codigo_documento,
-                competencia=dados_nome.competencia,
-                banco=dados_nome.banco,
-                agencia=dados_nome.agencia,
-                conta=dados_nome.conta,
-            )
-            if resultado_sm:
-                pdfs_sem_movimentacao_notificacao.append(resultado_sm["notificacao"])
-                if resultado_sm["baixa_preservada"]:
-                    baixas_preservadas_notificacao.append(
-                        f"{arquivo_nome} - {resultado_sm['baixa_preservada']}"
+            if df is None or df.empty:
+                resultado_sm = arquivar_pdf_sem_movimentacao(
+                    google_drive=google_drive,
+                    pasta_raiz_id=extratos_id,
+                    pasta_emp_id=emp_raiz_id,
+                    temp_dir=temp_dir,
+                    arquivo_id=arquivo_id,
+                    nome_arquivo=arquivo_nome,
+                    empresas=empresas,
+                    fazer_baixa_sge=True,
+                    codigo_documento=dados_nome.codigo_documento,
+                    competencia=dados_nome.competencia,
+                    banco=dados_nome.banco,
+                    agencia=dados_nome.agencia,
+                    conta=dados_nome.conta,
+                )
+                if resultado_sm:
+                    pdfs_sem_movimentacao_notificacao.append(resultado_sm["notificacao"])
+                    if resultado_sm["baixa_preservada"]:
+                        baixas_preservadas_notificacao.append(
+                            f"{arquivo_nome} - {resultado_sm['baixa_preservada']}"
+                        )
+                    sem_movimentacao += 1
+                else:
+                    erros_processamento_notificacao.append(
+                        f"{arquivo_nome} - baixa no SGE falhou ou empresa/pasta nao encontrada; mantido na EXT"
                     )
-                sem_movimentacao += 1
-            else:
-                erros_processamento_notificacao.append(
-                    f"{arquivo_nome} - baixa no SGE falhou ou empresa/pasta nao encontrada; mantido na EXT"
+                continue
+
+            resultado = finalizar_conversao_extrato(
+                google_drive=google_drive,
+                extratos_id=extratos_id,
+                emp_raiz_id=emp_raiz_id,
+                temp_dir=temp_dir,
+                modelo_lancamento=lancamento,
+                arquivo_id=arquivo_id,
+                arquivo_nome=arquivo_nome,
+                dados_nome=dados_nome,
+                df=df,
+                empresas=empresas,
+                # O Excel de origem tem o mesmo nome da planilha tratada.
+                nome_original_destino=f"{arquivo_stem}_ORIGINAL{sufixo}",
+            )
+
+            if not resultado.convertido:
+                erros_processamento_notificacao.append(resultado.erro)
+                continue
+
+            documentos_convertidos.append(resultado.documento)
+            convertidos += 1
+            extratos_notificacao.append(arquivo_stem)
+            if resultado.baixa_preservada:
+                baixas_preservadas_notificacao.append(
+                    f"{arquivo_nome} - {resultado.baixa_preservada}"
                 )
         except Exception:
             logger.exception("Erro ao processar Excel: %s", arquivo_nome)
             erros_processamento_notificacao.append(
                 f"{arquivo_nome} - erro inesperado; mantido na EXT"
             )
+        finally:
+            try:
+                if excel_local is not None:
+                    excel_local.unlink(missing_ok=True)
+                if excel_convertido is not None:
+                    Path(excel_convertido).unlink(missing_ok=True)
+            except Exception:
+                logger.warning("Erro ao limpar temporarios para %s, ignorando", arquivo_nome)
 
     notificacao_kwargs = {
         "pdfs_sem_movimentacao": pdfs_sem_movimentacao_notificacao,

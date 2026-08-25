@@ -1,3 +1,4 @@
+import io
 import tempfile
 import unittest
 from datetime import date
@@ -13,9 +14,61 @@ from src.app.supabase import supabase_api
 from src.services import conversao
 
 
+def _excel_itau_bytes(somente_saldos=False) -> bytes:
+    """Monta um extrato do Itau em Excel no layout real (cabecalho na linha 9)."""
+    linhas = [
+        [None, None, None, None, None, None],
+        ["Atualização:", "07/08/2026 19:03:10", None, None, None, None],
+        ["Nome:", "ACAO TECNOLOGIA", None, None, None, None],
+        ["Agência:", "2903", None, None, None, None],
+        ["Conta:", "0099019-6", None, None, None, None],
+        [None, None, None, None, None, None],
+        ["Lançamentos", None, None, None, None, None],
+        ["Periodo:", "01/03/2026 até 31/07/2026", None, None, None, None],
+        [None, None, None, None, None, None],
+        ["Data", "Lançamento", "Razão Social", "CPF/CNPJ", "Valor (R$)", "Saldo (R$)"],
+        ["28/02/2026", "SALDO ANTERIOR", None, None, None, 6673.6],
+    ]
+
+    if not somente_saldos:
+        linhas.extend(
+            [
+                ["05/03/2026", "TAR/CUSTAS COBRANCA", None, None, -3.86, None],
+                ["05/03/2026", "BOLETOS RECEBIDOS  05/03S", None, None, 998, None],
+                [
+                    "10/03/2026",
+                    "BOLETO PAGO LM TRANSP IN",
+                    "LM TRANSP INTER SERV COM S A",
+                    "00.389.481/0001-79",
+                    -359.21,
+                    None,
+                ],
+            ]
+        )
+
+    linhas.append(["10/03/2026", "SALDO TOTAL DISPONÍVEL DIA", None, None, None, 7667.74])
+
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        pd.DataFrame(linhas).to_excel(
+            writer, sheet_name="Lançamentos", index=False, header=False
+        )
+    return buffer.getvalue()
+
+
 class FakeDrive:
-    def __init__(self, temp_dir, root_pdfs=None, password_pdfs=None, existing_folders=None):
+    def __init__(
+        self,
+        temp_dir,
+        root_pdfs=None,
+        password_pdfs=None,
+        existing_folders=None,
+        file_contents=None,
+    ):
         self.temp_dir = Path(temp_dir)
+        # {file_id: bytes} para arquivos que precisam ser lidos de verdade
+        # (Excel); o resto recebe o placeholder de PDF.
+        self.file_contents = file_contents or {}
         self.root_pdfs = root_pdfs if root_pdfs is not None else [
             {
                 "id": "pdf-1",
@@ -82,6 +135,10 @@ class FakeDrive:
 
         if self.history_file and file_id == self.history_file["id"]:
             destino.write_bytes(self.history_file["content"])
+            return str(destino)
+
+        if file_id in self.file_contents:
+            destino.write_bytes(self.file_contents[file_id])
             return str(destino)
 
         destino.write_bytes(b"%PDF-1.4")
@@ -1196,7 +1253,129 @@ class ConversaoPasswordTest(unittest.TestCase):
         self.assertEqual(mock_baixa.call_args[1]["quantidade_arquivos"], 1)
         self.assertEqual(mock_baixa.call_args[1]["competencia"], "06-2026")
 
-    def test_excel_sem_sm_permanece_na_ext(self):
+    def test_excel_itau_com_movimentacao_converte_e_preserva_original(self):
+        nome = "0326_EXTBAN_ITAU_ACAO_AG 2903_CC 99019-6.xlsx"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_drive = FakeDrive(
+                temp_dir,
+                root_pdfs=[
+                    {
+                        "id": "excel-itau",
+                        "name": nome,
+                        "mimeType": conversao.XLSX_MIME_TYPE,
+                    }
+                ],
+                existing_folders={("id-EMP", "12_ACAO")},
+                file_contents={"excel-itau": _excel_itau_bytes()},
+            )
+
+            with (
+                patch.object(conversao, "GoogleDriveAuth", return_value=fake_drive),
+                patch.object(conversao, "carregar_empresas_ativas", return_value={"ACAO": (12, "ACAO")}),
+                patch.object(conversao, "PDFExtractor") as pdf_extractor,
+                patch.object(
+                    conversao,
+                    "consultar_situacao_controle",
+                    return_value=supabase_api.SituacaoControle(cadastrado=True, id_empresa="uuid-empresa-12"),
+                ),
+                patch.object(conversao, "baixar_controle_supabase", return_value=(True, None)) as mock_baixa,
+                patch.object(conversao, "enviar_notificacao_google_chat") as notificacao,
+            ):
+                conversao.executar_conversao()
+
+        pdf_extractor.assert_not_called()
+
+        # A planilha tratada e o lancamento sobem antes de o original ser movido,
+        # senao o upload por nome sobrescreveria o proprio original.
+        enviados = [upload["name"] for upload in fake_drive.uploaded]
+        self.assertIn("0326_EXTBAN_ITAU_ACAO_AG 2903_CC 99019-6.xlsx", enviados)
+        self.assertIn("0326_LANCBAN_ITAU_ACAO_AG 2903_CC 99019-6.xlsm", enviados)
+
+        self.assertIn(("excel-itau", "id-EXT"), fake_drive.moved)
+        self.assertIn(
+            ("excel-itau", "0326_EXTBAN_ITAU_ACAO_AG 2903_CC 99019-6_ORIGINAL.xlsx"),
+            fake_drive.renamed,
+        )
+
+        tratado = next(
+            upload for upload in fake_drive.uploaded
+            if upload["name"] == "0326_EXTBAN_ITAU_ACAO_AG 2903_CC 99019-6.xlsx"
+        )
+        descricoes = [linha[1] for linha in tratado["rows"][1:]]
+        self.assertNotIn("SALDO ANTERIOR", descricoes)
+        self.assertIn("TOTAL ENTRADAS", descricoes)
+        self.assertIn("TOTAL SAÍDAS", descricoes)
+
+        historico = [linha[4] for linha in fake_drive.history_rows[1:]]
+        self.assertEqual(
+            historico,
+            [
+                "0326_EXTBAN_ITAU_ACAO_AG 2903_CC 99019-6_ORIGINAL.xlsx",
+                "0326_EXTBAN_ITAU_ACAO_AG 2903_CC 99019-6.xlsx",
+                "0326_LANCBAN_ITAU_ACAO_AG 2903_CC 99019-6.xlsm",
+            ],
+        )
+        self.assertEqual(
+            fake_drive.history_rows[1][5], "EMP/12_ACAO/MOV/CONT/26/03/EXT"
+        )
+
+        mock_baixa.assert_called_once()
+        self.assertEqual(mock_baixa.call_args[1]["quantidade_arquivos"], 3)
+        self.assertEqual(mock_baixa.call_args[1]["competencia"], "03-2026")
+        self.assertEqual(mock_baixa.call_args[1]["banco"], "ITAU")
+
+        notificacao.assert_called_once()
+        self.assertEqual(notificacao.call_args.kwargs["status_execucao"], "SUCESSO")
+        self.assertEqual(notificacao.call_args.kwargs["total_convertidos"], 1)
+        self.assertEqual(
+            notificacao.call_args[0][0],
+            ["0326_EXTBAN_ITAU_ACAO_AG 2903_CC 99019-6"],
+        )
+
+    def test_excel_itau_sem_lancamentos_vai_para_pasta_da_empresa(self):
+        """Extrato so com linhas de saldo e tratado como sem movimentacao."""
+        nome = "0326_EXTBAN_ITAU_ACAO_AG 2903_CC 99019-6.xlsx"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_drive = FakeDrive(
+                temp_dir,
+                root_pdfs=[
+                    {
+                        "id": "excel-itau-vazio",
+                        "name": nome,
+                        "mimeType": conversao.XLSX_MIME_TYPE,
+                    }
+                ],
+                existing_folders={("id-EMP", "12_ACAO")},
+                file_contents={"excel-itau-vazio": _excel_itau_bytes(somente_saldos=True)},
+            )
+
+            with (
+                patch.object(conversao, "GoogleDriveAuth", return_value=fake_drive),
+                patch.object(conversao, "carregar_empresas_ativas", return_value={"ACAO": (12, "ACAO")}),
+                patch.object(
+                    conversao,
+                    "consultar_situacao_controle",
+                    return_value=supabase_api.SituacaoControle(cadastrado=True, id_empresa="uuid-empresa-12"),
+                ),
+                patch.object(conversao, "baixar_controle_supabase", return_value=(True, None)) as mock_baixa,
+                patch.object(conversao, "enviar_notificacao_google_chat") as notificacao,
+            ):
+                conversao.executar_conversao()
+
+        self.assertIn(("excel-itau-vazio", "id-EXT"), fake_drive.moved)
+        self.assertEqual(fake_drive.renamed, [])
+        self.assertEqual(mock_baixa.call_args[1]["quantidade_arquivos"], 1)
+        notificacao.assert_called_once()
+        self.assertEqual(notificacao.call_args.kwargs["total_sem_movimentacao"], 1)
+
+    def test_excel_com_layout_desconhecido_permanece_na_ext(self):
+        """Excel EXTBAN sem layout reconhecido fica na EXT, mas e notificado.
+
+        Antes o arquivo era ignorado com um log e sumia da notificacao; agora
+        aparece como alerta para nao ficar parado na EXT sem ninguem saber.
+        """
         with tempfile.TemporaryDirectory() as temp_dir:
             fake_drive = FakeDrive(
                 temp_dir,
@@ -1219,9 +1398,19 @@ class ConversaoPasswordTest(unittest.TestCase):
                 conversao.executar_conversao()
 
         self.assertEqual(fake_drive.moved, [])
+        self.assertEqual(fake_drive.uploaded, [])
         mock_baixa.assert_not_called()
         notificacao.assert_called_once()
-        self.assertEqual(notificacao.call_args.kwargs["status_execucao"], "SUCESSO")
+        self.assertEqual(
+            notificacao.call_args.kwargs["status_execucao"], "SUCESSO COM ALERTAS"
+        )
+        self.assertEqual(
+            notificacao.call_args.kwargs["erros_processamento"],
+            [
+                "0626_EXTBAN_ASAAS_ABDALLA_AG 0001_CC 5435758-7.xlsx"
+                " - layout Excel nao reconhecido; mantido na EXT"
+            ],
+        )
 
     def test_sem_movimentacao_sem_empresa_permanece_na_ext(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -2570,6 +2759,55 @@ class ConsultarSituacaoControleTest(unittest.TestCase):
         )
         self.assertTrue(situacao.cadastrado)
         self.assertFalse(situacao.ja_baixado)
+
+
+class ResolverExcelLegivelTest(unittest.TestCase):
+    def test_xlsx_valido_e_lido_direto(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            origem = Path(temp_dir) / "extrato.xlsx"
+            origem.write_bytes(_excel_itau_bytes())
+
+            caminho, convertido = conversao.resolver_excel_legivel(
+                origem, Path(temp_dir) / "convertido.xlsx"
+            )
+
+        self.assertEqual(caminho, origem)
+        self.assertIsNone(convertido)
+
+    def test_xls_que_e_html_e_convertido(self):
+        """Alguns bancos exportam .xls que na verdade e uma tabela HTML."""
+        html = (
+            "<html><body><table>"
+            "<tr><th>Data</th><th>Historico</th><th>Valor</th></tr>"
+            "<tr><td>05/03/2026</td><td>PIX RECEBIDO</td><td>100,00</td></tr>"
+            "</table></body></html>"
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            origem = Path(temp_dir) / "extrato.xls"
+            origem.write_text(html, encoding="utf-8")
+            destino = Path(temp_dir) / "convertido.xlsx"
+
+            caminho, convertido = conversao.resolver_excel_legivel(origem, destino)
+
+            self.assertEqual(caminho, destino)
+            self.assertEqual(convertido, destino)
+            # O original e preservado para o finally do laco limpar os dois.
+            self.assertTrue(origem.exists())
+            self.assertEqual(
+                list(pd.read_excel(destino).columns),
+                ["Data", "Historico", "Valor"],
+            )
+
+    def test_xlsx_corrompido_propaga_erro(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            origem = Path(temp_dir) / "extrato.xlsx"
+            origem.write_bytes(b"%PDF-1.4")
+
+            with self.assertRaises(Exception):
+                conversao.resolver_excel_legivel(
+                    origem, Path(temp_dir) / "convertido.xlsx"
+                )
 
 
 if __name__ == "__main__":
