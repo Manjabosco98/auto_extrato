@@ -360,7 +360,7 @@ def _match_instancia(
     """
     # Normaliza conta ignorando zeros a esquerda (o SGE grava contas com
     # padding, ex.: '0099460-5' para o mesmo '99460-5').
-    conta_clean = conta.replace("-", "").replace(" ", "").strip().lstrip("0")
+    conta_clean = re.sub(r"[^0-9]", "", conta).lstrip("0")
 
     # Chave alfanumerica do banco (+ alias). Sem banco nao ha como casar
     # instancia (ex.: documentos que nao sao extrato bancario); retornar None

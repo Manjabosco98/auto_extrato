@@ -2547,6 +2547,19 @@ class ConversaoPasswordTest(unittest.TestCase):
             supabase_api._match_instancia(instancias, "ITAU", "13288-8", "4372")
         )
 
+    def test_match_instancia_conta_com_sufixo_alfanumerico(self):
+        # Caso real (Banco do Brasil MIDIA): a conta "24550-X" no nome do
+        # arquivo deve casar com "C: 24550-X" na descricao da instancia.
+        # Antes da correcao, _match_instancia nao removia letras do sufixo,
+        # gerando "24550X" != "24550" e a baixa falhava.
+        instancias = [
+            {"codigo": "462-24550X", "descricao": "EXTBAN-BANCO DO BRASIL - A:5902-1 - C: 24550-X"},
+        ]
+        self.assertEqual(
+            supabase_api._match_instancia(instancias, "BANCO DO BRASIL", "24550-X", "5902-1"),
+            "462-24550X",
+        )
+
     def test_conta_da_descricao_dois_formatos(self):
         self.assertEqual(
             supabase_api._conta_da_descricao("EXTBAN-BANCO INTER - A:0001-9 - C: 1265692-5"),
