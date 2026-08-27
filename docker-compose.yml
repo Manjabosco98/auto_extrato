@@ -24,7 +24,7 @@ services:
       - EVOLUTION_API_KEY=${EVOLUTION_API_KEY}
       - EVOLUTION_INSTANCE_NAME=${EVOLUTION_INSTANCE_NAME:-ExtractPDFs}
       - WEBHOOK_API_WHATSAPP=${WEBHOOK_API_WHATSAPP:-http://localhost:8000}
-      - GOOGLE_CHAT_SEND_URL=${GOOGLE_CHAT_SEND_URL:-https://google-chat-api.onrender.com/google-chat/send}
+      - GOOGLE_CHAT_SEND_URL=${GOOGLE_CHAT_SEND_URL:-https://google-chat-api-wsxo.onrender.com/google-chat/send}
       - GOOGLE_CHAT_SPACE_NAME=${GOOGLE_CHAT_SPACE_NAME:-spaces/AAQAQEHQc-k}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - OPENAI_MODEL=${OPENAI_MODEL:-gpt-5-mini}

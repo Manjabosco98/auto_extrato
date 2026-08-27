@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 GOOGLE_CHAT_SEND_URL = os.getenv(
     "GOOGLE_CHAT_SEND_URL",
-    "https://google-chat-api.onrender.com/google-chat/send",
+    "https://google-chat-api-wsxo.onrender.com/google-chat/send",
 )
 GOOGLE_CHAT_SPACE_NAME = os.getenv(
     "GOOGLE_CHAT_SPACE_NAME",
