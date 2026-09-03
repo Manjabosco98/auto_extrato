@@ -28,10 +28,14 @@ Depois de iniciar o servidor, acesse:
 
 ## Producao
 
-A API esta implantada no DigitalOcean com HTTPS:
+A API esta implantada em uma VPS Contabo (Windows 10), rodando de forma nativa
+(Python + Caddy como proxy reverso com HTTPS automatico via Let's Encrypt). URL
+publica inalterada:
 
 - Documentacao: `https://autoextrato.sgecont.com.br/docs`
 - OpenAPI JSON: `https://autoextrato.sgecont.com.br/openapi.json`
+
+> Registro da migracao (era DigitalOcean): `docs/MIGRATION_WINDOWS.md`.
 
 ## Endpoints
 
